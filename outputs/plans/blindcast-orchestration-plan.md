@@ -185,7 +185,7 @@ updated: 2026-09-05
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：所有偏好设置持久化并即时生效。
 
-- [ ] **Slice 6.3** · verify · 全量构建、端到端冒烟测试与最终交付
+- [x] **Slice 6.3** · verify · 全量构建、端到端冒烟测试与最终交付
   - **范围**：运行 `./gradlew :app:assembleDebug`；端到端校验熄屏挂机、Web 监控操控、HA 开关联动完整闭环；生成交付归档产物。
   - **门禁**：编译全绿，产出 APK。
   - **验收目标**：所有 Phase 勾选完成，交付物就绪。
@@ -209,3 +209,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 5.2 验收通过（CommandHandler双向对齐 + SensorReporter + startHaStack，强制重编 SUCCESS），已提交，派发 Slice 6.1。
 - 2026-09-05: Slice 6.1 验收通过（前台服务 + Home四卡片真实绑定 + zxing二维码，强制重编 SUCCESS），已提交，派发 Slice 6.2。
 - 2026-09-05: Slice 6.2 验收通过（HA页 + 设置页5卡全绑定 + ScrcpyGate，强制重编 SUCCESS），已提交，派发 Slice 6.3。
+- 2026-09-05: Slice 6.3 终验通过（15项矩阵全绿 + aapt包名/权限/assets三验 + DELIVERY.md），战役收官。
