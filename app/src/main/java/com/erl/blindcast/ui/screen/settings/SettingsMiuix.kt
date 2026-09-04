@@ -91,6 +91,18 @@ fun SettingPagerMiuix(
                 overscrollEffect = null,
             ) {
                 item {
+                    // Slice 1.2 BlindCast skeleton (full bindings land in Slice 6.2).
+                    Card(
+                        modifier = Modifier
+                            .padding(top = 12.dp)
+                            .fillMaxWidth(),
+                    ) {
+                        ArrowPreference(
+                            title = stringResource(id = R.string.blindcast_settings_todo_title),
+                            summary = stringResource(id = R.string.blindcast_settings_todo_subtitle),
+                            onClick = {},
+                        )
+                    }
                     Card(
                         modifier = Modifier
                             .padding(top = 12.dp)

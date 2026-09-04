@@ -23,7 +23,7 @@ fun NavigationRailMiuix(
     val mainState = LocalMainPagerState.current
 
     val items = BottomBarDestination.entries.map { destination ->
-        Pair(stringResource(destination.label), destination.icon)
+        Pair(stringResource(destination.label), destination.miuixIcon)
     }
 
     BlurredBar(blurBackdrop) {

@@ -62,6 +62,7 @@ import com.erl.blindcast.ui.navigation3.rememberNavigator
 import com.erl.blindcast.ui.screen.about.AboutScreen
 import com.erl.blindcast.ui.screen.colorpalette.ColorPaletteScreen
 import com.erl.blindcast.ui.screen.home.HomePager
+import com.erl.blindcast.ui.screen.homeassistant.HomeAssistantPager
 import com.erl.blindcast.ui.screen.permission.PermissionScreen
 import com.erl.blindcast.ui.screen.settings.SettingPager
 import com.erl.blindcast.ui.theme.TemplateTheme
@@ -144,11 +145,13 @@ class MainActivity : ComponentActivity() {
                             },
                             entryProvider = entryProvider {
                                 entry<Route.Main> { mainScreenEntry() }
+                                entry<Route.Home> { mainScreenEntry() }
+                                entry<Route.HomeAssistant> { mainScreenEntry() }
+                                entry<Route.Settings> { mainScreenEntry() }
+                                // Secondary destinations only; never in the bottom bar.
                                 entry<Route.About> { AboutScreen() }
                                 entry<Route.ColorPalette> { ColorPaletteScreen() }
                                 entry<Route.Permissions> { PermissionScreen() }
-                                entry<Route.Home> { mainScreenEntry() }
-                                entry<Route.Settings> { mainScreenEntry() }
                             }
                         )
                     }
@@ -228,7 +231,8 @@ fun MainScreen(
                     val isCurrentPage = page == settledPage
                     when (page) {
                         0 -> if (isCurrentPage || contentReady) HomePager(navController, bottomInnerPadding, isCurrentPage)
-                        1 -> if (isCurrentPage || contentReady) SettingPager(navController, bottomInnerPadding)
+                        1 -> if (isCurrentPage || contentReady) HomeAssistantPager(navController, bottomInnerPadding, isCurrentPage)
+                        2 -> if (isCurrentPage || contentReady) SettingPager(navController, bottomInnerPadding)
                     }
                 }
             }

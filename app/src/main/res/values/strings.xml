@@ -23,8 +23,29 @@
     <string name="permission_status_ready_title">Permissions Ready</string>
     <string name="permission_status_missing_title">Permissions Required</string>
     <string name="home">Home</string>
+    <string name="home_assistant">Home Assistant</string>
     <string name="confirm">Confirm</string>
     <string name="settings">Settings</string>
+    <!-- BlindCast Slice 1.2: 3-page skeleton placeholders (real binding lands in Slice 6.1/6.2) -->
+    <string name="blindcast_home_status_title" translatable="false">服务已停止（骨架占位）</string>
+    <string name="blindcast_home_status_subtitle" translatable="false">Slice 6.1 将绑定真实服务状态、帧率与在线人数</string>
+    <string name="blindcast_home_action_title" translatable="false">快速操作（骨架占位）</string>
+    <string name="blindcast_home_action_subtitle" translatable="false">立即息屏挂机 / 点亮屏幕，Slice 6.1 接入真实动作</string>
+    <string name="blindcast_home_action_start" translatable="false">立即息屏挂机</string>
+    <string name="blindcast_home_action_stop" translatable="false">点亮物理屏幕</string>
+    <string name="blindcast_home_lan_title" translatable="false">局域网访问（骨架占位）</string>
+    <string name="blindcast_home_lan_subtitle" translatable="false">二维码与复制链接，Slice 6.1 生成真实地址</string>
+    <string name="blindcast_home_hw_title" translatable="false">硬件状态（骨架占位）</string>
+    <string name="blindcast_home_hw_subtitle" translatable="false">电量 / 温度 / 内存 / WiFi，Slice 6.1 实时刷新</string>
+    <string name="ha_status_title" translatable="false">HA 连接状态（骨架占位）</string>
+    <string name="ha_status_subtitle" translatable="false">未配置 — Slice 5.x 接入 MQTT 真实状态</string>
+    <string name="ha_config_title" translatable="false">MQTT Broker 配置（骨架占位）</string>
+    <string name="ha_config_subtitle" translatable="false">地址 / 端口 / 用户名，Slice 6.2 持久化保存</string>
+    <string name="ha_entities_title" translatable="false">已暴露实体（骨架占位）</string>
+    <string name="ha_entities_subtitle" translatable="false">switch.blindcast_screen / sensors，Slice 5.x 上报</string>
+    <string name="ha_action_test" translatable="false">测试连接并上报</string>
+    <string name="blindcast_settings_todo_title" translatable="false">串流与安全设置（骨架占位）</string>
+    <string name="blindcast_settings_todo_subtitle" translatable="false">画质 / Token / 息屏策略，Slice 6.2 全量绑定</string>
     <string name="about">About</string>
     <string name="send_log">Send logs</string>
     <string name="settings_check_update">Check for updates</string>

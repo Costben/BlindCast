@@ -74,6 +74,17 @@ fun SettingPagerMaterial(
                 .verticalScroll(rememberScrollState())
         ) {
             Spacer(modifier = Modifier.height(8.dp))
+            // Slice 1.2 BlindCast skeleton (full bindings land in Slice 6.2).
+            SegmentedColumn(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                content = listOf {
+                    SegmentedListItem(
+                        onClick = {},
+                        headlineContent = { Text(stringResource(id = R.string.blindcast_settings_todo_title)) },
+                        supportingContent = { Text(stringResource(id = R.string.blindcast_settings_todo_subtitle)) },
+                    )
+                }
+            )
             SegmentedColumn(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 content = listOf {

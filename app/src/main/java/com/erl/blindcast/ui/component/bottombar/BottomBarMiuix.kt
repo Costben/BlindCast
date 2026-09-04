@@ -1,6 +1,5 @@
 package com.erl.blindcast.ui.component.bottombar
 
-import androidx.annotation.StringRes
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.WindowInsets
@@ -8,19 +7,14 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Cottage
-import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.erl.blindcast.R
 import com.erl.blindcast.ui.LocalMainPagerState
 import com.erl.blindcast.ui.component.FloatingBottomBar
 import com.erl.blindcast.ui.component.FloatingBottomBarItem
@@ -49,7 +43,7 @@ fun BottomBarMiuix(
     val items = BottomBarDestination.entries.map { destination ->
         NavigationItem(
             label = stringResource(destination.label),
-            icon = destination.icon,
+            icon = destination.miuixIcon,
         )
     }
     if (!enableFloatingBottomBar) {
@@ -114,10 +108,3 @@ fun BottomBarMiuix(
     }
 }
 
-enum class BottomBarDestination(
-    @get:StringRes val label: Int,
-    val icon: ImageVector,
-) {
-    Home(R.string.home, Icons.Rounded.Cottage),
-    Setting(R.string.settings, Icons.Rounded.Settings)
-}

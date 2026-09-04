@@ -62,6 +62,29 @@ fun HomePagerMaterial(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Slice 1.2 BlindCast skeleton (real service binding lands in Slice 6.1).
+            TonalCard {
+                Column(modifier = Modifier.padding(24.dp)) {
+                    Text(text = stringResource(R.string.blindcast_home_status_title), style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = stringResource(R.string.blindcast_home_status_subtitle),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            }
+            TonalCard {
+                Column(modifier = Modifier.padding(24.dp)) {
+                    Text(text = stringResource(R.string.blindcast_home_action_title), style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = stringResource(R.string.blindcast_home_action_subtitle),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            }
             // Keep the theme settings preview in sync whenever this home layout changes.
             WarningCard(stringResource(R.string.home_sample_notification))
             PermissionCard(permissionState, actions.onPermissionsClick)

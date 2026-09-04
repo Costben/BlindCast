@@ -8,11 +8,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
@@ -20,7 +15,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import com.erl.blindcast.R
 import com.erl.blindcast.ui.LocalMainPagerState
 
 @Composable
@@ -29,10 +23,7 @@ fun NavigationRailMaterial(
 ) {
     val mainPagerState = LocalMainPagerState.current
 
-    val items = listOf(
-        Triple(R.string.home, Icons.Filled.Home, Icons.Outlined.Home),
-        Triple(R.string.settings, Icons.Filled.Settings, Icons.Outlined.Settings)
-    )
+    val items = BottomBarDestination.entries
 
     NavigationRail(
         modifier = modifier.fillMaxHeight(),
@@ -41,7 +32,7 @@ fun NavigationRailMaterial(
         )
     ) {
         Spacer(Modifier.weight(1f))
-        items.forEachIndexed { index, (label, selectedIcon, unselectedIcon) ->
+        items.forEachIndexed { index, destination ->
             val selected = mainPagerState.selectedPage == index
             NavigationRailItem(
                 selected = selected,
@@ -52,11 +43,11 @@ fun NavigationRailMaterial(
                 },
                 icon = {
                     Icon(
-                        if (selected) selectedIcon else unselectedIcon,
-                        stringResource(label)
+                        if (selected) destination.materialSelectedIcon else destination.materialUnselectedIcon,
+                        stringResource(destination.label)
                     )
                 },
-                label = { Text(stringResource(label)) }
+                label = { Text(stringResource(destination.label)) }
             )
         }
         Spacer(Modifier.weight(1f))

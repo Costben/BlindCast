@@ -110,7 +110,7 @@ updated: 2026-09-05
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：成功构建出包名为 `com.erl.blindcast` 的初始空 APK。
 
-- [ ] **Slice 1.2** · implement · 改造 BottomBar 导航与 3 大页面 Miuix 骨架
+- [x] **Slice 1.2** · implement · 改造 BottomBar 导航与 3 大页面 Miuix 骨架
   - **范围**：修改 `BottomBarDestination` 为 `Home`, `HomeAssistant`, `Settings` 3 项；调整 `MainActivity.kt` 承载 `HorizontalPager(pageCount = 3)`；实现 3 个页面的基本 Miuix TopAppBar 与卡片容器。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：启动应用后可通过 Miuix 底部悬浮栏与手势平滑切换 3 个页面。
@@ -197,3 +197,4 @@ updated: 2026-09-05
 - 2026-09-05: 需求与技术规格完成 Relentless 逐分支推演锁定，正式创建本执行看板。
 - 2026-09-05: 通信总线目录 `.paseo/bus/` 初始化完毕，等待主控派发 Slice 1.1。
 - 2026-09-05: Slice 1.1 验收通过（assembleDebug SUCCESS，包名 com.erl.blindcast），已提交，派发 Slice 1.2。
+- 2026-09-05: Slice 1.2 验收通过（底栏收敛3项 + HorizontalPager(3)双向同步，assembleDebug SUCCESS），已提交，派发 Slice 2.1。

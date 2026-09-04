@@ -95,6 +95,11 @@ fun HomePagerMiuix(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        // Slice 1.2 BlindCast skeleton (real service binding lands in Slice 6.1).
+                        BlindCastHeroPlaceholder()
+                        BlindCastActionsPlaceholder()
+                        BlindCastLanPlaceholder()
+                        BlindCastHwPlaceholder()
                         // Keep the theme settings preview in sync whenever this home layout changes.
                         WarningCard(stringResource(R.string.home_sample_notification))
                         PermissionCardMiuix(permissionState, actions.onPermissionsClick)
@@ -105,6 +110,71 @@ fun HomePagerMiuix(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun BlindCastHeroPlaceholder() {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.blindcast_home_status_title),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = colorScheme.onSurface,
+            )
+            Text(
+                text = stringResource(R.string.blindcast_home_status_subtitle),
+                fontSize = 14.sp,
+                color = colorScheme.onSurfaceVariantSummary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun BlindCastActionsPlaceholder() {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        BasicComponent(
+            title = stringResource(R.string.blindcast_home_action_start),
+            summary = stringResource(R.string.blindcast_home_action_subtitle),
+            // TODO(Slice 6.1): wire to PowerController.setDisplayPower(false).
+            onClick = {},
+        )
+        BasicComponent(
+            title = stringResource(R.string.blindcast_home_action_stop),
+            summary = stringResource(R.string.blindcast_home_action_subtitle),
+            // TODO(Slice 6.1): wire to PowerController.setDisplayPower(true).
+            onClick = {},
+        )
+    }
+}
+
+@Composable
+private fun BlindCastLanPlaceholder() {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        BasicComponent(
+            title = stringResource(R.string.blindcast_home_lan_title),
+            summary = stringResource(R.string.blindcast_home_lan_subtitle),
+            // TODO(Slice 6.1): show LAN URL + QR with embedded token.
+            onClick = {},
+        )
+    }
+}
+
+@Composable
+private fun BlindCastHwPlaceholder() {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        BasicComponent(
+            title = stringResource(R.string.blindcast_home_hw_title),
+            summary = stringResource(R.string.blindcast_home_hw_subtitle),
+            onClick = {},
+        )
     }
 }
 
