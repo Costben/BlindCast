@@ -154,7 +154,7 @@ updated: 2026-09-05
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：局域网设备可通过 HTTP/WS 建立稳定鉴权连接。
 
-- [ ] **Slice 4.2** · implement · assets/web 单页极客控制台与全功能悬浮栏
+- [x] **Slice 4.2** · implement · assets/web 单页极客控制台与全功能悬浮栏
   - **范围**：编写单文件 Web 前端；基于 WebCodecs (`VideoDecoder`) + Web Audio API 实现硬解 Canvas 渲染；实现全功能半透明悬浮控制栏（虚拟按键、音量、息屏/亮屏、静音、全屏、Token 输入框）。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：现代暗黑风界面，局域网连接后延迟 < 50ms，悬浮栏操作精准响应。
@@ -204,3 +204,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 3.2 验收通过（AudioCaptureEngine双路径内录 + AudioGate总闸，强制重编 SUCCESS），已提交，派发 Slice 3.3。
 - 2026-09-05: Slice 3.3 验收通过（InputManager注入三件套，强制重编 SUCCESS零警告），已提交，派发 Slice 4.1。
 - 2026-09-05: Slice 4.1 验收通过（ServerSocket HTTP+RFC6455同端口零依赖，8文件，强制重编 SUCCESS），已提交，派发 Slice 4.2。
+- 2026-09-05: Slice 4.2 验收通过（单文件30KB控制台，APK含assets/web/index.html），已提交，派发 Slice 5.1。
