@@ -50,6 +50,7 @@ import top.yukonga.miuix.kmp.blur.LayerBackdrop
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Link
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -95,11 +96,20 @@ fun HomePagerMiuix(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        // Slice 1.2 BlindCast skeleton (real service binding lands in Slice 6.1).
-                        BlindCastHeroPlaceholder()
-                        BlindCastActionsPlaceholder()
-                        BlindCastLanPlaceholder()
-                        BlindCastHwPlaceholder()
+                        // Slice 6.1: Hero 运行双态 + 快捷操作 + 局域网二维码 + 硬件监控（全部绑定真实状态）。
+                        BlindCastHeroCard(service = state.service)
+                        BlindCastActionsCard(
+                            service = state.service,
+                            onBlackout = actions.onBlackout,
+                            onRestore = actions.onRestore,
+                            onToggleService = actions.onToggleService,
+                        )
+                        BlindCastLanCard(
+                            lan = state.lan,
+                            onCopyLanUrl = actions.onCopyLanUrl,
+                            onOpenUrl = actions.onOpenUrl,
+                        )
+                        BlindCastHwCard(hw = state.hw)
                         // Keep the theme settings preview in sync whenever this home layout changes.
                         WarningCard(stringResource(R.string.home_sample_notification))
                         PermissionCardMiuix(permissionState, actions.onPermissionsClick)
@@ -114,65 +124,229 @@ fun HomePagerMiuix(
 }
 
 @Composable
-private fun BlindCastHeroPlaceholder() {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
+private fun BlindCastHeroCard(service: ServiceCardState) {
+    val running = service.isRunning
+    val containerColor = if (running) Color(0xFFDFFAE4) else Color(0xFFE8E8E8)
+    val textColor = Color(0xFF111111)
+    val iconColor = if (running) Color(0xFF36D167) else Color(0xFF9E9E9E)
+    val title = if (running) {
+        stringResource(R.string.blindcast_home_running_title)
+    } else {
+        stringResource(R.string.blindcast_home_stopped_title)
+    }
+    val subtitle = if (running && service.lanIp.isNotBlank()) {
+        "http://${service.lanIp}:${service.port}"
+    } else {
+        stringResource(R.string.blindcast_home_stopped_subtitle)
+    }
+    val tokenStr = stringResource(
+        if (service.tokenProtected) R.string.blindcast_home_token_on
+        else R.string.blindcast_home_token_off,
+    )
+    val stats = if (running && service.fps >= 0 && service.bitrateMbps >= 0) {
+        stringResource(
+            R.string.blindcast_home_stats,
+            service.fps,
+            service.bitrateMbps,
+            service.clients,
+            tokenStr,
+        )
+    } else {
+        stringResource(R.string.blindcast_home_stats_idle, service.clients, tokenStr)
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.defaultColors(color = containerColor),
+    ) {
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+                .height(164.dp)
         ) {
-            Text(
-                text = stringResource(R.string.blindcast_home_status_title),
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = colorScheme.onSurface,
-            )
-            Text(
-                text = stringResource(R.string.blindcast_home_status_subtitle),
-                fontSize = 14.sp,
-                color = colorScheme.onSurfaceVariantSummary,
-            )
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .offset(x = 70.dp, y = 44.dp),
+                contentAlignment = Alignment.BottomEnd,
+            ) {
+                Icon(
+                    modifier = Modifier.size(182.dp),
+                    imageVector =
+                        if (running) Icons.Rounded.CheckCircleOutline else Icons.Rounded.Cancel,
+                    tint = iconColor,
+                    contentDescription = null,
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = 24.dp, top = 28.dp, end = 148.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = title,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = textColor,
+                    )
+                    Text(
+                        text = subtitle,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = textColor.copy(alpha = 0.72f),
+                    )
+                }
+                Text(
+                    text = stats,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = textColor.copy(alpha = 0.78f),
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun BlindCastActionsPlaceholder() {
+private fun BlindCastActionsCard(
+    service: ServiceCardState,
+    onBlackout: () -> Unit,
+    onRestore: () -> Unit,
+    onToggleService: (Boolean) -> Unit,
+) {
+    val screenSummary = if (service.blackedOut) {
+        stringResource(R.string.blindcast_home_screen_off)
+    } else {
+        stringResource(R.string.blindcast_home_screen_on)
+    }
     Card(modifier = Modifier.fillMaxWidth()) {
         BasicComponent(
             title = stringResource(R.string.blindcast_home_action_start),
-            summary = stringResource(R.string.blindcast_home_action_subtitle),
-            // TODO(Slice 6.1): wire to PowerController.setDisplayPower(false).
-            onClick = {},
+            summary = stringResource(R.string.blindcast_home_blackout_summary),
+            onClick = onBlackout,
         )
         BasicComponent(
             title = stringResource(R.string.blindcast_home_action_stop),
-            summary = stringResource(R.string.blindcast_home_action_subtitle),
-            // TODO(Slice 6.1): wire to PowerController.setDisplayPower(true).
-            onClick = {},
+            summary = "${stringResource(R.string.blindcast_home_restore_summary)} · $screenSummary",
+            onClick = onRestore,
+        )
+        SwitchPreference(
+            title = stringResource(R.string.blindcast_home_service_switch),
+            summary = stringResource(R.string.blindcast_home_service_switch_summary),
+            checked = service.isRunning,
+            onCheckedChange = onToggleService,
         )
     }
 }
 
 @Composable
-private fun BlindCastLanPlaceholder() {
+private fun BlindCastLanCard(
+    lan: LanState,
+    onCopyLanUrl: (String) -> Unit,
+    onOpenUrl: (String) -> Unit,
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        BasicComponent(
-            title = stringResource(R.string.blindcast_home_lan_title),
-            summary = stringResource(R.string.blindcast_home_lan_subtitle),
-            // TODO(Slice 6.1): show LAN URL + QR with embedded token.
-            onClick = {},
-        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            BasicComponent(
+                title = stringResource(R.string.blindcast_home_lan_url_title),
+                summary = lan.urlWithToken.ifBlank {
+                    stringResource(R.string.blindcast_home_no_ip)
+                },
+                onClick = {},
+            )
+            BasicComponent(
+                title = stringResource(R.string.blindcast_home_copy_link),
+                summary = lan.urlWithToken.ifBlank {
+                    stringResource(R.string.blindcast_home_no_ip)
+                },
+                onClick = { onCopyLanUrl(lan.urlWithToken) },
+            )
+            BasicComponent(
+                title = stringResource(R.string.blindcast_home_open_browser),
+                summary = lan.url.ifBlank {
+                    stringResource(R.string.blindcast_home_no_ip)
+                },
+                onClick = { if (lan.url.isNotBlank()) onOpenUrl(lan.urlWithToken.ifBlank { lan.url }) },
+            )
+            if (lan.hasIp && lan.urlWithToken.isNotBlank()) {
+                QrCodeImage(
+                    content = lan.urlWithToken,
+                    modifier = Modifier.padding(top = 12.dp),
+                    fallback = {
+                        Text(
+                            text = stringResource(R.string.blindcast_home_qr_title),
+                            fontSize = 13.sp,
+                            color = colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.padding(16.dp),
+                        )
+                    },
+                )
+                Text(
+                    text = stringResource(R.string.blindcast_home_qr_title),
+                    fontSize = 13.sp,
+                    color = colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 8.dp),
+                )
+            } else {
+                Text(
+                    text = stringResource(R.string.blindcast_home_no_ip),
+                    fontSize = 13.sp,
+                    color = colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(16.dp),
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun BlindCastHwPlaceholder() {
+private fun BlindCastHwCard(hw: HwState) {
+    val unknown = stringResource(R.string.blindcast_home_hw_unknown)
+    val batteryText = if (hw.batteryPercent < 0) {
+        unknown
+    } else {
+        val chargeStr = stringResource(
+            if (hw.charging) R.string.blindcast_home_charging
+            else R.string.blindcast_home_not_charging,
+        )
+        "${hw.batteryPercent}% · $chargeStr"
+    }
+    val tempText = if (hw.temperatureC.isNaN()) {
+        unknown
+    } else {
+        "%.1f°C".format(hw.temperatureC)
+    }
+    val ramText = if (hw.availRamMb < 0 || hw.totalRamMb < 0) {
+        unknown
+    } else {
+        stringResource(R.string.blindcast_home_hw_ram_value, hw.availRamMb, hw.totalRamMb)
+    }
+    val wifiText = if (hw.wifiLinkMbps < 0) unknown else "${hw.wifiLinkMbps} Mbps"
     Card(modifier = Modifier.fillMaxWidth()) {
         BasicComponent(
-            title = stringResource(R.string.blindcast_home_hw_title),
-            summary = stringResource(R.string.blindcast_home_hw_subtitle),
+            title = stringResource(R.string.blindcast_home_hw_battery),
+            summary = batteryText,
+            onClick = {},
+        )
+        BasicComponent(
+            title = stringResource(R.string.blindcast_home_hw_temp),
+            summary = tempText,
+            onClick = {},
+        )
+        BasicComponent(
+            title = stringResource(R.string.blindcast_home_hw_ram),
+            summary = ramText,
+            onClick = {},
+        )
+        BasicComponent(
+            title = stringResource(R.string.blindcast_home_hw_wifi),
+            summary = wifiText,
             onClick = {},
         )
     }

@@ -175,7 +175,7 @@ updated: 2026-09-05
 ---
 
 ### Phase 6: Miuix 界面全要素打通与整体验收
-- [ ] **Slice 6.1** · implement · HomeScreen 业务全要素绑定与二维码
+- [x] **Slice 6.1** · implement · HomeScreen 业务全要素绑定与二维码
   - **范围**：将状态大卡片与后台服务真实状态绑定；实现「立即息屏挂机」与「点亮屏幕」动作；生成包含 Token 的局域网直连二维码与复制按钮。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：主页数据实时刷新，扫码/复制链接一键直达 Web 监控。
@@ -207,3 +207,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 4.2 验收通过（单文件30KB控制台，APK含assets/web/index.html），已提交，派发 Slice 5.1。
 - 2026-09-05: Slice 5.1 验收通过（Paho 1.2.5 + Ha三件套Discovery，强制重编 SUCCESS），已提交，派发 Slice 5.2。
 - 2026-09-05: Slice 5.2 验收通过（CommandHandler双向对齐 + SensorReporter + startHaStack，强制重编 SUCCESS），已提交，派发 Slice 6.1。
+- 2026-09-05: Slice 6.1 验收通过（前台服务 + Home四卡片真实绑定 + zxing二维码，强制重编 SUCCESS），已提交，派发 Slice 6.2。

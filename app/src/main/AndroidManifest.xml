@@ -20,6 +20,9 @@
     <!-- 后续常驻前台服务（Slice 4.1/6.1）前置：仅声明，暂不启用任何 service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Slice 6.1 常驻前台服务：PARTIAL_WAKE_LOCK（CPU 常醒）+ WiFi 状态读取（局域网 IP / 链路速率） -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- Slice 3.2 前台音频抓取服务类型前置：仅声明，暂不启用任何 service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
@@ -57,6 +60,12 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/filepaths" />
         </provider>
+
+        <!-- Slice 6.1 常驻串流前台服务：connectedDevice 类型（局域网投屏服务，无需 MediaProjection token 前置） -->
+        <service
+            android:name=".core.service.BlindCastForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
     </application>
 

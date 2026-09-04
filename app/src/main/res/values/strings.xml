@@ -37,6 +37,36 @@
     <string name="blindcast_home_lan_subtitle" translatable="false">二维码与复制链接，Slice 6.1 生成真实地址</string>
     <string name="blindcast_home_hw_title" translatable="false">硬件状态（骨架占位）</string>
     <string name="blindcast_home_hw_subtitle" translatable="false">电量 / 温度 / 内存 / WiFi，Slice 6.1 实时刷新</string>
+    <!-- BlindCast Slice 6.1: Home 全要素绑定文案 -->
+    <string name="blindcast_service_channel" translatable="false">串流服务</string>
+    <string name="blindcast_service_running" translatable="false">BlindCast 串流服务运行中</string>
+    <string name="blindcast_home_running_title" translatable="false">挂机服务运行中</string>
+    <string name="blindcast_home_stopped_title" translatable="false">服务已停止</string>
+    <string name="blindcast_home_stopped_subtitle" translatable="false">点击下方开关启动挂机服务</string>
+    <string name="blindcast_home_stats" translatable="false">帧率 %1$d FPS | 码率 %2$.1f Mbps | 在线 %3$d 人 | Token保护：%4$s</string>
+    <string name="blindcast_home_stats_idle" translatable="false">帧率 — | 码率 — | 在线 %1$d 人 | Token保护：%2$s</string>
+    <string name="blindcast_home_token_on" translatable="false">开启</string>
+    <string name="blindcast_home_token_off" translatable="false">关闭</string>
+    <string name="blindcast_home_service_switch" translatable="false">串流后台总服务</string>
+    <string name="blindcast_home_service_switch_summary" translatable="false">一键启动 / 关闭录屏编码与 HTTP 监听服务</string>
+    <string name="blindcast_home_blackout_summary" translatable="false">彻底关闭物理屏幕，进入极致省电无感前台挂机</string>
+    <string name="blindcast_home_restore_summary" translatable="false">恢复屏幕显示（亦支持按两次物理电源键唤醒）</string>
+    <string name="blindcast_home_screen_off" translatable="false">屏幕：已熄屏</string>
+    <string name="blindcast_home_screen_on" translatable="false">屏幕：已点亮</string>
+    <string name="blindcast_home_lan_url_title" translatable="false">Web 访问地址（含 Token）</string>
+    <string name="blindcast_home_copy_link" translatable="false">复制链接（已带Token）</string>
+    <string name="blindcast_home_copied" translatable="false">已复制到剪贴板</string>
+    <string name="blindcast_home_open_browser" translatable="false">在本机浏览器打开</string>
+    <string name="blindcast_home_no_ip" translatable="false">未连接到局域网</string>
+    <string name="blindcast_home_qr_title" translatable="false">扫码直连（局域网内平板 / 笔记本）</string>
+    <string name="blindcast_home_hw_battery" translatable="false">电池电量</string>
+    <string name="blindcast_home_charging" translatable="false">充电中</string>
+    <string name="blindcast_home_not_charging" translatable="false">未充电</string>
+    <string name="blindcast_home_hw_temp" translatable="false">电池温度</string>
+    <string name="blindcast_home_hw_ram" translatable="false">运行内存</string>
+    <string name="blindcast_home_hw_ram_value" translatable="false">可用 %1$d MB / 共 %2$d MB</string>
+    <string name="blindcast_home_hw_wifi" translatable="false">WiFi 链路速率</string>
+    <string name="blindcast_home_hw_unknown" translatable="false">—</string>
     <string name="ha_status_title" translatable="false">HA 连接状态（骨架占位）</string>
     <string name="ha_status_subtitle" translatable="false">未配置 — Slice 5.x 接入 MQTT 真实状态</string>
     <string name="ha_config_title" translatable="false">MQTT Broker 配置（骨架占位）</string>

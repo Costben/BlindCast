@@ -1,16 +1,20 @@
 package com.erl.blindcast.ui.screen.home
 
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.Dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.erl.blindcast.R
 import com.erl.blindcast.permission.PermissionManager
 import com.erl.blindcast.ui.LocalUiMode
 import com.erl.blindcast.ui.UiMode
@@ -28,6 +32,7 @@ fun HomePager(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
     val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val permissionManager = remember(context) { PermissionManager(context) }
     val permissionState by permissionManager.state.collectAsStateWithLifecycle()
 
@@ -47,6 +52,19 @@ fun HomePager(
     val actions = HomeActions(
         onPermissionsClick = { navigator.push(Route.Permissions) },
         onOpenUrl = uriHandler::openUri,
+        onToggleService = viewModel::toggleService,
+        onBlackout = viewModel::blackoutNow,
+        onRestore = viewModel::restoreScreen,
+        onCopyLanUrl = { url ->
+            if (url.isNotBlank()) {
+                clipboardManager.setText(AnnotatedString(url))
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.blindcast_home_copied),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        },
     )
 
     when (LocalUiMode.current) {

@@ -146,6 +146,9 @@ dependencies {
 
     implementation(libs.paho.mqttv3)
 
+    // Slice 6.1 Home 二维码：纯 Java QR 编码（无 Android 依赖，轻量 ~600KB）。
+    implementation(libs.zxing.core)
+
     implementation(libs.material.kolor)
 
 }
