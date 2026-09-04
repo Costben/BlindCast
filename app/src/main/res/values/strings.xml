@@ -67,13 +67,71 @@
     <string name="blindcast_home_hw_ram_value" translatable="false">可用 %1$d MB / 共 %2$d MB</string>
     <string name="blindcast_home_hw_wifi" translatable="false">WiFi 链路速率</string>
     <string name="blindcast_home_hw_unknown" translatable="false">—</string>
-    <string name="ha_status_title" translatable="false">HA 连接状态（骨架占位）</string>
-    <string name="ha_status_subtitle" translatable="false">未配置 — Slice 5.x 接入 MQTT 真实状态</string>
-    <string name="ha_config_title" translatable="false">MQTT Broker 配置（骨架占位）</string>
-    <string name="ha_config_subtitle" translatable="false">地址 / 端口 / 用户名，Slice 6.2 持久化保存</string>
-    <string name="ha_entities_title" translatable="false">已暴露实体（骨架占位）</string>
-    <string name="ha_entities_subtitle" translatable="false">switch.blindcast_screen / sensors，Slice 5.x 上报</string>
-    <string name="ha_action_test" translatable="false">测试连接并上报</string>
+    <string name="ha_status_title" translatable="false">HA 连接状态</string>
+    <string name="ha_status_subtitle" translatable="false">MQTT Discovery 自动发现状态</string>
+    <string name="ha_status_connected" translatable="false">已连接</string>
+    <string name="ha_status_unconfigured" translatable="false">未配置</string>
+    <string name="ha_status_connecting" translatable="false">重连中</string>
+    <string name="ha_status_failed" translatable="false">连接失败，后台重连中</string>
+    <string name="ha_status_need_host" translatable="false">请先填写 MQTT Broker 地址</string>
+    <string name="ha_config_title" translatable="false">MQTT Broker 配置</string>
+    <string name="ha_config_subtitle" translatable="false">保存后点测试连接，自动上报 Discovery</string>
+    <string name="ha_enable_title" translatable="false">启用 Home Assistant 联动</string>
+    <string name="ha_enable_summary" translatable="false">关闭即断开 MQTT 并下线可用性</string>
+    <string name="ha_host_title" translatable="false">MQTT Broker 地址</string>
+    <string name="ha_host_hint" translatable="false">如 192.168.1.50</string>
+    <string name="ha_port_title" translatable="false">MQTT 端口</string>
+    <string name="ha_user_title" translatable="false">用户名（可选）</string>
+    <string name="ha_user_anonymous" translatable="false">匿名</string>
+    <string name="ha_pass_title" translatable="false">密码（可选）</string>
+    <string name="ha_pass_unset" translatable="false">未设置</string>
+    <string name="ha_pass_set" translatable="false">已设置</string>
+    <string name="ha_entities_title" translatable="false">已暴露实体清单</string>
+    <string name="ha_entities_subtitle" translatable="false">测试连接成功后自动注册到 HA</string>
+    <string name="ha_entity_switch" translatable="false">switch.blindcast_screen</string>
+    <string name="ha_entity_switch_summary" translatable="false">屏幕电源开关：ON=息屏挂机中，OFF=已点亮</string>
+    <string name="ha_entity_url" translatable="false">configuration_url</string>
+    <string name="ha_entity_url_summary" translatable="false">设备卡片直达 Web 监控（已按 Token 免密拼接）</string>
+    <string name="ha_entity_battery" translatable="false">sensor.blindcast_battery</string>
+    <string name="ha_entity_battery_summary" translatable="false">电池电量（%，60s 上报）</string>
+    <string name="ha_entity_temp" translatable="false">sensor.blindcast_temperature</string>
+    <string name="ha_entity_temp_summary" translatable="false">电池温度（°C，60s 上报）</string>
+    <string name="ha_action_test" translatable="false">测试连接并重新上报 Discovery 实体</string>
+    <string name="ha_action_testing" translatable="false">连接中…</string>
+    <string name="ha_rest_title" translatable="false">免 MQTT 备选方案</string>
+    <string name="ha_rest_subtitle" translatable="false">无 MQTT 时手动复制进 configuration.yaml</string>
+    <string name="ha_rest_copy" translatable="false">一键复制 HA configuration.yaml REST 配置</string>
+    <!-- BlindCast Slice 6.2: Settings 全量绑定文案 -->
+    <string name="settings_quality_title" translatable="false">串流画质与编码</string>
+    <string name="settings_resolution" translatable="false">画面分辨率</string>
+    <string name="settings_resolution_summary" translatable="false">720P 省流 / 1080P 清晰 / 原生满血</string>
+    <string name="settings_fps" translatable="false">目标帧率</string>
+    <string name="settings_fps_summary" translatable="false">30 FPS 挂机省流 / 60 FPS 极速流畅</string>
+    <string name="settings_bitrate" translatable="false">视频码率</string>
+    <string name="settings_bitrate_summary" translatable="false">2~8 Mbps，运行中修改即时重配编码器</string>
+    <string name="settings_audio" translatable="false">音频传输开关</string>
+    <string name="settings_audio_summary" translatable="false">关闭后零编码零流量（App 与 Web 端同步）</string>
+    <string name="settings_security_title" translatable="false">安全与访问密码</string>
+    <string name="settings_token" translatable="false">访问密码（Token）</string>
+    <string name="settings_token_summary" translatable="false">留空免密直通；设置后网页端需输入 Token</string>
+    <string name="settings_token_unset" translatable="false">免密直通</string>
+    <string name="settings_port" translatable="false">HTTP 服务监听端口</string>
+    <string name="settings_restart_hint" translatable="false">修改后需重启串流服务生效</string>
+    <string name="settings_scrcpy_title" translatable="false">scrcpy 远程控制</string>
+    <string name="settings_touch" translatable="false">启用网页端反向触控</string>
+    <string name="settings_touch_summary" translatable="false">总闸：允许鼠标点击 / 滑动手机</string>
+    <string name="settings_right_back" translatable="false">鼠标右键映射为返回键（Back）</string>
+    <string name="settings_right_back_summary" translatable="false">关闭后右键点击不再注入返回键</string>
+    <string name="settings_keyboard" translatable="false">电脑键盘输入直接注入手机</string>
+    <string name="settings_keyboard_summary" translatable="false">关闭后 key / text 指令一律拒绝</string>
+    <string name="settings_blackout_title" translatable="false">息屏与保活策略</string>
+    <string name="settings_blackout_mode" translatable="false">息屏模式</string>
+    <string name="settings_blackout_hw" translatable="false">优先硬件物理熄屏</string>
+    <string name="settings_blackout_overlay" translatable="false">降级全黑防误触遮罩</string>
+    <string name="settings_blackout_summary" translatable="false">遮罩为免提权降级预留，当前仍走硬件通道</string>
+    <string name="settings_keepalive" translatable="false">挂机常亮锁（WakeLock + 4s 喂狗防休眠）</string>
+    <string name="settings_keepalive_summary" translatable="false">关闭后息屏可能进入 Doze 导致断流</string>
+    <string name="settings_appearance_title" translatable="false">外观与关于</string>
     <string name="blindcast_settings_todo_title" translatable="false">串流与安全设置（骨架占位）</string>
     <string name="blindcast_settings_todo_subtitle" translatable="false">画质 / Token / 息屏策略，Slice 6.2 全量绑定</string>
     <string name="about">About</string>

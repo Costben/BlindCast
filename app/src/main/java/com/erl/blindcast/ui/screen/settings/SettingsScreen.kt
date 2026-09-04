@@ -32,6 +32,17 @@ fun SettingPager(
             viewModel.setUiMode(if (index == 0) UiMode.Miuix.value else UiMode.Material.value)
         },
         onOpenAbout = { navigator.push(Route.About) },
+        onSetResolutionIndex = viewModel::setResolutionIndex,
+        onSetFpsIndex = viewModel::setFpsIndex,
+        onSetBitrateIndex = viewModel::setBitrateIndex,
+        onSetAudioEnabled = viewModel::setAudioEnabled,
+        onSetToken = viewModel::setStreamToken,
+        onSetServerPort = viewModel::setServerPort,
+        onSetTouchEnabled = viewModel::setTouchEnabled,
+        onSetRightBackEnabled = viewModel::setRightBackEnabled,
+        onSetKeyboardEnabled = viewModel::setKeyboardEnabled,
+        onSetBlackoutIndex = viewModel::setBlackoutIndex,
+        onSetKeepAlive = viewModel::setKeepAliveEnabled,
     )
 
     when (LocalUiMode.current) {

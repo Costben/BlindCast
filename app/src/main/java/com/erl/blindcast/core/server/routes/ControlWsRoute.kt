@@ -1,6 +1,7 @@
 package com.erl.blindcast.core.server.routes
 
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
+import com.erl.blindcast.core.scrcpy.ScrcpyGate
 import com.erl.blindcast.core.scrcpy.TouchInjector
 import org.json.JSONObject
 import java.net.SocketTimeoutException
@@ -85,19 +86,31 @@ object ControlWsRoute {
         when (json.optString("type", "")) {
             "down", "move", "up" -> handleTouch(conn, json)
             "key" -> {
-                val keyCode = json.optInt("keycode", Int.MIN_VALUE)
-                if (keyCode == Int.MIN_VALUE) {
-                    reply(conn, false, "key", "missing keycode")
+                if (!ScrcpyGate.isTouchEnabled) {
+                    reply(conn, false, "key", "touch disabled")
+                } else if (!ScrcpyGate.isKeyboardEnabled) {
+                    reply(conn, false, "key", "keyboard disabled")
                 } else {
-                    val ok = runCatching { TouchInjector.injectKey(keyCode) }.getOrDefault(false)
-                    reply(conn, ok, "key", if (ok) null else lastTouchError())
+                    val keyCode = json.optInt("keycode", Int.MIN_VALUE)
+                    if (keyCode == Int.MIN_VALUE) {
+                        reply(conn, false, "key", "missing keycode")
+                    } else {
+                        val ok = runCatching { TouchInjector.injectKey(keyCode) }.getOrDefault(false)
+                        reply(conn, ok, "key", if (ok) null else lastTouchError())
+                    }
                 }
             }
             "click" -> handleClick(conn, json)
             "text" -> {
-                val text = json.optString("text", "")
-                val ok = runCatching { TouchInjector.injectText(text) }.getOrDefault(false)
-                reply(conn, ok, "text", if (ok) null else lastTouchError())
+                if (!ScrcpyGate.isTouchEnabled) {
+                    reply(conn, false, "text", "touch disabled")
+                } else if (!ScrcpyGate.isKeyboardEnabled) {
+                    reply(conn, false, "text", "keyboard disabled")
+                } else {
+                    val text = json.optString("text", "")
+                    val ok = runCatching { TouchInjector.injectText(text) }.getOrDefault(false)
+                    reply(conn, ok, "text", if (ok) null else lastTouchError())
+                }
             }
             "audio" -> {
                 if (!json.has("enabled")) {
@@ -114,6 +127,10 @@ object ControlWsRoute {
     }
 
     private fun handleTouch(conn: WsConnection, json: JSONObject) {
+        if (!ScrcpyGate.isTouchEnabled) {
+            reply(conn, false, json.optString("type", ""), "touch disabled")
+            return
+        }
         val type = json.optString("type", "")
         val x = json.optDouble("x", Double.NaN).toFloat()
         val y = json.optDouble("y", Double.NaN).toFloat()
@@ -132,8 +149,16 @@ object ControlWsRoute {
     }
 
     private fun handleClick(conn: WsConnection, json: JSONObject) {
+        if (!ScrcpyGate.isTouchEnabled) {
+            reply(conn, false, "click", "touch disabled")
+            return
+        }
         when (json.optString("button", "left")) {
             "right" -> {
+                if (!ScrcpyGate.isRightBackEnabled) {
+                    reply(conn, false, "click", "right-back disabled")
+                    return
+                }
                 val ok = runCatching {
                     TouchInjector.injectKey(TouchInjector.MOUSE_BUTTON_RIGHT_KEYCODE)
                 }.getOrDefault(false)

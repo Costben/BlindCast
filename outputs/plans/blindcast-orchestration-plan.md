@@ -180,7 +180,7 @@ updated: 2026-09-05
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：主页数据实时刷新，扫码/复制链接一键直达 Web 监控。
 
-- [ ] **Slice 6.2** · implement · HomeAssistantScreen 与 SettingsScreen 全量配置绑定
+- [x] **Slice 6.2** · implement · HomeAssistantScreen 与 SettingsScreen 全量配置绑定
   - **范围**：完善 HA 页面 MQTT 配置保存与测试连接；完善设置页画质分辨率、音频开关、Token 密码设置与 Miuix 主题切换。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：所有偏好设置持久化并即时生效。
@@ -208,3 +208,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 5.1 验收通过（Paho 1.2.5 + Ha三件套Discovery，强制重编 SUCCESS），已提交，派发 Slice 5.2。
 - 2026-09-05: Slice 5.2 验收通过（CommandHandler双向对齐 + SensorReporter + startHaStack，强制重编 SUCCESS），已提交，派发 Slice 6.1。
 - 2026-09-05: Slice 6.1 验收通过（前台服务 + Home四卡片真实绑定 + zxing二维码，强制重编 SUCCESS），已提交，派发 Slice 6.2。
+- 2026-09-05: Slice 6.2 验收通过（HA页 + 设置页5卡全绑定 + ScrcpyGate，强制重编 SUCCESS），已提交，派发 Slice 6.3。

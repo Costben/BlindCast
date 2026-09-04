@@ -18,6 +18,7 @@ import com.erl.blindcast.core.blackout.EmergencyRecovery
 import com.erl.blindcast.core.blackout.PowerController
 import com.erl.blindcast.core.blackout.UserActivityKeeper
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
+import com.erl.blindcast.core.scrcpy.ScrcpyGate
 import com.erl.blindcast.core.scrcpy.ScreenCaptureEngine
 import com.erl.blindcast.core.server.BlindCastServer
 import com.erl.blindcast.core.server.routes.ControlWsRoute
@@ -192,6 +193,18 @@ class BlindCastForegroundService : Service() {
     private fun bootStack() {
         val port = configuredPort()
         val token = runCatching { prefs().getString(KEY_TOKEN, "") ?: "" }.getOrDefault("")
+        // Slice 6.2 偏好：画质/音频/scrcpy/保活（缺键回退默认，与 SettingsRepositoryImpl 一致）。
+        val p = runCatching { prefs() }.getOrNull()
+        val resolution = p?.getString("video_resolution", "720P")?.takeIf { it in setOf("720P", "1080P", "原生") } ?: "720P"
+        val fps = p?.getInt("video_fps", 30)?.takeIf { it == 30 || it == 60 } ?: 30
+        val bitrateMbps = p?.getInt("video_bitrate_mbps", 4)?.takeIf { it in 2..8 } ?: 4
+        val audioEnabled = p?.getBoolean("audio_enabled", true) ?: true
+        val touch = p?.getBoolean("scrcpy_touch_enabled", true) ?: true
+        val rightBack = p?.getBoolean("scrcpy_right_back_enabled", true) ?: true
+        val keyboard = p?.getBoolean("scrcpy_keyboard_enabled", true) ?: true
+        val keepAlive = p?.getBoolean("keepalive_enabled", true) ?: true
+        runCatching { AudioCaptureEngine.setAudioEnabled(audioEnabled) }
+        runCatching { ScrcpyGate.sync(touch, rightBack, keyboard) }
         BlindCastServer.init(this)
         ScreenCaptureEngine.init(this)
         BlindCastServer.setToken(token)
@@ -200,14 +213,16 @@ class BlindCastForegroundService : Service() {
         if (!serverOk) {
             Log.w(TAG, "BlindCastServer.start($port) failed", BlindCastServer.lastError)
         }
+        val (vw, vh) = when (resolution) {
+            "1080P" -> 1920 to 1080
+            "原生" -> runCatching {
+                val m = resources.displayMetrics
+                if (m.widthPixels > 0 && m.heightPixels > 0) m.widthPixels to m.heightPixels else 1280 to 720
+            }.getOrDefault(1280 to 720)
+            else -> 1280 to 720
+        }
         val videoOk = runCatching {
-            ScreenCaptureEngine.start(
-                this,
-                ScreenCaptureEngine.DEFAULT_WIDTH,
-                ScreenCaptureEngine.DEFAULT_HEIGHT,
-                ScreenCaptureEngine.DEFAULT_BITRATE,
-                ScreenCaptureEngine.DEFAULT_FPS,
-            )
+            ScreenCaptureEngine.start(this, vw, vh, bitrateMbps * 1_000_000, fps)
         }.getOrDefault(false)
         if (!videoOk) {
             Log.w(TAG, "ScreenCaptureEngine.start failed (no privilege?)", ScreenCaptureEngine.lastError)
@@ -216,7 +231,11 @@ class BlindCastForegroundService : Service() {
         if (!audioOk) {
             Log.w(TAG, "AudioCaptureEngine.start failed (no privilege?)", AudioCaptureEngine.lastError)
         }
-        runCatching { UserActivityKeeper.start(this) }
+        if (keepAlive) {
+            runCatching { UserActivityKeeper.start(this) }
+        } else {
+            runCatching { UserActivityKeeper.stop() }
+        }
         _status.value = snapshot()
     }
 

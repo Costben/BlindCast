@@ -2,19 +2,53 @@ package com.erl.blindcast.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import com.erl.blindcast.blindCastApp
+import com.erl.blindcast.core.blackout.UserActivityKeeper
+import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
+import com.erl.blindcast.core.scrcpy.ScrcpyGate
+import com.erl.blindcast.core.scrcpy.ScreenCaptureEngine
 import com.erl.blindcast.data.repository.SettingsRepository
 import com.erl.blindcast.data.repository.SettingsRepositoryImpl
 import com.erl.blindcast.ui.screen.settings.SettingsUiState
 import com.erl.blindcast.ui.theme.ColorMode
 
 class SettingsViewModel(
-    private val repo: SettingsRepository = SettingsRepositoryImpl()
+    private val repo: SettingsRepository,
 ) : ViewModel() {
+
+    /** 显式零参构造：保证 `viewModel()` 反射实例化。 */
+    constructor() : this(SettingsRepositoryImpl())
+
+    companion object {
+        val RESOLUTIONS = listOf("720P", "1080P", "原生")
+        val FPS_OPTIONS = listOf(30, 60)
+        val BITRATE_MBPS_OPTIONS = listOf(2, 3, 4, 5, 6, 7, 8)
+        val BLACKOUT_MODES = listOf("hardware", "overlay")
+
+        fun resolutionToSize(label: String, fallbackW: Int = 1280, fallbackH: Int = 720): Pair<Int, Int> {
+            return when (label) {
+                "1080P" -> 1920 to 1080
+                "720P" -> 1280 to 720
+                else -> {
+                    // 原生：取当前物理分辨率，取不到回退 720P。
+                    runCatching {
+                        val m = blindCastApp.resources.displayMetrics
+                        if (m.widthPixels > 0 && m.heightPixels > 0) {
+                            m.widthPixels to m.heightPixels
+                        } else {
+                            fallbackW to fallbackH
+                        }
+                    }.getOrDefault(fallbackW to fallbackH)
+                }
+            }
+        }
+    }
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
@@ -38,6 +72,22 @@ class SettingsViewModel(
             val colorSpec = repo.colorSpec
             val uiMode = repo.uiMode
 
+            val videoResolution = repo.videoResolution
+            val videoFps = repo.videoFps
+            val videoBitrateMbps = repo.videoBitrateMbps
+            val audioEnabled = repo.audioEnabled
+            val streamToken = repo.streamToken
+            val serverPort = repo.serverPort
+            val touch = repo.scrcpyTouchEnabled
+            val rightBack = repo.scrcpyRightBackEnabled
+            val keyboard = repo.scrcpyKeyboardEnabled
+            val blackoutMode = repo.blackoutMode
+            val keepAlive = repo.keepAliveEnabled
+
+            // 内存门与持久化对齐（幂等，可重复调用）。
+            runCatching { AudioCaptureEngine.setAudioEnabled(audioEnabled) }
+            runCatching { ScrcpyGate.sync(touch, rightBack, keyboard) }
+
             _uiState.update {
                 it.copy(
                     uiMode = uiMode,
@@ -52,10 +102,124 @@ class SettingsViewModel(
                     pageScale = pageScale,
                     colorStyle = colorStyle,
                     colorSpec = colorSpec,
+                    videoResolution = videoResolution,
+                    videoFps = videoFps,
+                    videoBitrateMbps = videoBitrateMbps,
+                    audioEnabled = audioEnabled,
+                    streamToken = streamToken,
+                    serverPort = serverPort,
+                    scrcpyTouchEnabled = touch,
+                    scrcpyRightBackEnabled = rightBack,
+                    scrcpyKeyboardEnabled = keyboard,
+                    blackoutMode = blackoutMode,
+                    keepAliveEnabled = keepAlive,
                 )
             }
         }
     }
+
+    // ------------------------------------------------------------------
+    // 画质卡：持久化 + 运行中即时重配 ScreenCaptureEngine
+    // ------------------------------------------------------------------
+
+    fun setResolutionIndex(index: Int) {
+        val v = RESOLUTIONS.getOrNull(index) ?: return
+        repo.videoResolution = v
+        _uiState.update { it.copy(videoResolution = v) }
+        reconfigureEngine()
+    }
+
+    fun setFpsIndex(index: Int) {
+        val v = FPS_OPTIONS.getOrNull(index) ?: return
+        repo.videoFps = v
+        _uiState.update { it.copy(videoFps = v) }
+        reconfigureEngine()
+    }
+
+    fun setBitrateIndex(index: Int) {
+        val v = BITRATE_MBPS_OPTIONS.getOrNull(index) ?: return
+        repo.videoBitrateMbps = v
+        _uiState.update { it.copy(videoBitrateMbps = v) }
+        reconfigureEngine()
+    }
+
+    fun setAudioEnabled(enabled: Boolean) {
+        repo.audioEnabled = enabled
+        _uiState.update { it.copy(audioEnabled = enabled) }
+        runCatching { AudioCaptureEngine.setAudioEnabled(enabled) }
+    }
+
+    private fun reconfigureEngine() {
+        if (!ScreenCaptureEngine.isRunning) return
+        val s = _uiState.value
+        viewModelScope.launch(Dispatchers.IO) {
+            val (w, h) = resolutionToSize(s.videoResolution)
+            val bitrate = (s.videoBitrateMbps.coerceIn(2, 8)) * 1_000_000
+            val fps = if (s.videoFps == 60) 60 else 30
+            runCatching { ScreenCaptureEngine.start(w, h, bitrate, fps) }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 安全卡：Token/端口持久化（修改提示重启服务生效，不热重启）
+    // ------------------------------------------------------------------
+
+    fun setStreamToken(token: String) {
+        repo.streamToken = token
+        _uiState.update { it.copy(streamToken = token) }
+    }
+
+    fun setServerPort(port: Int) {
+        val v = port.coerceIn(1, 65535)
+        repo.serverPort = v
+        _uiState.update { it.copy(serverPort = v) }
+    }
+
+    // ------------------------------------------------------------------
+    // scrcpy 卡：持久化 + 内存门即时生效
+    // ------------------------------------------------------------------
+
+    fun setTouchEnabled(enabled: Boolean) {
+        repo.scrcpyTouchEnabled = enabled
+        _uiState.update { it.copy(scrcpyTouchEnabled = enabled) }
+        runCatching { ScrcpyGate.setTouchEnabled(enabled) }
+    }
+
+    fun setRightBackEnabled(enabled: Boolean) {
+        repo.scrcpyRightBackEnabled = enabled
+        _uiState.update { it.copy(scrcpyRightBackEnabled = enabled) }
+        runCatching { ScrcpyGate.setRightBackEnabled(enabled) }
+    }
+
+    fun setKeyboardEnabled(enabled: Boolean) {
+        repo.scrcpyKeyboardEnabled = enabled
+        _uiState.update { it.copy(scrcpyKeyboardEnabled = enabled) }
+        runCatching { ScrcpyGate.setKeyboardEnabled(enabled) }
+    }
+
+    // ------------------------------------------------------------------
+    // 息屏保活卡：模式持久化 + 喂狗开关即时启停
+    // ------------------------------------------------------------------
+
+    fun setBlackoutIndex(index: Int) {
+        val v = BLACKOUT_MODES.getOrNull(index) ?: return
+        repo.blackoutMode = v
+        _uiState.update { it.copy(blackoutMode = v) }
+    }
+
+    fun setKeepAliveEnabled(enabled: Boolean) {
+        repo.keepAliveEnabled = enabled
+        _uiState.update { it.copy(keepAliveEnabled = enabled) }
+        if (enabled) {
+            runCatching { UserActivityKeeper.start(blindCastApp.applicationContext) }
+        } else {
+            runCatching { UserActivityKeeper.stop() }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 原有外观/主题绑定（保持不动）
+    // ------------------------------------------------------------------
 
     fun setCheckUpdate(enabled: Boolean) {
         repo.checkUpdate = enabled
@@ -160,5 +324,4 @@ class SettingsViewModel(
         repo.pageScale = scale
         _uiState.update { it.copy(pageScale = scale) }
     }
-
 }
