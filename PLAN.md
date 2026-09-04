@@ -118,7 +118,7 @@ updated: 2026-09-05
 ---
 
 ### Phase 2: 硬件息屏与 4s 喂狗保活引擎 (提取自 MAA-Meow)
-- [ ] **Slice 2.1** · implement · SurfaceControl 物理灭屏底层跨版本反射
+- [x] **Slice 2.1** · implement · SurfaceControl 物理灭屏底层跨版本反射
   - **范围**：在 `core/blackout/` 下构建 `SurfaceControl.java` 与 Android 14+ `DisplayControl.java`，封装 `PowerController.kt` 实现 `setDisplayPower(on: Boolean)`。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：通过提权进程能直接物理切断物理屏幕背光电源与恢复。
@@ -198,3 +198,4 @@ updated: 2026-09-05
 - 2026-09-05: 通信总线目录 `.paseo/bus/` 初始化完毕，等待主控派发 Slice 1.1。
 - 2026-09-05: Slice 1.1 验收通过（assembleDebug SUCCESS，包名 com.erl.blindcast），已提交，派发 Slice 1.2。
 - 2026-09-05: Slice 1.2 验收通过（底栏收敛3项 + HorizontalPager(3)双向同步，assembleDebug SUCCESS），已提交，派发 Slice 2.1。
+- 2026-09-05: Slice 2.1 验收通过（core/blackout三件套，强制重编compileDebugKotlin/Javac SUCCESS），已提交，派发 Slice 2.2。
