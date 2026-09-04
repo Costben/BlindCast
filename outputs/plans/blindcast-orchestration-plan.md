@@ -149,7 +149,7 @@ updated: 2026-09-05
 ---
 
 ### Phase 4: 局域网服务 (0.0.0.0) 与低延迟 Web 播放器
-- [ ] **Slice 4.1** · implement · 嵌入式 HTTP/WebSocket 服务与 Token 鉴权中间件
+- [x] **Slice 4.1** · implement · 嵌入式 HTTP/WebSocket 服务与 Token 鉴权中间件
   - **范围**：构建监听 `0.0.0.0:8888` 的轻量异步服务；实现 `/ws/stream` 视频音频推流、`/ws/control` 键鼠双向通信、`/api/auth` Token 密码校验、`/api/screen` 远程开关屏幕 REST 接口。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：局域网设备可通过 HTTP/WS 建立稳定鉴权连接。
@@ -203,3 +203,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 3.1 验收通过（ScreenCaptureEngine H.264硬编 + NALU通道，强制重编 SUCCESS零警告），已提交，派发 Slice 3.2。
 - 2026-09-05: Slice 3.2 验收通过（AudioCaptureEngine双路径内录 + AudioGate总闸，强制重编 SUCCESS），已提交，派发 Slice 3.3。
 - 2026-09-05: Slice 3.3 验收通过（InputManager注入三件套，强制重编 SUCCESS零警告），已提交，派发 Slice 4.1。
+- 2026-09-05: Slice 4.1 验收通过（ServerSocket HTTP+RFC6455同端口零依赖，8文件，强制重编 SUCCESS），已提交，派发 Slice 4.2。
