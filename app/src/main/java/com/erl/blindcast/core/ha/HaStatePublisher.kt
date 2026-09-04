@@ -1,6 +1,9 @@
 package com.erl.blindcast.core.ha
 
+import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * HA 状态发布门面（Slice 5.1 · MVP.md 二(6) + 第四章 core/ha）。
@@ -112,4 +115,88 @@ object HaStatePublisher {
         qos: Int = 1,
         retained: Boolean = false,
     ): Boolean = client.publish(topic, text, qos = qos, retained = retained)
+
+    // ------------------------------------------------------------------
+    // HA 全栈编排（Slice 5.2）：connect → Discovery → 订阅 command → 传感器上报
+    // ------------------------------------------------------------------
+
+    /**
+     * 一键启动 HA 全栈（Slice 5.2 编排出口）。
+     *
+     * 顺序：`connect（带 offline 遗嘱）→ publishDiscovery → publishBirth →
+     * HaCommandHandler.start（订阅 command）→ 回写当前屏幕 state →
+     * HaSensorReporter.start（定时上报电量/温度）`。
+     *
+     * 失败永不抛崩溃：connect 失败直接 false；其余步骤失败记 log 并继续，
+     * 原因可查 [HaMqttClient.lastError] / [HaCommandHandler.lastError] /
+     * [HaSensorReporter.lastError]。
+     *
+     * 接入点（留给 Slice 6.2 HA 页面）：
+     * ```
+     * // HomeAssistantViewModel 内（禁止主线程直调 connect）：
+     * viewModelScope.launch {
+     *     val ok = HaStatePublisher.startHaStack(ctx, mqttConfig, discoveryCtx)
+     *     // 刷新 UI 状态…
+     * }
+     * // 关闭时：HaStatePublisher.stopHaStack(nodeId)
+     * ```
+     *
+     * @param appContext 任意 Context（传感器侧只持 applicationContext）。
+     * @param mqttConfig Broker 连接配置。
+     * @param discoveryCtx Discovery 上下文（含 nodeId / 前缀 / Web 基址 / Token）。
+     * @param sensorIntervalMs 传感器上报间隔（默认 60s，钳制 5s..10min）。
+     * @param client MQTT 客户端（默认单例）。
+     * @return connect 成功 true；connect 失败 false（后台已按退避自动重试）。
+     */
+    suspend fun startHaStack(
+        appContext: Context,
+        mqttConfig: HaMqttConfig,
+        discoveryCtx: HaDiscoveryPayload.Context,
+        sensorIntervalMs: Long = HaSensorReporter.DEFAULT_INTERVAL_MS,
+        client: HaMqttClient = HaMqttClient,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val nodeId = discoveryCtx.nodeId
+        try {
+            val connected = runCatching {
+                client.connect(config = mqttConfig, will = offlineWill(nodeId), autoReconnect = true)
+            }.getOrDefault(false)
+            if (!connected) {
+                Log.w(TAG, "startHaStack: connect failed, retry in background")
+                return@withContext false
+            }
+            val discOk = runCatching { publishDiscovery(client, discoveryCtx) }.getOrDefault(false)
+            if (!discOk) Log.w(TAG, "startHaStack: discovery partial failure")
+            runCatching { publishBirth(client, nodeId) }
+            runCatching { HaCommandHandler.start(nodeId, client) }
+            // 初始对齐：让 HA 开关一连上即显示手机真实电源态。
+            runCatching { HaCommandHandler.publishCurrentState(client, nodeId) }
+            runCatching { HaSensorReporter.start(appContext, sensorIntervalMs, nodeId, client) }
+            Log.i(TAG, "ha stack started (node=$nodeId)")
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "startHaStack crashed guard", t)
+            false
+        }
+    }
+
+    /**
+     * 一键停止 HA 全栈（幂等，同步速返）：
+     * `HaSensorReporter.stop → HaCommandHandler.stop → publishOfflineGraceful → disconnect`。
+     * 正常退出走此路径（崩溃/断网走 Last-Will，同 topic 语义一致）。永不抛异常。
+     *
+     * 接入点（留给 Slice 6.2 HA 页面）：关闭联动开关 / ViewModel.onCleared 内调用。
+     */
+    fun stopHaStack(
+        nodeId: String = HaDiscoveryPayload.DEFAULT_NODE_ID,
+        publishOffline: Boolean = true,
+        client: HaMqttClient = HaMqttClient,
+    ) {
+        runCatching { HaSensorReporter.stop() }
+        runCatching { HaCommandHandler.stop(client) }
+        if (publishOffline) {
+            runCatching { publishOfflineGraceful(client, nodeId) }
+        }
+        runCatching { client.disconnect() }
+        Log.i(TAG, "ha stack stopped (node=$nodeId)")
+    }
 }

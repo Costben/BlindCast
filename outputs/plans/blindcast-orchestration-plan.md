@@ -167,7 +167,7 @@ updated: 2026-09-05
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：HA 自动弹出新设备 BlindCast，并列出开关实体与 Web 访问链接。
 
-- [ ] **Slice 5.2** · implement · HA 双向开关联动与传感器实时上报
+- [x] **Slice 5.2** · implement · HA 双向开关联动与传感器实时上报
   - **范围**：订阅 HA 开关控制 Topic，接收指令联动 `PowerController` 熄屏/亮屏；定时同步手机电量与温度状态至 HA。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：在 HA 仪表板点击开关能真实熄灭/点亮手机屏幕，且状态实时双向对齐。
@@ -206,3 +206,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 4.1 验收通过（ServerSocket HTTP+RFC6455同端口零依赖，8文件，强制重编 SUCCESS），已提交，派发 Slice 4.2。
 - 2026-09-05: Slice 4.2 验收通过（单文件30KB控制台，APK含assets/web/index.html），已提交，派发 Slice 5.1。
 - 2026-09-05: Slice 5.1 验收通过（Paho 1.2.5 + Ha三件套Discovery，强制重编 SUCCESS），已提交，派发 Slice 5.2。
+- 2026-09-05: Slice 5.2 验收通过（CommandHandler双向对齐 + SensorReporter + startHaStack，强制重编 SUCCESS），已提交，派发 Slice 6.1。
