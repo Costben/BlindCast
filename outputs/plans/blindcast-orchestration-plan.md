@@ -136,7 +136,7 @@ updated: 2026-09-05
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：免录屏系统弹窗，原生硬件编码持续吐出视频帧。
 
-- [ ] **Slice 3.2** · implement · 系统底层音频抓取与独立传输控制开关
+- [x] **Slice 3.2** · implement · 系统底层音频抓取与独立传输控制开关
   - **范围**：构建系统音频抓取管道与编码；实现全局音频传输开关配置，允许用户随时切换是否传输声音。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：音频数据按需编码输出，关闭开关时零额外音频网络消耗。
@@ -201,3 +201,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 2.1 验收通过（core/blackout三件套，强制重编compileDebugKotlin/Javac SUCCESS），已提交，派发 Slice 2.2。
 - 2026-09-05: Slice 2.2 验收通过（UserActivityKeeper 4s喂狗 + EmergencyRecovery熔断，强制重编 SUCCESS），已提交，派发 Slice 3.1。
 - 2026-09-05: Slice 3.1 验收通过（ScreenCaptureEngine H.264硬编 + NALU通道，强制重编 SUCCESS零警告），已提交，派发 Slice 3.2。
+- 2026-09-05: Slice 3.2 验收通过（AudioCaptureEngine双路径内录 + AudioGate总闸，强制重编 SUCCESS），已提交，派发 Slice 3.3。

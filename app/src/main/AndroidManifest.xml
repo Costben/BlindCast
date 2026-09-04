@@ -15,9 +15,13 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Slice 3.1 提权采集：签名级抓屏许可声明（仅 Shizuku UserService / Root 进程持有，普通进程声明无害） -->
     <uses-permission android:name="android.permission.CAPTURE_VIDEO_OUTPUT" />
+    <!-- Slice 3.2 系统内音抓取：签名级内录许可声明（仅 Shizuku UserService / Root 进程持有，普通进程声明无害） -->
+    <uses-permission android:name="android.permission.CAPTURE_AUDIO_OUTPUT" />
     <!-- 后续常驻前台服务（Slice 4.1/6.1）前置：仅声明，暂不启用任何 service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Slice 3.2 前台音频抓取服务类型前置：仅声明，暂不启用任何 service -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
 
