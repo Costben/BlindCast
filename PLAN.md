@@ -162,7 +162,7 @@ updated: 2026-09-05
 ---
 
 ### Phase 5: Home Assistant MQTT 自动发现与状态同步
-- [ ] **Slice 5.1** · implement · MQTT Discovery 自动发现报文与轻量客户端
+- [x] **Slice 5.1** · implement · MQTT Discovery 自动发现报文与轻量客户端
   - **范围**：实现轻量 MQTT 客户端与断线重连；向 HA 发布 Discovery 配置包，注册 `switch.blindcast_screen`、`configuration_url`、`sensor.blindcast_battery`、`sensor.blindcast_temperature`。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：HA 自动弹出新设备 BlindCast，并列出开关实体与 Web 访问链接。
@@ -205,3 +205,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 3.3 验收通过（InputManager注入三件套，强制重编 SUCCESS零警告），已提交，派发 Slice 4.1。
 - 2026-09-05: Slice 4.1 验收通过（ServerSocket HTTP+RFC6455同端口零依赖，8文件，强制重编 SUCCESS），已提交，派发 Slice 4.2。
 - 2026-09-05: Slice 4.2 验收通过（单文件30KB控制台，APK含assets/web/index.html），已提交，派发 Slice 5.1。
+- 2026-09-05: Slice 5.1 验收通过（Paho 1.2.5 + Ha三件套Discovery，强制重编 SUCCESS），已提交，派发 Slice 5.2。

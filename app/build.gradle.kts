@@ -144,6 +144,8 @@ dependencies {
     implementation(platform(libs.okhttp.bom))
     implementation(libs.okhttp)
 
+    implementation(libs.paho.mqttv3)
+
     implementation(libs.material.kolor)
 
 }

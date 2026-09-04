@@ -15,6 +15,7 @@ apksign = "1.4"
 miuix = "0.9.2"
 okhttp = "5.3.2"
 hiddenapibypass = "6.1"
+paho = "1.2.5"
 
 [plugins]
 agp-app = { id = "com.android.application", version.ref = "agp" }
@@ -64,5 +65,7 @@ okhttp = { module = "com.squareup.okhttp3:okhttp" }
 okhttp-bom = { module = "com.squareup.okhttp3:okhttp-bom", version.ref = "okhttp" }
 
 hiddenapibypass = { module = "org.lsposed.hiddenapibypass:hiddenapibypass", version.ref = "hiddenapibypass" }
+
+paho-mqttv3 = { module = "org.eclipse.paho:org.eclipse.paho.client.mqttv3", version.ref = "paho" }
 
 material-kolor = { group = "com.materialkolor", name = "material-kolor", version.ref = "materialKolor" }
