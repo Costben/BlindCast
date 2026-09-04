@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.UserManager
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
+import com.erl.blindcast.core.blackout.EmergencyRecovery
 import okhttp3.Cache
 import okhttp3.OkHttpClient
 import org.lsposed.hiddenapibypass.HiddenApiBypass
@@ -36,6 +37,9 @@ class BlindCastApplication : Application(), ViewModelStoreOwner {
     override fun onCreate() {
         super.onCreate()
         blindCastApp = this
+
+        // Slice 2.2 熔断安全网：崩溃 / Activity 销毁时强制恢复亮屏（只装熔断，不启动喂狗线程）。
+        EmergencyRecovery.install(this)
 
         if (!isUserUnlocked()) {
             return

@@ -123,7 +123,7 @@ updated: 2026-09-05
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：通过提权进程能直接物理切断物理屏幕背光电源与恢复。
 
-- [ ] **Slice 2.2** · implement · 4s 喂狗防休眠线程与崩溃熔断安全网
+- [x] **Slice 2.2** · implement · 4s 喂狗防休眠线程与崩溃熔断安全网
   - **范围**：编写 `UserActivityKeeper.kt`，实现后台 4s 周期向 `PowerManager.userActivity()` 喂狗；编写 Activity/Service 销毁与未捕获异常时的 `EmergencyRecovery` 钩子，强制恢复亮屏。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：息屏后系统坚决不进入 Doze 睡眠，App 退出时自动强制点亮屏幕。
@@ -199,3 +199,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 1.1 验收通过（assembleDebug SUCCESS，包名 com.erl.blindcast），已提交，派发 Slice 1.2。
 - 2026-09-05: Slice 1.2 验收通过（底栏收敛3项 + HorizontalPager(3)双向同步，assembleDebug SUCCESS），已提交，派发 Slice 2.1。
 - 2026-09-05: Slice 2.1 验收通过（core/blackout三件套，强制重编compileDebugKotlin/Javac SUCCESS），已提交，派发 Slice 2.2。
+- 2026-09-05: Slice 2.2 验收通过（UserActivityKeeper 4s喂狗 + EmergencyRecovery熔断，强制重编 SUCCESS），已提交，派发 Slice 3.1。
