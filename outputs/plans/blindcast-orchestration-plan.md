@@ -141,7 +141,7 @@ updated: 2026-09-05
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：音频数据按需编码输出，关闭开关时零额外音频网络消耗。
 
-- [ ] **Slice 3.3** · implement · InputManager 键鼠与多点触控底层注入
+- [x] **Slice 3.3** · implement · InputManager 键鼠与多点触控底层注入
   - **范围**：移植 `InputManager.java` 与 `InputControlUtils.java`；实现网页端坐标与手势转换（Down/Move/Up 注入），鼠标右键映射为返回键 (Back)，键盘打字映射为按键注入。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：远端注入能在屏幕物理关闭状态下准确驱动底层前台游戏响应。
@@ -202,3 +202,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 2.2 验收通过（UserActivityKeeper 4s喂狗 + EmergencyRecovery熔断，强制重编 SUCCESS），已提交，派发 Slice 3.1。
 - 2026-09-05: Slice 3.1 验收通过（ScreenCaptureEngine H.264硬编 + NALU通道，强制重编 SUCCESS零警告），已提交，派发 Slice 3.2。
 - 2026-09-05: Slice 3.2 验收通过（AudioCaptureEngine双路径内录 + AudioGate总闸，强制重编 SUCCESS），已提交，派发 Slice 3.3。
+- 2026-09-05: Slice 3.3 验收通过（InputManager注入三件套，强制重编 SUCCESS零警告），已提交，派发 Slice 4.1。
