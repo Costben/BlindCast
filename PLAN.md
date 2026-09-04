@@ -131,7 +131,7 @@ updated: 2026-09-05
 ---
 
 ### Phase 3: scrcpy 屏幕采集、音频捕获与触控注入
-- [ ] **Slice 3.1** · implement · 提权 VirtualDisplay 捕获与 MediaCodec H.264 硬件编码
+- [x] **Slice 3.1** · implement · 提权 VirtualDisplay 捕获与 MediaCodec H.264 硬件编码
   - **范围**：在提权服务中调用 `DisplayManager.createVirtualDisplay`，将 Surface 接入 `MediaCodec` H.264 (AVC Baseline, 低延迟配置)，对外产出 NALU 字节包。
   - **门禁**：`./gradlew :app:assembleDebug` 成功通过。
   - **验收目标**：免录屏系统弹窗，原生硬件编码持续吐出视频帧。
@@ -200,3 +200,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 1.2 验收通过（底栏收敛3项 + HorizontalPager(3)双向同步，assembleDebug SUCCESS），已提交，派发 Slice 2.1。
 - 2026-09-05: Slice 2.1 验收通过（core/blackout三件套，强制重编compileDebugKotlin/Javac SUCCESS），已提交，派发 Slice 2.2。
 - 2026-09-05: Slice 2.2 验收通过（UserActivityKeeper 4s喂狗 + EmergencyRecovery熔断，强制重编 SUCCESS），已提交，派发 Slice 3.1。
+- 2026-09-05: Slice 3.1 验收通过（ScreenCaptureEngine H.264硬编 + NALU通道，强制重编 SUCCESS零警告），已提交，派发 Slice 3.2。
