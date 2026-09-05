@@ -8,3 +8,9 @@ captures
 .cxx
 local.properties
 key.jks
+# Clean-HA-License-1: 开源清理 — 测试临时产物与本地协作目录一律忽略
+.paseo/
+outputs/cua-shots/
+outputs/h264black-1-console.png
+bltest.png
+*.png.bak

@@ -87,7 +87,8 @@ private class MainPageState(
 }
 
 object MainPagerConfig {
-    const val PAGE_COUNT = 3
+    // Clean-HA-License-1: HA hidden, converge to 2 tabs (0 -> Home, 1 -> Settings).
+    const val PAGE_COUNT = 2
     const val LAST_PAGE_INDEX = PAGE_COUNT - 1
 
     fun coercePage(page: Int): Int = page.coerceIn(0, LAST_PAGE_INDEX)

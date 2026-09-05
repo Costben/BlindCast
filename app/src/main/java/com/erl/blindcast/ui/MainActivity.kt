@@ -62,7 +62,6 @@ import com.erl.blindcast.ui.navigation3.rememberNavigator
 import com.erl.blindcast.ui.screen.about.AboutScreen
 import com.erl.blindcast.ui.screen.colorpalette.ColorPaletteScreen
 import com.erl.blindcast.ui.screen.home.HomePager
-import com.erl.blindcast.ui.screen.homeassistant.HomeAssistantPager
 import com.erl.blindcast.ui.screen.permission.PermissionScreen
 import com.erl.blindcast.ui.screen.settings.SettingPager
 import com.erl.blindcast.ui.theme.TemplateTheme
@@ -229,10 +228,11 @@ fun MainScreen(
                     userScrollEnabled = userScrollEnabled,
                 ) { page ->
                     val isCurrentPage = page == settledPage
+                    // Clean-HA-License-1: HA hidden (0 -> Home, 1 -> Settings).
+                    // HomeAssistantPager file is retained for future restore.
                     when (page) {
                         0 -> if (isCurrentPage || contentReady) HomePager(navController, bottomInnerPadding, isCurrentPage)
-                        1 -> if (isCurrentPage || contentReady) HomeAssistantPager(navController, bottomInnerPadding, isCurrentPage)
-                        2 -> if (isCurrentPage || contentReady) SettingPager(navController, bottomInnerPadding)
+                        1 -> if (isCurrentPage || contentReady) SettingPager(navController, bottomInnerPadding)
                     }
                 }
             }
