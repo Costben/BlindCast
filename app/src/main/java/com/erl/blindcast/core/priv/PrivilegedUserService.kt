@@ -1,11 +1,15 @@
 package com.erl.blindcast.core.priv
 
 import android.content.Context
+import android.graphics.Point
+import android.os.IBinder
 import android.os.Process
 import android.util.Log
 import androidx.annotation.Keep
 import com.erl.blindcast.core.blackout.PowerController
 import com.erl.blindcast.core.scrcpy.PrivilegedCapture
+import com.erl.blindcast.core.scrcpy.TouchInjector
+import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 /**
  * Shizuku UserService 通道服务端（Priv-Bridge-1 通道，Priv-Bridge-2 改道 SurfaceControl，
@@ -273,6 +277,132 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
         return try {
             PrivilegedCapture.errorMessage()
         } catch (_: Throwable) {
+            null
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 反控注入（特权进程内原子执行；调用方 ControlWsRoute 经 PrivilegedBridge 按次绑定）
+    // ------------------------------------------------------------------
+
+    @Volatile
+    private var inputError: String? = null
+
+    /** 取最近一次注入失败明细（同绑定内调用；成功时 null）。 */
+    override fun getInputError(): String? = inputError
+
+    /** 轻点：Down+Up 原子（相对真实主屏归一化坐标）。 */
+    override fun injectTap(normX: Float, normY: Float): Boolean {
+        val (x, y) = resolvePx(normX, normY) ?: return false
+        return try {
+            val ok = TouchInjector.injectTouchDownPx(x, y) && TouchInjector.injectTouchUpPx(x, y)
+            if (!ok) inputError = TouchInjector.lastError?.message ?: "tap rejected by system"
+            else inputError = null
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectTap failed", t)
+            false
+        }
+    }
+
+    /** 拖拽：Down+N插值Move+Up 单次调用内完成（松手执行；step 间 8ms）。 */
+    override fun injectDrag(x0: Float, y0: Float, x1: Float, y1: Float): Boolean {
+        val (px0, py0) = resolvePx(x0, y0) ?: return false
+        val (px1, py1) = resolvePx(x1, y1) ?: return false
+        return try {
+            var ok = TouchInjector.injectTouchDownPx(px0, py0)
+            val steps = 10
+            var i = 1
+            while (ok && i <= steps) {
+                val f = i.toFloat() / (steps + 1)
+                ok = TouchInjector.injectTouchMovePx(px0 + (px1 - px0) * f, py0 + (py1 - py0) * f)
+                if (ok) runCatching { Thread.sleep(8L) }
+                i++
+            }
+            ok = TouchInjector.injectTouchUpPx(px1, py1) && ok
+            if (!ok) inputError = TouchInjector.lastError?.message ?: "drag rejected by system"
+            else inputError = null
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectDrag failed", t)
+            false
+        }
+    }
+
+    /** 完整按键 Down+Up（无状态）。 */
+    override fun injectKey(keyCode: Int): Boolean {
+        return try {
+            val ok = TouchInjector.injectKey(keyCode)
+            if (!ok) inputError = TouchInjector.lastError?.message ?: "key rejected by system"
+            else inputError = null
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectKey failed", t)
+            false
+        }
+    }
+
+    /** 文本经虚拟键盘映射注入（无状态；CJK 等不可映射字符按既有语义跳过记错）。 */
+    override fun injectText(text: String?): Boolean {
+        return try {
+            val ok = TouchInjector.injectText(text ?: "")
+            if (!ok) inputError = TouchInjector.lastError?.message ?: "text rejected by system"
+            else inputError = null
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectText failed", t)
+            false
+        }
+    }
+
+    /**
+     * 归一化坐标→真实主屏物理像素（特权进程内经 IWindowManager 反射解析，
+     * 无需 Context；失败记 inputError 返 null）。
+     */
+    private fun resolvePx(normX: Float, normY: Float): Pair<Float, Float>? {
+        val size = realDisplaySize()
+        if (size == null) {
+            if (inputError == null) inputError = "resolve display size failed (IWindowManager)"
+            return null
+        }
+        if (!TouchInjector.configure(size.first, size.second)) {
+            inputError = TouchInjector.lastError?.message ?: "configure display size failed"
+            return null
+        }
+        val x = normX.coerceIn(0f, 1f) * size.first
+        val y = normY.coerceIn(0f, 1f) * size.second
+        return x to y
+    }
+
+    /** 经 `IWindowManager.getInitialDisplaySize(0)` 取真实主屏尺寸（特权身份可调）。 */
+    private fun realDisplaySize(): Pair<Int, Int>? {
+        return try {
+            runCatching {
+                HiddenApiBypass.addHiddenApiExemptions(
+                    "Landroid/os/ServiceManager",
+                    "Landroid/view/IWindowManager",
+                    "Landroid/view/IWindowManager\$Stub",
+                )
+            }
+            val sm = Class.forName("android.os.ServiceManager")
+                .getMethod("getService", String::class.java)
+                .invoke(null, "window") as? IBinder ?: return null
+            val stub = Class.forName("android.view.IWindowManager\$Stub")
+                .getMethod("asInterface", IBinder::class.java)
+                .invoke(null, sm) ?: return null
+            val pt = Point()
+            stub.javaClass.getMethod(
+                "getInitialDisplaySize",
+                Int::class.javaPrimitiveType,
+                Point::class.java,
+            ).invoke(stub, 0, pt)
+            if (pt.x > 0 && pt.y > 0) pt.x to pt.y else null
+        } catch (t: Throwable) {
+            Log.e(TAG, "[PrivilegedUserService] realDisplaySize failed", t)
             null
         }
     }

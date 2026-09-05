@@ -1,10 +1,14 @@
 package com.erl.blindcast.core.server.routes
 
+import com.erl.blindcast.BuildConfig
+import com.erl.blindcast.core.priv.PrivilegedBridge
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
 import com.erl.blindcast.core.scrcpy.ScrcpyGate
 import com.erl.blindcast.core.scrcpy.TouchInjector
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.net.SocketTimeoutException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
@@ -36,6 +40,18 @@ object ControlWsRoute {
 
     private val sessions = CopyOnWriteArraySet<WsConnection>()
 
+    /**
+     * 待决手势（反控特权通道按次绑定用完即焚，跨绑定无状态，故 down/move 只缓存、
+     * up 时按有无位移一次打成 tap 或 drag 原子注入；断开时未 up 的缓存直接丢弃，
+     * 设备侧无任何残留触点）。
+     */
+    private data class PendingTouch(
+        val x0: Float, val y0: Float,
+        var lastX: Float, var lastY: Float,
+        var moved: Boolean = false,
+    )
+    private val pendingGestures = ConcurrentHashMap<WsConnection, PendingTouch>()
+
     /** 当前控制在线数（供 `/api/status` 与 6.1 主页绑定）。 */
     val sessionCount: Int get() = sessions.size
 
@@ -62,6 +78,7 @@ object ControlWsRoute {
             }
         } finally {
             sessions.remove(conn)
+            pendingGestures.remove(conn)
             runCatching { TouchInjector.cancelTouch() }
             runCatching { conn.close() }
         }
@@ -95,8 +112,8 @@ object ControlWsRoute {
                     if (keyCode == Int.MIN_VALUE) {
                         reply(conn, false, "key", "missing keycode")
                     } else {
-                        val ok = runCatching { TouchInjector.injectKey(keyCode) }.getOrDefault(false)
-                        reply(conn, ok, "key", if (ok) null else lastTouchError())
+                        val (ok, err) = injectKeyPriv(keyCode)
+                        reply(conn, ok, "key", err)
                     }
                 }
             }
@@ -108,8 +125,8 @@ object ControlWsRoute {
                     reply(conn, false, "text", "keyboard disabled")
                 } else {
                     val text = json.optString("text", "")
-                    val ok = runCatching { TouchInjector.injectText(text) }.getOrDefault(false)
-                    reply(conn, ok, "text", if (ok) null else lastTouchError())
+                    val (ok, err) = injectTextPriv(text)
+                    reply(conn, ok, "text", err)
                 }
             }
             "audio" -> {
@@ -138,14 +155,36 @@ object ControlWsRoute {
             reply(conn, false, type, "missing x|y")
             return
         }
-        val ok = runCatching {
-            when (type) {
-                "down" -> TouchInjector.injectTouchDown(x, y)
-                "move" -> TouchInjector.injectTouchMove(x, y)
-                else -> TouchInjector.injectTouchUp(x, y)
+        when (type) {
+            "down" -> {
+                pendingGestures[conn] = PendingTouch(x, y, x, y)
+                reply(conn, true, type, null)
             }
-        }.getOrDefault(false)
-        reply(conn, ok, type, if (ok) null else lastTouchError())
+            "move" -> {
+                val p = pendingGestures[conn]
+                if (p == null) {
+                    reply(conn, false, type, "move without active down")
+                } else {
+                    p.lastX = x
+                    p.lastY = y
+                    p.moved = true
+                    reply(conn, true, type, null)
+                }
+            }
+            else -> {
+                val p = pendingGestures.remove(conn)
+                if (p == null) {
+                    reply(conn, false, type, "up without active down")
+                } else {
+                    val (ok, err) = if (!p.moved) {
+                        injectTapPriv(p.x0, p.y0)
+                    } else {
+                        injectDragPriv(p.x0, p.y0, p.lastX, p.lastY)
+                    }
+                    reply(conn, ok, type, err)
+                }
+            }
+        }
     }
 
     private fun handleClick(conn: WsConnection, json: JSONObject) {
@@ -159,16 +198,12 @@ object ControlWsRoute {
                     reply(conn, false, "click", "right-back disabled")
                     return
                 }
-                val ok = runCatching {
-                    TouchInjector.injectKey(TouchInjector.MOUSE_BUTTON_RIGHT_KEYCODE)
-                }.getOrDefault(false)
-                reply(conn, ok, "click", if (ok) null else lastTouchError())
+                val (ok, err) = injectKeyPriv(TouchInjector.MOUSE_BUTTON_RIGHT_KEYCODE)
+                reply(conn, ok, "click", err)
             }
             "middle" -> {
-                val ok = runCatching {
-                    TouchInjector.injectKey(TouchInjector.MOUSE_BUTTON_MIDDLE_KEYCODE)
-                }.getOrDefault(false)
-                reply(conn, ok, "click", if (ok) null else lastTouchError())
+                val (ok, err) = injectKeyPriv(TouchInjector.MOUSE_BUTTON_MIDDLE_KEYCODE)
+                reply(conn, ok, "click", err)
             }
             else -> {
                 // 左键点按 = down + up（无拖拽的轻量点击路径）。
@@ -178,16 +213,34 @@ object ControlWsRoute {
                     reply(conn, false, "click", "missing x|y")
                     return
                 }
-                val ok = runCatching {
-                    TouchInjector.injectTouchDown(x, y) && TouchInjector.injectTouchUp(x, y)
-                }.getOrDefault(false)
-                reply(conn, ok, "click", if (ok) null else lastTouchError())
+                val (ok, err) = injectTapPriv(x, y)
+                reply(conn, ok, "click", err)
             }
         }
     }
 
-    private fun lastTouchError(): String =
-        TouchInjector.lastError?.message ?: "inject rejected (missing privilege?)"
+    // ------------------------------------------------------------------
+    // 特权注入委托（App 进程无 INJECT_EVENTS，一律按次绑定走特权进程；
+    // 连接池线程上 runBlocking，桥内已切 IO，无死锁）。
+    // ------------------------------------------------------------------
+
+    private fun pkg(): String = BuildConfig.APPLICATION_ID
+
+    private fun injectTapPriv(x: Float, y: Float): Pair<Boolean, String?> =
+        runCatching { runBlocking { PrivilegedBridge.injectTap(pkg(), x, y) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
+
+    private fun injectDragPriv(x0: Float, y0: Float, x1: Float, y1: Float): Pair<Boolean, String?> =
+        runCatching { runBlocking { PrivilegedBridge.injectDrag(pkg(), x0, y0, x1, y1) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
+
+    private fun injectKeyPriv(keyCode: Int): Pair<Boolean, String?> =
+        runCatching { runBlocking { PrivilegedBridge.injectKey(pkg(), keyCode) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
+
+    private fun injectTextPriv(text: String): Pair<Boolean, String?> =
+        runCatching { runBlocking { PrivilegedBridge.injectText(pkg(), text) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
 
     private fun reply(conn: WsConnection, ok: Boolean, type: String?, error: String?) {
         val json = JSONObject().put("type", "ack").put("ok", ok)

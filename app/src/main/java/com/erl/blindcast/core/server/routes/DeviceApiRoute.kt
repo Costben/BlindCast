@@ -4,12 +4,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import com.erl.blindcast.BuildConfig
 import com.erl.blindcast.blindCastApp
 import com.erl.blindcast.core.blackout.PowerController
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
 import com.erl.blindcast.core.scrcpy.AudioGate
 import com.erl.blindcast.core.scrcpy.ScreenCaptureEngine
 import com.erl.blindcast.core.server.auth.TokenAuthenticator
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 
 /**
@@ -59,7 +61,11 @@ object DeviceApiRoute {
         if (target == null) {
             return 400 to err("missing on|action (on|off|toggle)")
         }
-        val ok = runCatching { PowerController.setDisplayPower(target) }.getOrDefault(false)
+        // 网页电源键必须走 routed 入口（Root→Shizuku 特权执行）：直调版只能跑在特权进程内，
+        // App 进程调必吃取 token 异常。连接线程上 runBlocking，路由内已切 IO，无死锁。
+        val ok = runCatching {
+            runBlocking { PowerController.setDisplayPowerRouted(BuildConfig.APPLICATION_ID, target) }
+        }.getOrDefault(false)
         return if (ok) {
             200 to JSONObject()
                 .put("ok", true)

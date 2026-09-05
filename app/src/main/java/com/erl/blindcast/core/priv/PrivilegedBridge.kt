@@ -316,6 +316,47 @@ object PrivilegedBridge {
     }
 
     // ------------------------------------------------------------------
+    // 反控注入快捷入口（ControlWsRoute 专用 · 按次绑定用完即焚）
+    // ------------------------------------------------------------------
+
+    /**
+     * 特权轻点（Down+Up 原子；归一化坐标相对真实主屏）。
+     * @return first=是否成功；second=失败明细（成功时 null）。
+     */
+    suspend fun injectTap(packageName: String, x: Float, y: Float): Pair<Boolean, String?> =
+        withPrivileged(packageName) { ops ->
+            val ok = ops.injectTap(x, y)
+            ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+        }
+
+    /**
+     * 特权拖拽（Down+插值Move+Up 单次调用内完成，松手执行）。
+     * @return 同 [injectTap]。
+     */
+    suspend fun injectDrag(
+        packageName: String,
+        x0: Float, y0: Float, x1: Float, y1: Float,
+    ): Pair<Boolean, String?> =
+        withPrivileged(packageName) { ops ->
+            val ok = ops.injectDrag(x0, y0, x1, y1)
+            ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+        }
+
+    /** 特权完整按键 Down+Up（无状态）。@return 同 [injectTap]。 */
+    suspend fun injectKey(packageName: String, keyCode: Int): Pair<Boolean, String?> =
+        withPrivileged(packageName) { ops ->
+            val ok = ops.injectKey(keyCode)
+            ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+        }
+
+    /** 特权文本注入（虚拟键盘映射；无状态）。@return 同 [injectTap]。 */
+    suspend fun injectText(packageName: String, text: String): Pair<Boolean, String?> =
+        withPrivileged(packageName) { ops ->
+            val ok = ops.injectText(text)
+            ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+        }
+
+    // ------------------------------------------------------------------
     // 内部：单次绑定
     // ------------------------------------------------------------------
 

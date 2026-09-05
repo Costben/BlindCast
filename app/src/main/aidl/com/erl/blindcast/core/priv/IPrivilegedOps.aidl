@@ -45,4 +45,16 @@ interface IPrivilegedOps {
     // 取特权采集最近失败明细（PrivilegedCapture.lastError.message，成功时 null；
     // 须同一次常驻绑定内调用，用完即焚语义同 getLastError）。
     String getCaptureError() = 8;
+
+    // 反控注入（跑在特权进程内经 TouchInjector/InputManagerWrapper 注入；App 进程无
+    // INJECT_EVENTS，ControlWsRoute 一律走本通道；旧编号 1..8 不动，新编号顺延 9..13）。
+    // 特权进程按次绑定用完即焚，手势状态跨绑定不保留，故触控一律单次调用内原子完成：
+    // tap=Down+Up 一次，drag=Down+N插值Move+Up 一次（松手时执行，非实时跟手）。
+    // 归一化坐标 0..1（相对真实主屏，特权侧自行解析物理尺寸换算）。
+    boolean injectTap(float normX, float normY) = 9;
+    boolean injectDrag(float x0, float y0, float x1, float y1) = 10;
+    boolean injectKey(int keyCode) = 11;
+    boolean injectText(String text) = 12;
+    // 取最近一次注入失败明细（同绑定内调用；成功时 null）。
+    String getInputError() = 13;
 }
