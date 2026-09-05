@@ -52,6 +52,14 @@ fun HomePager(
     LaunchedEffect(permissionState.requiredGranted) {
         viewModel.setPermissionGranted(permissionState.requiredGranted)
     }
+    // Priv-Bridge-1：特权操作（熄屏/点亮）失败文案 Toast；seq 保证相同文案可重复触发，展示后消费防重弹。
+    LaunchedEffect(uiState.actionError, uiState.actionErrorSeq) {
+        val err = uiState.actionError
+        if (err != null) {
+            Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+            viewModel.consumeActionError()
+        }
+    }
 
     val actions = HomeActions(
         onPermissionsClick = { navigator.push(Route.Permissions) },

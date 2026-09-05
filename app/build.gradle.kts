@@ -42,6 +42,8 @@ android {
     buildFeatures {
         buildConfig = true
         compose = true
+        // Priv-Bridge-1：core/priv/IPrivilegedOps.aidl 特权 Binder 契约。
+        aidl = true
     }
 
     packaging {
@@ -148,6 +150,10 @@ dependencies {
 
     // Slice 6.1 Home 二维码：纯 Java QR 编码（无 Android 依赖，轻量 ~600KB）。
     implementation(libs.zxing.core)
+
+    // Priv-Bridge-1 Shizuku 提权桥：api（Binder/鉴权/UserService 绑定）+ provider（Binder 下发）。
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
 
     implementation(libs.material.kolor)
 

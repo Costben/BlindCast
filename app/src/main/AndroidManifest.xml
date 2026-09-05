@@ -17,6 +17,9 @@
     <uses-permission android:name="android.permission.CAPTURE_VIDEO_OUTPUT" />
     <!-- Slice 3.2 系统内音抓取：签名级内录许可声明（仅 Shizuku UserService / Root 进程持有，普通进程声明无害） -->
     <uses-permission android:name="android.permission.CAPTURE_AUDIO_OUTPUT" />
+    <!-- Priv-Bridge-1 Shizuku 提权桥：取值即 rikka.shizuku.ShizukuProvider.PERMISSION 常量
+        （历史兼容声明；v13 实际鉴权走 Shizuku.requestPermission 运行时申请 + 用户在管理器侧允许）。 -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <!-- 后续常驻前台服务（Slice 4.1/6.1）前置：仅声明，暂不启用任何 service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
@@ -69,6 +72,17 @@
             android:name=".core.service.BlindCastForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Priv-Bridge-1 Shizuku 提权桥：Shizuku Binder 下发通道（authorities 必须为 ${applicationId}.shizuku；
+            permission/exported/multiprocess 取值按 Shizuku 官方要求，防普通应用访问；UserService 通道无需 <service>
+            声明，Shizuku server 按 ComponentName 经 app_process 直接实例化 PrivilegedUserService）。 -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
     </application>
 

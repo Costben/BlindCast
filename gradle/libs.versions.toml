@@ -17,6 +17,7 @@ okhttp = "5.3.2"
 hiddenapibypass = "6.1"
 paho = "1.2.5"
 zxing = "3.5.3"
+shizuku = "13.1.5"
 
 [plugins]
 agp-app = { id = "com.android.application", version.ref = "agp" }
@@ -70,5 +71,9 @@ hiddenapibypass = { module = "org.lsposed.hiddenapibypass:hiddenapibypass", vers
 paho-mqttv3 = { module = "org.eclipse.paho:org.eclipse.paho.client.mqttv3", version.ref = "paho" }
 
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
+
+# Priv-Bridge-1：Shizuku 提权桥（api = Binder/鉴权/UserService 绑定；provider = Shizuku Binder 下发通道）。
+shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
+shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
 
 material-kolor = { group = "com.materialkolor", name = "material-kolor", version.ref = "materialKolor" }

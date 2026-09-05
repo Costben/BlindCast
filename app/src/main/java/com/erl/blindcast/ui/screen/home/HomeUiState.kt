@@ -18,6 +18,9 @@ data class HomeUiState(
     // Fix-Home-2：ViewModel 3s 轮询直读自愈为准；missingPermissions 为缺项中文名清单，供红卡自报。
     val permissionGranted: Boolean = false,
     val missingPermissions: List<String> = emptyList(),
+    // Priv-Bridge-1：最近一次快捷操作（熄屏/点亮）失败文案（成功不写）；seq 自增保证相同文案重复触发 Toast。
+    val actionError: String? = null,
+    val actionErrorSeq: Int = 0,
 )
 
 /** Hero 大卡片：串流总服务实时快照。 */

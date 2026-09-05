@@ -106,21 +106,51 @@ class HomeViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) { updateFromSnapshot() }
     }
 
-    /** 立即息屏挂机：物理熄屏 + 启动 4s 喂狗（后台执行，含 Binder 调用）。 */
+    /** 立即息屏挂机：经 Shizuku 特权路由物理熄屏 + 启动 4s 喂狗（后台执行，含跨进程绑定）。 */
     fun blackoutNow() {
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { PowerController.blackoutSuspend() }
-            runCatching { UserActivityKeeper.start(app) }
+            val ok = try {
+                PowerController.blackoutRouted(app.packageName)
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                false
+            }
+            if (ok) {
+                runCatching { UserActivityKeeper.start(app) }
+            } else {
+                // Priv-Bridge-1：未授权/绑定失败只记文案弹 Toast，不抛、不动大结构。
+                publishActionError(PowerController.lastError?.message ?: "熄屏失败")
+            }
             updateFromSnapshot()
         }
     }
 
-    /** 点亮物理屏幕（后台执行，含 Binder 调用）。 */
+    /** 点亮物理屏幕（后台执行，经 Shizuku 特权路由，失败弹 Toast）。 */
     fun restoreScreen() {
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { PowerController.restoreSuspend() }
+            val ok = try {
+                PowerController.restoreRouted(app.packageName)
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                false
+            }
+            if (!ok) {
+                publishActionError(PowerController.lastError?.message ?: "点亮失败")
+            }
             updateFromSnapshot()
         }
+    }
+
+    /** Priv-Bridge-1：发布一次操作失败文案（seq 自增，相同文案可重复触发 Toast）。 */
+    private fun publishActionError(message: String) {
+        _uiState.update { it.copy(actionError = message, actionErrorSeq = it.actionErrorSeq + 1) }
+    }
+
+    /** Priv-Bridge-1：Toast 展示后消费，防重弹。 */
+    fun consumeActionError() {
+        _uiState.update { if (it.actionError == null) it else it.copy(actionError = null) }
     }
 
     // ------------------------------------------------------------------
