@@ -13,6 +13,19 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.BatteryStd
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.SettingsEthernet
+import androidx.compose.material.icons.rounded.Thermostat
+import androidx.compose.material.icons.rounded.ToggleOn
+import androidx.compose.material.icons.rounded.Wifi
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -93,6 +106,7 @@ fun HomeAssistantPagerMaterial(
                 content = listOf(
                     {
                         SegmentedSwitchItem(
+                            icon = Icons.Rounded.PowerSettingsNew,
                             title = stringResource(R.string.ha_enable_title),
                             summary = stringResource(R.string.ha_enable_summary),
                             checked = state.enabled,
@@ -106,6 +120,12 @@ fun HomeAssistantPagerMaterial(
                             onValueChange = actions.onHostChange,
                             singleLine = true,
                             placeholder = { Text(stringResource(R.string.ha_host_hint)) },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.Dns,
+                                    stringResource(R.string.ha_host_title)
+                                )
+                            },
                         )
                     },
                     {
@@ -117,6 +137,12 @@ fun HomeAssistantPagerMaterial(
                             },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.SettingsEthernet,
+                                    stringResource(R.string.ha_port_title)
+                                )
+                            },
                         )
                     },
                     {
@@ -126,6 +152,12 @@ fun HomeAssistantPagerMaterial(
                             onValueChange = actions.onUsernameChange,
                             singleLine = true,
                             placeholder = { Text(stringResource(R.string.ha_user_anonymous)) },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.Person,
+                                    stringResource(R.string.ha_user_title)
+                                )
+                            },
                         )
                     },
                     {
@@ -136,6 +168,12 @@ fun HomeAssistantPagerMaterial(
                             singleLine = true,
                             visualTransformation = PasswordVisualTransformation(),
                             placeholder = { Text(stringResource(R.string.ha_pass_unset)) },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.Lock,
+                                    stringResource(R.string.ha_pass_title)
+                                )
+                            },
                         )
                     },
                     {
@@ -148,6 +186,12 @@ fun HomeAssistantPagerMaterial(
                                     } else {
                                         stringResource(R.string.ha_action_test)
                                     }
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.Wifi,
+                                    stringResource(R.string.ha_action_test)
                                 )
                             },
                             supportingContent = {
@@ -172,6 +216,12 @@ fun HomeAssistantPagerMaterial(
                             onClick = {},
                             headlineContent = { Text(stringResource(R.string.ha_entity_switch)) },
                             supportingContent = { Text(stringResource(R.string.ha_entity_switch_summary)) },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.ToggleOn,
+                                    stringResource(R.string.ha_entity_switch)
+                                )
+                            },
                         )
                     },
                     {
@@ -179,6 +229,12 @@ fun HomeAssistantPagerMaterial(
                             onClick = {},
                             headlineContent = { Text(stringResource(R.string.ha_entity_url)) },
                             supportingContent = { Text(stringResource(R.string.ha_entity_url_summary)) },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.Link,
+                                    stringResource(R.string.ha_entity_url)
+                                )
+                            },
                         )
                     },
                     {
@@ -186,6 +242,12 @@ fun HomeAssistantPagerMaterial(
                             onClick = {},
                             headlineContent = { Text(stringResource(R.string.ha_entity_battery)) },
                             supportingContent = { Text(stringResource(R.string.ha_entity_battery_summary)) },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.BatteryStd,
+                                    stringResource(R.string.ha_entity_battery)
+                                )
+                            },
                         )
                     },
                     {
@@ -193,6 +255,12 @@ fun HomeAssistantPagerMaterial(
                             onClick = {},
                             headlineContent = { Text(stringResource(R.string.ha_entity_temp)) },
                             supportingContent = { Text(stringResource(R.string.ha_entity_temp_summary)) },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.Thermostat,
+                                    stringResource(R.string.ha_entity_temp)
+                                )
+                            },
                         )
                     },
                 )
@@ -206,6 +274,12 @@ fun HomeAssistantPagerMaterial(
                             onClick = { actions.onCopyRest(state.restSnippet) },
                             headlineContent = { Text(stringResource(R.string.ha_rest_copy)) },
                             supportingContent = { Text(stringResource(R.string.ha_rest_subtitle)) },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.ContentCopy,
+                                    stringResource(R.string.ha_rest_copy)
+                                )
+                            },
                         )
                     },
                     {

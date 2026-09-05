@@ -14,11 +14,22 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.rounded.Undo
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContactPage
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Update
+import androidx.compose.material.icons.rounded.AlarmOn
+import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Dashboard
+import androidx.compose.material.icons.rounded.DataUsage
+import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.material.icons.rounded.Keyboard
+import androidx.compose.material.icons.rounded.SettingsEthernet
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.TouchApp
+import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
@@ -84,6 +95,7 @@ fun SettingPagerMaterial(
                 content = buildList {
                     add {
                         SegmentedDropdownItem(
+                            icon = Icons.Rounded.DesktopWindows,
                             title = stringResource(R.string.settings_resolution),
                             summary = stringResource(R.string.settings_resolution_summary),
                             items = SettingsViewModel.RESOLUTIONS,
@@ -93,6 +105,7 @@ fun SettingPagerMaterial(
                     }
                     add {
                         SegmentedDropdownItem(
+                            icon = Icons.Rounded.Speed,
                             title = stringResource(R.string.settings_fps),
                             summary = stringResource(R.string.settings_fps_summary),
                             items = SettingsViewModel.FPS_OPTIONS.map { "$it FPS" },
@@ -102,6 +115,7 @@ fun SettingPagerMaterial(
                     }
                     add {
                         SegmentedDropdownItem(
+                            icon = Icons.Rounded.DataUsage,
                             title = stringResource(R.string.settings_bitrate),
                             summary = stringResource(R.string.settings_bitrate_summary),
                             items = SettingsViewModel.BITRATE_MBPS_OPTIONS.map { "$it Mbps" },
@@ -111,6 +125,7 @@ fun SettingPagerMaterial(
                     }
                     add {
                         SegmentedSwitchItem(
+                            icon = Icons.AutoMirrored.Rounded.VolumeUp,
                             title = stringResource(R.string.settings_audio),
                             summary = stringResource(R.string.settings_audio_summary),
                             checked = uiState.audioEnabled,
@@ -131,6 +146,12 @@ fun SettingPagerMaterial(
                             singleLine = true,
                             visualTransformation = PasswordVisualTransformation(),
                             placeholder = { Text(stringResource(R.string.settings_token_unset)) },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.VpnKey,
+                                    stringResource(R.string.settings_token)
+                                )
+                            },
                             supportingContent = { Text(stringResource(R.string.settings_restart_hint)) },
                         )
                     },
@@ -143,6 +164,12 @@ fun SettingPagerMaterial(
                             },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.SettingsEthernet,
+                                    stringResource(R.string.settings_port)
+                                )
+                            },
                             supportingContent = { Text(stringResource(R.string.settings_restart_hint)) },
                         )
                     },
@@ -154,6 +181,7 @@ fun SettingPagerMaterial(
                 content = listOf(
                     {
                         SegmentedSwitchItem(
+                            icon = Icons.Rounded.TouchApp,
                             title = stringResource(R.string.settings_touch),
                             summary = stringResource(R.string.settings_touch_summary),
                             checked = uiState.scrcpyTouchEnabled,
@@ -162,6 +190,7 @@ fun SettingPagerMaterial(
                     },
                     {
                         SegmentedSwitchItem(
+                            icon = Icons.AutoMirrored.Rounded.Undo,
                             title = stringResource(R.string.settings_right_back),
                             summary = stringResource(R.string.settings_right_back_summary),
                             checked = uiState.scrcpyRightBackEnabled,
@@ -171,6 +200,7 @@ fun SettingPagerMaterial(
                     },
                     {
                         SegmentedSwitchItem(
+                            icon = Icons.Rounded.Keyboard,
                             title = stringResource(R.string.settings_keyboard),
                             summary = stringResource(R.string.settings_keyboard_summary),
                             checked = uiState.scrcpyKeyboardEnabled,
@@ -190,6 +220,7 @@ fun SettingPagerMaterial(
                 content = listOf(
                     {
                         SegmentedDropdownItem(
+                            icon = Icons.Rounded.DarkMode,
                             title = stringResource(R.string.settings_blackout_mode),
                             summary = stringResource(R.string.settings_blackout_summary),
                             items = blackoutItems,
@@ -199,6 +230,7 @@ fun SettingPagerMaterial(
                     },
                     {
                         SegmentedSwitchItem(
+                            icon = Icons.Rounded.AlarmOn,
                             title = stringResource(R.string.settings_keepalive),
                             summary = stringResource(R.string.settings_keepalive_summary),
                             checked = uiState.keepAliveEnabled,

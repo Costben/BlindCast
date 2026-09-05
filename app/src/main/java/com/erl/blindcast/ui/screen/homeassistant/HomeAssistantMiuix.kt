@@ -18,6 +18,18 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.BatteryStd
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.SettingsEthernet
+import androidx.compose.material.icons.rounded.Thermostat
+import androidx.compose.material.icons.rounded.ToggleOn
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +57,7 @@ import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
@@ -187,6 +201,9 @@ private fun ConfigCard(state: HomeAssistantUiState, actions: HomeAssistantAction
         SwitchPreference(
             title = stringResource(R.string.ha_enable_title),
             summary = stringResource(R.string.ha_enable_summary),
+            startAction = {
+                HaLeadingIcon(Icons.Rounded.PowerSettingsNew, stringResource(R.string.ha_enable_title))
+            },
             checked = state.enabled,
             onCheckedChange = actions.onToggleEnabled,
         )
@@ -194,17 +211,22 @@ private fun ConfigCard(state: HomeAssistantUiState, actions: HomeAssistantAction
             title = stringResource(R.string.ha_host_title),
             value = state.brokerHost,
             placeholder = stringResource(R.string.ha_host_hint),
+            icon = Icons.Rounded.Dns,
             onConfirm = actions.onHostChange,
         )
         SuperEditArrow(
             title = stringResource(R.string.ha_port_title),
             defaultValue = state.brokerPort,
+            startAction = {
+                HaLeadingIcon(Icons.Rounded.SettingsEthernet, stringResource(R.string.ha_port_title))
+            },
             onValueChange = actions.onPortChange,
         )
         TextEditArrow(
             title = stringResource(R.string.ha_user_title),
             value = state.username,
             placeholder = stringResource(R.string.ha_user_anonymous),
+            icon = Icons.Rounded.Person,
             onConfirm = actions.onUsernameChange,
         )
         TextEditArrow(
@@ -217,6 +239,7 @@ private fun ConfigCard(state: HomeAssistantUiState, actions: HomeAssistantAction
                 stringResource(R.string.ha_pass_set)
             },
             isPassword = true,
+            icon = Icons.Rounded.Lock,
             onConfirm = actions.onPasswordChange,
         )
         BasicComponent(
@@ -230,6 +253,9 @@ private fun ConfigCard(state: HomeAssistantUiState, actions: HomeAssistantAction
             } else {
                 stringResource(R.string.ha_config_subtitle)
             },
+            startAction = {
+                HaLeadingIcon(Icons.Rounded.Wifi, stringResource(R.string.ha_action_test))
+            },
             onClick = { if (!state.isTesting) actions.onTestConnection() },
         )
     }
@@ -241,21 +267,33 @@ private fun EntitiesCard() {
         BasicComponent(
             title = stringResource(R.string.ha_entity_switch),
             summary = stringResource(R.string.ha_entity_switch_summary),
+            startAction = {
+                HaLeadingIcon(Icons.Rounded.ToggleOn, stringResource(R.string.ha_entity_switch))
+            },
             onClick = {},
         )
         BasicComponent(
             title = stringResource(R.string.ha_entity_url),
             summary = stringResource(R.string.ha_entity_url_summary),
+            startAction = {
+                HaLeadingIcon(Icons.Rounded.Link, stringResource(R.string.ha_entity_url))
+            },
             onClick = {},
         )
         BasicComponent(
             title = stringResource(R.string.ha_entity_battery),
             summary = stringResource(R.string.ha_entity_battery_summary),
+            startAction = {
+                HaLeadingIcon(Icons.Rounded.BatteryStd, stringResource(R.string.ha_entity_battery))
+            },
             onClick = {},
         )
         BasicComponent(
             title = stringResource(R.string.ha_entity_temp),
             summary = stringResource(R.string.ha_entity_temp_summary),
+            startAction = {
+                HaLeadingIcon(Icons.Rounded.Thermostat, stringResource(R.string.ha_entity_temp))
+            },
             onClick = {},
         )
     }
@@ -267,6 +305,9 @@ private fun RestCard(state: HomeAssistantUiState, actions: HomeAssistantActions)
         BasicComponent(
             title = stringResource(R.string.ha_rest_copy),
             summary = stringResource(R.string.ha_rest_subtitle),
+            startAction = {
+                HaLeadingIcon(Icons.Rounded.ContentCopy, stringResource(R.string.ha_rest_copy))
+            },
             onClick = { actions.onCopyRest(state.restSnippet) },
         )
         Text(
@@ -286,12 +327,16 @@ private fun TextEditArrow(
     placeholder: String,
     displayValue: String = value.ifBlank { placeholder },
     isPassword: Boolean = false,
+    icon: ImageVector,
     onConfirm: (String) -> Unit,
 ) {
     var showDialog by remember { mutableStateOf(false) }
     ArrowPreference(
         title = title,
         summary = displayValue,
+        startAction = {
+            HaLeadingIcon(icon, title)
+        },
         onClick = { showDialog = true },
         holdDownState = showDialog,
     )
@@ -332,4 +377,15 @@ private fun TextEditArrow(
             },
         )
     }
+}
+
+/** HA 页一级行左侧标准图标（Miuix Icon 容器，不改行高/字号/配色规范）。 */
+@Composable
+private fun HaLeadingIcon(icon: ImageVector, contentDescription: String) {
+    Icon(
+        icon,
+        modifier = Modifier.padding(end = 6.dp),
+        contentDescription = contentDescription,
+        tint = colorScheme.onBackground,
+    )
 }

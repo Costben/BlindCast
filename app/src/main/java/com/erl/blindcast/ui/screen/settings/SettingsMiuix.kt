@@ -18,11 +18,23 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Undo
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.AlarmOn
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.ContactPage
+import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Dashboard
+import androidx.compose.material.icons.rounded.DataUsage
+import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.SettingsEthernet
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.Update
+import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,6 +42,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
@@ -188,6 +201,12 @@ private fun QualityCard(uiState: SettingsUiState, actions: SettingsScreenActions
         OverlayDropdownPreference(
             title = stringResource(R.string.settings_resolution),
             summary = stringResource(R.string.settings_resolution_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.Rounded.DesktopWindows,
+                    stringResource(R.string.settings_resolution)
+                )
+            },
             items = SettingsViewModel.RESOLUTIONS,
             selectedIndex = SettingsViewModel.RESOLUTIONS.indexOf(uiState.videoResolution).coerceAtLeast(0),
             onSelectedIndexChange = actions.onSetResolutionIndex,
@@ -195,6 +214,12 @@ private fun QualityCard(uiState: SettingsUiState, actions: SettingsScreenActions
         OverlayDropdownPreference(
             title = stringResource(R.string.settings_fps),
             summary = stringResource(R.string.settings_fps_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.Rounded.Speed,
+                    stringResource(R.string.settings_fps)
+                )
+            },
             items = SettingsViewModel.FPS_OPTIONS.map { "$it FPS" },
             selectedIndex = SettingsViewModel.FPS_OPTIONS.indexOf(uiState.videoFps).coerceAtLeast(0),
             onSelectedIndexChange = actions.onSetFpsIndex,
@@ -202,6 +227,12 @@ private fun QualityCard(uiState: SettingsUiState, actions: SettingsScreenActions
         OverlayDropdownPreference(
             title = stringResource(R.string.settings_bitrate),
             summary = stringResource(R.string.settings_bitrate_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.Rounded.DataUsage,
+                    stringResource(R.string.settings_bitrate)
+                )
+            },
             items = SettingsViewModel.BITRATE_MBPS_OPTIONS.map { "$it Mbps" },
             selectedIndex = SettingsViewModel.BITRATE_MBPS_OPTIONS.indexOf(uiState.videoBitrateMbps).coerceAtLeast(0),
             onSelectedIndexChange = actions.onSetBitrateIndex,
@@ -209,6 +240,12 @@ private fun QualityCard(uiState: SettingsUiState, actions: SettingsScreenActions
         SwitchPreference(
             title = stringResource(R.string.settings_audio),
             summary = stringResource(R.string.settings_audio_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.AutoMirrored.Rounded.VolumeUp,
+                    stringResource(R.string.settings_audio)
+                )
+            },
             checked = uiState.audioEnabled,
             onCheckedChange = actions.onSetAudioEnabled,
         )
@@ -224,16 +261,29 @@ private fun SecurityCard(uiState: SettingsUiState, actions: SettingsScreenAction
     ) {
         TokenEditArrow(
             value = uiState.streamToken,
+            icon = Icons.Rounded.VpnKey,
             onConfirm = actions.onSetToken,
         )
         SuperEditArrow(
             title = stringResource(R.string.settings_port),
             defaultValue = uiState.serverPort,
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.Rounded.SettingsEthernet,
+                    stringResource(R.string.settings_port)
+                )
+            },
             onValueChange = actions.onSetServerPort,
         )
         BasicComponent(
             title = stringResource(R.string.settings_restart_hint),
             summary = stringResource(R.string.settings_token_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.Rounded.Info,
+                    stringResource(R.string.settings_restart_hint)
+                )
+            },
             onClick = {},
         )
     }
@@ -249,12 +299,24 @@ private fun ScrcpyCard(uiState: SettingsUiState, actions: SettingsScreenActions)
         SwitchPreference(
             title = stringResource(R.string.settings_touch),
             summary = stringResource(R.string.settings_touch_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.Rounded.TouchApp,
+                    stringResource(R.string.settings_touch)
+                )
+            },
             checked = uiState.scrcpyTouchEnabled,
             onCheckedChange = actions.onSetTouchEnabled,
         )
         SwitchPreference(
             title = stringResource(R.string.settings_right_back),
             summary = stringResource(R.string.settings_right_back_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.AutoMirrored.Rounded.Undo,
+                    stringResource(R.string.settings_right_back)
+                )
+            },
             checked = uiState.scrcpyRightBackEnabled,
             enabled = uiState.scrcpyTouchEnabled,
             onCheckedChange = actions.onSetRightBackEnabled,
@@ -262,6 +324,12 @@ private fun ScrcpyCard(uiState: SettingsUiState, actions: SettingsScreenActions)
         SwitchPreference(
             title = stringResource(R.string.settings_keyboard),
             summary = stringResource(R.string.settings_keyboard_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.Rounded.Keyboard,
+                    stringResource(R.string.settings_keyboard)
+                )
+            },
             checked = uiState.scrcpyKeyboardEnabled,
             enabled = uiState.scrcpyTouchEnabled,
             onCheckedChange = actions.onSetKeyboardEnabled,
@@ -283,6 +351,12 @@ private fun BlackoutCard(uiState: SettingsUiState, actions: SettingsScreenAction
         OverlayDropdownPreference(
             title = stringResource(R.string.settings_blackout_mode),
             summary = stringResource(R.string.settings_blackout_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.Rounded.DarkMode,
+                    stringResource(R.string.settings_blackout_mode)
+                )
+            },
             items = items,
             selectedIndex = if (uiState.blackoutMode == "overlay") 1 else 0,
             onSelectedIndexChange = actions.onSetBlackoutIndex,
@@ -290,6 +364,12 @@ private fun BlackoutCard(uiState: SettingsUiState, actions: SettingsScreenAction
         SwitchPreference(
             title = stringResource(R.string.settings_keepalive),
             summary = stringResource(R.string.settings_keepalive_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.Rounded.AlarmOn,
+                    stringResource(R.string.settings_keepalive)
+                )
+            },
             checked = uiState.keepAliveEnabled,
             onCheckedChange = actions.onSetKeepAlive,
         )
@@ -335,7 +415,7 @@ private fun AppearanceCard(uiState: SettingsUiState, actions: SettingsScreenActi
 }
 
 @Composable
-private fun TokenEditArrow(value: String, onConfirm: (String) -> Unit) {
+private fun TokenEditArrow(value: String, icon: ImageVector, onConfirm: (String) -> Unit) {
     var showDialog by rememberSaveable { mutableStateOf(false) }
     val summary = if (value.isBlank()) {
         stringResource(R.string.settings_token_unset)
@@ -345,6 +425,9 @@ private fun TokenEditArrow(value: String, onConfirm: (String) -> Unit) {
     ArrowPreference(
         title = stringResource(R.string.settings_token),
         summary = "$summary · ${stringResource(R.string.settings_token_summary)}",
+        startAction = {
+            SettingsLeadingIcon(icon, stringResource(R.string.settings_token))
+        },
         onClick = { showDialog = true },
         holdDownState = showDialog,
     )
@@ -389,4 +472,15 @@ private fun TokenEditArrow(value: String, onConfirm: (String) -> Unit) {
             },
         )
     }
+}
+
+/** 设置页一级行左侧标准图标（Miuix Icon 容器，不改行高/字号/配色规范）。 */
+@Composable
+private fun SettingsLeadingIcon(icon: ImageVector, contentDescription: String) {
+    Icon(
+        icon,
+        modifier = Modifier.padding(end = 6.dp),
+        contentDescription = contentDescription,
+        tint = colorScheme.onBackground,
+    )
 }
