@@ -773,6 +773,44 @@ object PrivilegedCapture {
         } catch (t: Throwable) {
             Log.d(TAG, "[PrivilegedCapture] ctx via AppGlobals failed ${t.javaClass.simpleName}:${t.message}")
         }
+        // 4) Universal-1：裸 app_process 经 ActivityThread.systemMain() 自举拿 system context
+        // （SDK36 上 SurfaceControl.createDisplay 已删（probe 实证 0 个），必须走 DisplayManager，
+        // 而 DisplayManager 实例需 Context；bare 进程前 3 路全空，此处现场自举）。
+        try {
+            val at = Class.forName("android.app.ActivityThread")
+            val systemMain = at.getDeclaredMethod("systemMain")
+            systemMain.isAccessible = true
+            val thread = systemMain.invoke(null)
+            if (thread != null) {
+                try {
+                    val getSys = thread.javaClass.getDeclaredMethod("getSystemContext")
+                    getSys.isAccessible = true
+                    val sys = getSys.invoke(thread) as? Context
+                    if (sys != null) {
+                        Log.i(TAG, "[PrivilegedCapture] ctx via systemMain.getSystemContext ok ${sys.javaClass.name}")
+                        return sys
+                    }
+                    Log.d(TAG, "[PrivilegedCapture] ctx via systemMain.getSystemContext=null")
+                } catch (t: Throwable) {
+                    Log.d(TAG, "[PrivilegedCapture] ctx via systemMain.getSystemContext failed ${t.javaClass.simpleName}:${t.message}")
+                }
+                try {
+                    val getApp = thread.javaClass.getDeclaredMethod("getApplication")
+                    getApp.isAccessible = true
+                    val app = getApp.invoke(thread) as? Context
+                    if (app != null) {
+                        Log.i(TAG, "[PrivilegedCapture] ctx via systemMain.getApplication ok ${app.javaClass.name}")
+                        return app
+                    }
+                } catch (t: Throwable) {
+                    Log.d(TAG, "[PrivilegedCapture] ctx via systemMain.getApplication failed ${t.javaClass.simpleName}:${t.message}")
+                }
+            } else {
+                Log.d(TAG, "[PrivilegedCapture] ctx via systemMain=null")
+            }
+        } catch (t: Throwable) {
+            Log.d(TAG, "[PrivilegedCapture] ctx via systemMain failed ${t.javaClass.simpleName}:${t.message}")
+        }
         Log.w(TAG, "[PrivilegedCapture] ctx all means miss (bare app_process?)")
         return null
     }
@@ -880,6 +918,30 @@ object PrivilegedCapture {
             Log.d(TAG, "[PrivilegedCapture] DisplayManager list overloads failed ${t.message}")
         }
         var lastErr: Throwable? = null
+        // ⓪ SDK36 新增公开 5-arg (name,w,h,dpi,surface) 无 flags（probe 实证存在，先试，root 身份应放行）。
+        try {
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.try (String,int,int,int,Surface)")
+            val m = dm.javaClass.getDeclaredMethod(
+                "createVirtualDisplay",
+                String::class.java,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                Surface::class.java,
+            )
+            m.isAccessible = true
+            val vd = m.invoke(dm, DISPLAY_NAME, width, height, dpi, surface) as? VirtualDisplay
+            if (vd != null) {
+                Log.i(TAG, "[PrivilegedCapture] DisplayManager.hit 5-arg (name,w,h,dpi,surface)")
+                return vd
+            }
+            lastErr = IllegalStateException("5-arg returned null")
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.miss 5-arg returned null")
+        } catch (t: NoSuchMethodException) {
+            lastErr = t
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.miss 5-arg noMethod")
+        } catch (t: Throwable) {
+            lastErr = t
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.fail 5-arg ${t.javaClass.simpleName}:${t.message}")
+        }
         // ① (name,w,h,dpi,surface,flags)
         try {
             Log.d(TAG, "[PrivilegedCapture] DisplayManager.try (String,int,int,int,Surface,int)")

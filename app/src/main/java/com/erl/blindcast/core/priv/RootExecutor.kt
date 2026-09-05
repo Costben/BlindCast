@@ -10,21 +10,30 @@ import java.io.File
 import java.util.UUID
 
 /**
- * Root 真身执行器（Root-Backend-1 · 单次 `app_process`，不搭常驻 daemon，只做断电/点亮）。
+ * Root 真身执行器（Root-Backend-1 · 单次 `app_process`，不搭常驻 daemon，只做断电/点亮；
+ * Universal-1 起加 input 单次反控：tap/drag/key/text 各一次即退，tap 冷起约 1-2s 可接受先正确再快）。
  *
  * 背景（主控真机取证）：MAA-Meow 在本机起 `com.aliothmoon.maameow:root_service` 跑在 uid 0
  * 真 root 身份调断电才生效；我们的 Shizuku UserService 是 shell 身份，被 OPlus 静默忽略。
  * 故加 Root 后端，与 Shizuku/按键形成 Root→Shizuku→按键三段路由
- * （路由见 [com.erl.blindcast.core.blackout.PowerController.setDisplayPowerRouted]）。
+ * （路由见 [com.erl.blindcast.core.blackout.PowerController.setDisplayPowerRouted]；
+ * 反控路由见 [com.erl.blindcast.core.priv.PrivilegedBridge] inject* Root→Shizuku 两段）。
  *
  * ## 执行方式（只用 libsu 同步 `Shell.cmd` API）
  * - 后台线程（调用方已在 `Dispatchers.IO`，本对象内同样切 IO）跑：
  *   `CLASSPATH=<apk> app_process /system/bin com.erl.blindcast.core.priv.RootMain
- *   displayPower on|off <resultFile>`；
+ *   displayPower on|off <resultFile>`（电源）或
+ *   `... RootMain input tap x y <resultFile>` /
+ *   `... input drag x0 y0 x1 y1 <resultFile>` /
+ *   `... input key <code> <resultFile>` /
+ *   `... input text '<b64>' <resultFile>`（反控，b64 为 UTF-8 的 Base64 NO_WRAP，
+ *   单引号包裹防空串被 shell 吞参，b64 字母表无单引号故安全）；
  *   `Shell.cmd` 本身即跑在 root shell 内，等价于任务包所述 `su -c "..."` 内层，
  *   不再套一层 `su -c`（省一次嵌套引号转义，结果一致）；
- * - `CLASSPATH` 传调用方 `applicationInfo.sourceDir`（[runAsRootDisplayPower] 的 `apkPath` 参数，
- *   勿硬编码，由 [com.erl.blindcast.core.blackout.PowerController] 经包名解析传入）；
+ * - `CLASSPATH` 传调用方 `applicationInfo.sourceDir`（[runAsRootDisplayPower] /
+ *   [runAsRootInput] 的 `apkPath` 参数，勿硬编码，由
+ *   [com.erl.blindcast.core.blackout.PowerController] 经包名解析传入，
+ *   反控侧由 [com.erl.blindcast.core.priv.PrivilegedBridge] 同款思路自解）；
  * - 超时约 20s（[ROOT_TIMEOUT_MS]，`withTimeoutOrNull` 包 `exec()`，超时按失败计）；
  * - 读结果文件判 `ok=true`（两行 `ok=`/`err=`，见 [RootMain]），BlindCast 日志记 uid/exit/result；
  * - 真机验证由主控做（本对象不碰 adb/手机之外的任何设备操作，Gradle 侧只保证编译）。
@@ -157,6 +166,87 @@ object RootExecutor {
         }
 
     /**
+     * 以 root 身份单次执行反控注入（Universal-1 · 单次 `app_process`，tap 冷起约 1-2s 可接受）。
+     *
+     * @param packageName 调用方包名（仅日志/诊断用，勿硬编码）。
+     * @param apkPath 调用方 `applicationInfo.sourceDir`（拼 `CLASSPATH=` 用，勿硬编码；为空直接失败）。
+     * @param subOp `tap` | `drag` | `key` | `text`（对应 [RootMain] input 子操作）。
+     * @param params 子操作参数（tap: [x, y] 归一化浮点串；drag: [x0, y0, x1, y1]；
+     *  key: [code]；text: [b64] Base64 NO_WRAP，空串传 "" 本方法自动单引号包裹防吞参）。
+     * @return first=是否成功（结果文件 `ok=true`）；second=失败明细（成功时 null，
+     *  含超时/执行失败/结果 miss/特权侧回传，单行已截断）。
+     */
+    suspend fun runAsRootInput(
+        packageName: String,
+        apkPath: String,
+        subOp: String,
+        params: List<String>,
+    ): Pair<Boolean, String?> =
+        withContext(Dispatchers.IO) {
+            val myUid = runCatching { Process.myUid() }.getOrDefault(-1)
+            Log.d(TAG, "[RootExecutor] ${tid()} input enter pkg=$packageName sub=$subOp params=${params.take(4)} myUid=$myUid")
+            if (apkPath.isBlank()) {
+                Log.d(TAG, "[RootExecutor] ${tid()} input abort empty apkPath pkg=$packageName sub=$subOp")
+                return@withContext false to "Root段跳过（取APK路径失败）"
+            }
+            val sub = subOp.trim()
+            if (sub != "tap" && sub != "drag" && sub != "key" && sub != "text") {
+                return@withContext false to "Root段非法 input 子操作：$subOp"
+            }
+            // 参数个数校验（缺参不拉进程，直接失败省一次冷起）。
+            val expectSizes = mapOf("tap" to 2, "drag" to 4, "key" to 1, "text" to 1)
+            if ((params.size) != (expectSizes[sub] ?: -1)) {
+                return@withContext false to "Root段 input 缺参（$sub 期望 ${expectSizes[sub]} 个，实 ${params.size} 个）"
+            }
+            val nonce = runCatching {
+                UUID.randomUUID().toString().replace("-", "").take(8)
+            }.getOrDefault(System.currentTimeMillis().toString())
+            val resultFile = "$RESULT_DIR/${RESULT_PREFIX}${Process.myPid()}_${nonce}"
+            // text 的 b64 单引号包裹（空串 `''` 防 shell 吞参；b64 字母表无单引号故安全）。
+            val paramStr = if (sub == "text") {
+                val b64 = params[0]
+                "'$b64'"
+            } else {
+                params.joinToString(" ")
+            }
+            val cmd =
+                "CLASSPATH=$apkPath app_process /system/bin com.erl.blindcast.core.priv.RootMain " +
+                    "input $sub $paramStr $resultFile"
+            val shellResult: Shell.Result? = try {
+                withTimeoutOrNull(ROOT_TIMEOUT_MS) {
+                    Shell.cmd(cmd).exec()
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "[RootExecutor] ${tid()} input exec threw pkg=$packageName sub=$sub", t)
+                null
+            }
+            if (shellResult == null) {
+                Log.d(TAG, "[RootExecutor] ${tid()} input timeout/exec-null pkg=$packageName sub=$sub " +
+                    "myUid=$myUid timeoutMs=$ROOT_TIMEOUT_MS resultFile=$resultFile")
+                runCatching { Shell.cmd("rm -f $resultFile").exec() }
+                return@withContext false to "Root段 input 超时（约${ROOT_TIMEOUT_MS / 1000}s，见logcat [RootExecutor]/[RootMain]明细）"
+            }
+            val exitCode = runCatching { shellResult.code }.getOrDefault(-1)
+            val out = runCatching { shellResult.out }.getOrDefault(emptyList())
+            val err = runCatching { shellResult.err }.getOrDefault(emptyList())
+            Log.d(TAG, "[RootExecutor] ${tid()} input shell done pkg=$packageName sub=$sub " +
+                "myUid=$myUid exit=$exitCode out=${out.take(5)} err=${err.take(5)} resultFile=$resultFile")
+            val resultText: String? = try {
+                readResultText(resultFile)
+            } catch (t: Throwable) {
+                Log.d(TAG, "[RootExecutor] ${tid()} input read result threw ${t.message}")
+                null
+            }
+            Log.d(TAG, "[RootExecutor] ${tid()} input result pkg=$packageName sub=$sub " +
+                "myUid=$myUid exit=$exitCode result=${resultText?.take(200)}")
+            runCatching { Shell.cmd("rm -f $resultFile").exec() }
+            runCatching { File(resultFile).delete() }
+            val (ok, errMsg) = parseOkErr(resultText)
+            Log.d(TAG, "[RootExecutor] ${tid()} input exit pkg=$packageName sub=$sub ok=$ok err=${errMsg?.take(200)}")
+            if (ok) true to null else false to (errMsg?.takeIf { it.isNotBlank() } ?: "Root段 input 失败（exit=$exitCode，见logcat [RootExecutor]/[RootMain]明细）")
+        }
+
+    /**
      * 读结果文件（直读优先，失败回退 `cat`，均失败返回 null）。
      *
      * RootMain 写后已 `chmod 644`，App 进程直读通常可达；SELinux/权限变体时走 root `cat`。
@@ -187,5 +277,20 @@ object RootExecutor {
         if (resultText.isNullOrBlank()) return false
         val first = resultText.lineSequence().firstOrNull()?.trim() ?: return false
         return first == "ok=true"
+    }
+
+    /**
+     * 结果文件判 ok + 取 err（两行 `ok=`/`err=` 沿用既有格式）。
+     * @return first=是否成功；second=失败明细（成功时 null，失败时为 `err=` 后串，可能空串）。
+     */
+    private fun parseOkErr(resultText: String?): Pair<Boolean, String?> {
+        if (resultText.isNullOrBlank()) return false to null
+        val lines = resultText.lineSequence().map { it.trimEnd() }.toList()
+        val first = lines.getOrNull(0)?.trim() ?: return false to null
+        if (first != "ok=true") {
+            val errLine = lines.firstOrNull { it.startsWith("err=") }?.removePrefix("err=")?.trim()
+            return false to errLine
+        }
+        return true to null
     }
 }

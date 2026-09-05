@@ -107,6 +107,7 @@ footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,23
     <button id="btnPower" title="息屏 / 亮屏">⏻</button>
     <button id="btnFull" title="全屏">⛶</button>
     <button id="btnKeys" title="聚焦键盘输入">⌨</button>
+    <button id="btnJpeg" title="切换 JPEG/H264 (裸浏览器降级)">🎞</button>
     <button id="btnReconnect" title="重连">⟳</button>
   </div>
 
@@ -147,8 +148,9 @@ footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,23
  *  - GET /api/status (鉴权) -> {blackedOut,batteryLevel...(DeviceApiRoute)
  *  - POST /api/screen {action} (鉴权)                  (DeviceApiRoute)
  *  - WS /ws/stream: 首条文本 hello, 后续二进制 1字节通道头+负载
- *      0x01 H.264 Annex-B NALU(首包SPS/PPS+IDR) / 0x02 AAC裸帧 (StreamWsRoute)
- *  - WS /ws/control: 文本JSON down/move/up/key/click/text/audio/ping (ControlWsRoute)
+ *      0x01 H.264 Annex-B NALU(首包SPS/PPS+IDR) / 0x02 AAC裸帧 /
+ *      0x03 JPEG单帧[4字节大端长+JPEG](无WebCodecs降级,Universal-1) (StreamWsRoute)
+ *  - WS /ws/control: 文本JSON down/move/up/key/click/text/audio/videoMode/ping (ControlWsRoute)
  * ===================================================================== */
 const $ = id => document.getElementById(id);
 const canvas = $("canvas"), ctx = canvas.getContext("2d");
@@ -202,6 +204,7 @@ const S = {
   streamOpenTs: 0, firstFrameTs: 0,
   fpsCount: 0, lastLat: -1, lastStatus: null,
   audioEnabled: true, dragging: false, lastMoveTs: 0, textBuf: "", textTimer: 0,
+  videoMode: (typeof VideoDecoder === "undefined" ? "jpeg" : "h264"), jpegBusy: false,
 };
 function setConn(on) {
   S.connected = on;
@@ -214,9 +217,13 @@ function wsBase() {
 }
 
 /* ---------------- H.264 解码管线 ---------------- */
-const KIND_VIDEO = 1, KIND_AUDIO = 2;
+const KIND_VIDEO = 1, KIND_AUDIO = 2, KIND_JPEG = 3;
+// Universal-1: 裸浏览器经 http 局域网为非安全源，VideoDecoder undefined 即黑屏，
+// 故无硬解时自动订阅 JPEG (createImageBitmap→drawImage)，有硬解走老路不动。
+const HAS_WEBCODECS = (typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined");
 let vdec = null, vdecKey = "", vdecHasKey = false, videoTs = 0, lastVideoTsWall = 0;
 let spsCache = null, ppsCache = null;
+let vdecNoCodecToastAt = 0;
 
 function splitAnnexB(u8) {
   const sc = [];
@@ -253,7 +260,11 @@ function buildAvcC(sps, pps) {
   return out;
 }
 function ensureDecoder() {
-  if (typeof VideoDecoder === "undefined") { toast("浏览器不支持 WebCodecs，请用 Chrome/Edge 94+"); return false; }
+  if (typeof VideoDecoder === "undefined") {
+    const now = Date.now();
+    if (now - vdecNoCodecToastAt > 5000) { vdecNoCodecToastAt = now; toast("浏览器不支持 WebCodecs，已自动切 JPEG (🎞)"); }
+    return false;
+  }
   if (!spsCache || !ppsCache || spsCache.length < 4) return false;
   const key = spsCache.length + ":" + spsCache[1] + "," + spsCache[2] + "," + spsCache[3];
   if (vdec && vdec.state !== "closed" && vdecKey === key &&
@@ -323,6 +334,61 @@ function fitCanvas() {
   canvas.style.width = w + "px"; canvas.style.height = h + "px";
 }
 window.addEventListener("resize", fitCanvas);
+
+/* ---------------- JPEG 降级管线 (Universal-1) ----------------
+ * 服务端线格式 [1字节0x03+4字节大端长+JPEG]，此处剥长后
+ * createImageBitmap→drawImage，Canvas 照常；与 H264 共存，有硬解走老路不动。 */
+function drawJpegBitmap(bmp) {
+  try {
+    const w = bmp.width || 1280, h = bmp.height || 720;
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; fitCanvas(); }
+    ctx.drawImage(bmp, 0, 0, w, h);
+    if (!S.firstFrameTs) {
+      S.firstFrameTs = performance.now();
+      const ms = Math.round(S.firstFrameTs - S.streamOpenTs);
+      $("footFrame").textContent = "首帧 " + ms + "ms (JPEG)";
+      $("bootOverlay").classList.add("hide");
+    }
+    S.fpsCount++;
+  } finally { try { bmp.close && bmp.close(); } catch (e) {} S.jpegBusy = false; }
+}
+function feedJpeg(payload) {
+  // 剥 4 字节大端长（服务端沿用既有帧格式；长度不匹配则整包当 JPEG 容错）。
+  let jpeg = payload;
+  if (payload && payload.length >= 5) {
+    const len = ((payload[0] << 24) >>> 0) + (payload[1] << 16) + (payload[2] << 8) + payload[3];
+    if (len > 0 && len <= payload.length - 4) {
+      jpeg = payload.subarray(4, 4 + len);
+    }
+  }
+  if (!jpeg || !jpeg.length) return;
+  if (S.jpegBusy) return; // 背压：上一帧还在解码则丢本帧保实时（服务端约10fps）
+  S.jpegBusy = true;
+  try {
+    const blob = new Blob([jpeg], { type: "image/jpeg" });
+    if (typeof createImageBitmap === "function") {
+      createImageBitmap(blob).then(drawJpegBitmap).catch(() => { S.jpegBusy = false; });
+    } else {
+      // 极老浏览器回退：Image + objectURL（仍零依赖）。
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => { try { drawJpegBitmap(img); } finally { try { URL.revokeObjectURL(url); } catch (e) {} } };
+      img.onerror = () => { S.jpegBusy = false; try { URL.revokeObjectURL(url); } catch (e) {} };
+      img.src = url;
+    }
+  } catch (e) { S.jpegBusy = false; }
+}
+function setVideoModeUI() {
+  const b = $("btnJpeg");
+  if (!b) return;
+  const jpeg = S.videoMode === "jpeg";
+  b.classList.toggle("on", jpeg);
+  b.title = jpeg ? "当前 JPEG 降级 (点击切回 H264)" : "当前 H264 硬解 (点击切 JPEG)";
+}
+function declareVideoMode() {
+  setVideoModeUI();
+  sendCtl({ type: "videoMode", mode: S.videoMode });
+}
 
 /* ---------------- AAC 音频管线 ----------------
  * 服务端只下发AAC裸帧(无ADTS/无ASC, 默认48k立体声AAC-LC)。
@@ -410,15 +476,17 @@ function closeSockets() {
   try { if (adec) adec.close(); } catch (e) {}
   adec = null;
   S.firstFrameTs = 0; videoTs = 0; lastVideoTsWall = 0; audioTs = 0;
+  S.jpegBusy = false;
 }
 function connect() {
   closeSockets();
   ensureActx();
   setConn(false);
+  setVideoModeUI();
   S.streamOpenTs = performance.now();
   $("footFrame").textContent = "frame --";
   let streamUp = false, ctlUp = false;
-  const maybeUp = () => { if (streamUp && ctlUp) { setConn(true); toast("● 双通道已建立"); startPing(); pollStatus(); } };
+  const maybeUp = () => { if (streamUp && ctlUp) { setConn(true); toast("● 双通道已建立 (" + S.videoMode + ")"); startPing(); pollStatus(); } };
 
   const sws = new WebSocket(wsBase() + "/ws/stream" + (token ? "?token=" + encodeURIComponent(token) : ""));
   sws.binaryType = "arraybuffer";
@@ -431,15 +499,16 @@ function connect() {
     const u8 = new Uint8Array(buf);
     const kind = u8[0];
     const payload = u8.subarray(1);
-    if (kind === KIND_VIDEO) feedVideo(payload);
+    if (kind === KIND_VIDEO) { if (S.videoMode === "jpeg") return; feedVideo(payload); }
     else if (kind === KIND_AUDIO) feedAudio(payload);
+    else if (kind === KIND_JPEG) { if (S.videoMode !== "jpeg") return; feedJpeg(payload); }
   };
   sws.onclose = () => { if (S.streamWs === sws) { setConn(false); showBoot("推流中断，点击重连"); $("bootOverlay").classList.remove("hide"); } };
   sws.onerror = () => { try { sws.close(); } catch (e) {} };
 
   const cws = new WebSocket(wsBase() + "/ws/control" + (token ? "?token=" + encodeURIComponent(token) : ""));
   S.ctlWs = cws;
-  cws.onopen = () => { ctlUp = true; maybeUp(); if (!S.audioEnabled) sendCtl({ type: "audio", enabled: false }); };
+  cws.onopen = () => { ctlUp = true; maybeUp(); declareVideoMode(); if (!S.audioEnabled) sendCtl({ type: "audio", enabled: false }); };
   cws.onmessage = ev => {
     let m = null;
     try { m = JSON.parse(ev.data); } catch (e) { return; }
@@ -613,6 +682,12 @@ $("btnFull").onclick = () => {
   } catch (e) {}
 };
 $("btnKeys").onclick = () => { try { canvas.focus(); } catch (e) {} toast("键盘已聚焦，直接打字注入"); };
+$("btnJpeg").onclick = () => {
+  S.videoMode = (S.videoMode === "jpeg" ? "h264" : "jpeg");
+  S.jpegBusy = false;
+  declareVideoMode();
+  toast(S.videoMode === "jpeg" ? "🎞 已切 JPEG 降级 (裸浏览器)" : "🎞 已切回 H264 (硬解路)");
+};
 $("btnReconnect").onclick = () => { showBoot("正在重连…"); connect(); };
 $("btnEnter").onclick = () => { $("bootOverlay").classList.add("hide"); connect(); startStatusPoll(); };
 

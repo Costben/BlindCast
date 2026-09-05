@@ -7,7 +7,8 @@ import com.erl.blindcast.core.blackout.PowerController
 import java.io.File
 
 /**
- * Root 真身单次执行器（Root-Backend-1 · 不搭常驻 daemon，只做断电/点亮两个操作）。
+ * Root 真身单次执行器（Root-Backend-1 · 不搭常驻 daemon，只做断电/点亮两个操作；
+ * Universal-1 起加 input 单次反控兜底：tap/drag/key/text 各一次即退）。
  *
  * 运行身份：由 [RootExecutor] 经 `su -c "CLASSPATH=<apk> app_process /system/bin
  * com.erl.blindcast.core.priv.RootMain displayPower on|off <resultFile>"` 拉起，
@@ -18,6 +19,11 @@ import java.io.File
  * ## 调用契约（RootExecutor 侧组装，勿硬编码 APK 路径）
  * - `CLASSPATH=<调用方 applicationInfo.sourceDir>`（RootExecutor 传参，勿硬编码）；
  * - `app_process /system/bin com.erl.blindcast.core.priv.RootMain displayPower on|off <resultFile>`；
+ * - `app_process /system/bin com.erl.blindcast.core.priv.RootMain input tap <x> <y> <resultFile>`；
+ * - `app_process /system/bin com.erl.blindcast.core.priv.RootMain input drag <x0> <y0> <x1> <y1> <resultFile>`；
+ * - `app_process /system/bin com.erl.blindcast.core.priv.RootMain input key <keyCode> <resultFile>`；
+ * - `app_process /system/bin com.erl.blindcast.core.priv.RootMain input text <b64> <resultFile>`
+ *  （`<b64>` 为 UTF-8 文本的 Base64 NO_WRAP，空串传 `''`，防 shell 空格/引号转义）；
  * - `<resultFile>` 为 `/data/local/tmp/blindcast_root_result_<nonce>`（RootExecutor 生成 nonce）。
  *
  * ## 进程内行为
@@ -27,7 +33,13 @@ import java.io.File
  *   熄屏验 STATE_OFF，点亮验 STATE_ON），成了直接返回 ok（无锁屏、无 AOD 真黑）；
  *   熄屏 binder 验效失败直接返 false，不进任何锁屏/按键兜底；
  *   点亮 binder 验效失败则试 [PowerController.wakeByKey]
- *  （KEYCODE_WAKEUP→KEYCODE_POWER，只点亮不制造新锁）；
+ *  （KEYCODE_WAKEUP→KEYCODE_POWER，只点亮不制造新锁）。
+ * - 参数 `input tap|drag|key|text ...`（Universal-1）：RootMain 内直接
+ *   `new PrivilegedUserService()` 调 `injectTap/Drag/Key/Text`
+ *  （该类无 Shizuku 依赖，纯 TouchInjector/InputManager 反射，root 身份可调）；
+ *   归一化坐标 0..1（与 ControlWsRoute 同语义），key 为 Android keyCode int，
+ *   text 为 Base64 解码后 UTF-8 串；成功判据为返回值 true，失败明细经
+ *   `getInputError()` 回读；
  * - 结果写结果文件两行：`ok=true|false` / `err=<message>`（成功时 err 为空）；
  * - 全程 `runCatching` 包住不抛，`finally` 按成功失败 `System.exit(0/1)`；
  * - 普通 App 进程不要直接调本入口（本入口只在 root `app_process` 内有意义）。
@@ -44,7 +56,11 @@ object RootMain {
      * `app_process` 入口（签名必须为 `public static void main(String[])`，Kotlin 侧为
      * `object + @JvmStatic fun main(args: Array<String>)`）。
      *
-     * @param args 期望 `["displayPower", "on"|"off", "<resultFile>"]`。
+     * @param args 期望 `["displayPower", "on"|"off", "<resultFile>"]` 或
+     *  `["input", "tap", x, y, "<resultFile>"]` /
+     *  `["input", "drag", x0, y0, x1, y1, "<resultFile>"]` /
+     *  `["input", "key", code, "<resultFile>"]` /
+     *  `["input", "text", b64, "<resultFile>"]`。
      */
     @Keep
     @JvmStatic
@@ -73,10 +89,20 @@ object RootMain {
                 }
                 return
             }
+            // Universal-1：input 单次反控（Root→Shizuku 两段之 Root 段，无 Shizuku 依赖）。
+            if (op == "input") {
+                val (inputOk, inputErr, inputFile) = runCatching { doInput(args) }.getOrElse { t ->
+                    Triple(false, "input执行异常：${t.message ?: t}", args.lastOrNull()?.takeIf { it.startsWith("/") }?.let { File(it) })
+                }
+                if (inputFile != null) resultFile = inputFile
+                ok = inputOk
+                errMsg = if (inputOk) "" else inputErr
+                return
+            }
             val onOff = args.getOrNull(1)
             val resultPath = args.getOrNull(2)
             if (op != "displayPower") {
-                errMsg = "未知操作：${op ?: "null"}（仅支持 displayPower/startCapture）"
+                errMsg = "未知操作：${op ?: "null"}（仅支持 displayPower/input/startCapture）"
                 return
             }
             val on: Boolean = when (onOff) {
@@ -131,7 +157,7 @@ object RootMain {
             }
             // 结果文件两行：ok=/err=（写失败只记日志，不改变退出码语义）。
             runCatching {
-                val f = resultFile ?: args.getOrNull(2)?.takeIf { it.isNotBlank() }?.let { File(it) }
+                val f = resultFile ?: args.lastOrNull()?.takeIf { it.startsWith("/") }?.let { File(it) }
                 if (f != null) {
                     runCatching { f.parentFile?.mkdirs() }.getOrDefault(false)
                     // 单行 err（去换行，防解析歧义，截断防超长）。
@@ -157,6 +183,139 @@ object RootMain {
                     // 退出都失败则自然返回（app_process 会自行结束）。
                 }
             }
+        }
+    }
+
+    /**
+     * Universal-1 input 单次执行（root app_process 内直调，同步阻塞）。
+     *
+     * 直接 `new PrivilegedUserService()` 调 `injectTap/Drag/Key/Text`
+     * （该类无 Shizuku 依赖，纯 TouchInjector/InputManager 反射；root 身份下
+     * INJECT_EVENTS 放行）。归一化坐标 0..1 越界由特权侧钳制；text 的 b64 为
+     * UTF-8 的 Base64 NO_WRAP（空串传 `''`，shell 侧已去引号，此处收到的即 `""`）。
+     *
+     * @param args 完整 `main` 参数（含 `args[0]=="input"`）。
+     * @return Triple(ok, errMsg, resultFile?)：ok=true 时 errMsg 为 ""；失败时为单行文案；
+     *  resultFile 为 null 表示连结果文件路径都缺（调用方 finally 按 last arg 兜底）。
+     */
+    private fun doInput(args: Array<String>): Triple<Boolean, String, File?> {
+        val pid = runCatching { Process.myPid() }.getOrDefault(-1)
+        val uid = runCatching { Process.myUid() }.getOrDefault(-1)
+        val sub = args.getOrNull(1)
+        runCatching {
+            Log.d(TAG, "[RootMain] pid=$pid uid=$uid input enter sub=$sub args=${args.toList().take(7)}")
+        }
+        // text 空串容错：shell 把 `''` 去引号后即 `""`（4 参）；若某 shell 把空参吞掉
+        // 变成 3 参且 args[2] 即结果路径（以 "/" 开头），则视为空文本。
+        fun textArgs(): Pair<String, File?>? {
+            if (args.size >= 4) {
+                val rp = args[3]
+                if (rp.isNullOrBlank()) return null
+                return args[2].orEmpty() to File(rp)
+            }
+            if (args.size == 3) {
+                val maybePath = args[2]
+                if (!maybePath.isNullOrBlank() && maybePath.startsWith("/")) {
+                    return "" to File(maybePath)
+                }
+            }
+            return null
+        }
+        return try {
+            val svc = PrivilegedUserService()
+            when (sub) {
+                "tap" -> {
+                    if (args.size < 5) return Triple(false, "tap 缺参（期望 input tap x y <resultFile>）", args.lastOrNull()?.takeIf { it.startsWith("/") }?.let { File(it) })
+                    val x = args[2].toFloatOrNull()
+                    val y = args[3].toFloatOrNull()
+                    val rf = args[4].takeIf { it.isNotBlank() }?.let { File(it) }
+                    if (rf == null) return Triple(false, "tap 缺结果文件路径（args[4] 为空）", null)
+                    if (x == null || y == null || !x.isFinite() || !y.isFinite()) {
+                        return Triple(false, "tap 非法坐标：${args[2]},${args[3]}（期望 0..1 浮点）", rf)
+                    }
+                    val ok = runCatching { svc.injectTap(x, y) }.getOrElse { t ->
+                        runCatching { Log.e(TAG, "[RootMain] input tap threw", t) }
+                        return Triple(false, "tap抛异常：${t.message ?: t}", rf)
+                    }
+                    if (ok) {
+                        runCatching { Log.d(TAG, "[RootMain] input tap ok x=$x y=$y") }
+                        Triple(true, "", rf)
+                    } else {
+                        val e = runCatching { svc.inputError }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: "tap rejected by system"
+                        Triple(false, e, rf)
+                    }
+                }
+                "drag" -> {
+                    if (args.size < 7) return Triple(false, "drag 缺参（期望 input drag x0 y0 x1 y1 <resultFile>）", args.lastOrNull()?.takeIf { it.startsWith("/") }?.let { File(it) })
+                    val x0 = args[2].toFloatOrNull()
+                    val y0 = args[3].toFloatOrNull()
+                    val x1 = args[4].toFloatOrNull()
+                    val y1 = args[5].toFloatOrNull()
+                    val rf = args[6].takeIf { it.isNotBlank() }?.let { File(it) }
+                    if (rf == null) return Triple(false, "drag 缺结果文件路径（args[6] 为空）", null)
+                    if (listOf(x0, y0, x1, y1).any { it == null || !it.isFinite() }) {
+                        return Triple(false, "drag 非法坐标（期望 0..1 浮点 x4）", rf)
+                    }
+                    val ok = runCatching { svc.injectDrag(x0!!, y0!!, x1!!, y1!!) }.getOrElse { t ->
+                        runCatching { Log.e(TAG, "[RootMain] input drag threw", t) }
+                        return Triple(false, "drag抛异常：${t.message ?: t}", rf)
+                    }
+                    if (ok) {
+                        runCatching { Log.d(TAG, "[RootMain] input drag ok") }
+                        Triple(true, "", rf)
+                    } else {
+                        val e = runCatching { svc.inputError }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: "drag rejected by system"
+                        Triple(false, e, rf)
+                    }
+                }
+                "key" -> {
+                    if (args.size < 4) return Triple(false, "key 缺参（期望 input key <code> <resultFile>）", args.lastOrNull()?.takeIf { it.startsWith("/") }?.let { File(it) })
+                    val code = args[2].toIntOrNull()
+                    val rf = args[3].takeIf { it.isNotBlank() }?.let { File(it) }
+                    if (rf == null) return Triple(false, "key 缺结果文件路径（args[3] 为空）", null)
+                    if (code == null) return Triple(false, "key 非法键码：${args[2]}（期望 int）", rf)
+                    val ok = runCatching { svc.injectKey(code) }.getOrElse { t ->
+                        runCatching { Log.e(TAG, "[RootMain] input key threw", t) }
+                        return Triple(false, "key抛异常：${t.message ?: t}", rf)
+                    }
+                    if (ok) {
+                        runCatching { Log.d(TAG, "[RootMain] input key ok code=$code") }
+                        Triple(true, "", rf)
+                    } else {
+                        val e = runCatching { svc.inputError }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: "key rejected by system"
+                        Triple(false, e, rf)
+                    }
+                }
+                "text" -> {
+                    val (b64, rf) = textArgs()
+                        ?: return Triple(false, "text 缺参（期望 input text <b64> <resultFile>）", args.lastOrNull()?.takeIf { it.startsWith("/") }?.let { File(it) })
+                    val text = if (b64.isEmpty() || b64 == "-") {
+                        ""
+                    } else {
+                        try {
+                            val raw = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP)
+                            String(raw, Charsets.UTF_8)
+                        } catch (t: Throwable) {
+                            return Triple(false, "text 非法b64：${t.message ?: t}", rf)
+                        }
+                    }
+                    val ok = runCatching { svc.injectText(text) }.getOrElse { t ->
+                        runCatching { Log.e(TAG, "[RootMain] input text threw", t) }
+                        return Triple(false, "text抛异常：${t.message ?: t}", rf)
+                    }
+                    if (ok) {
+                        runCatching { Log.d(TAG, "[RootMain] input text ok len=${text.length}") }
+                        Triple(true, "", rf)
+                    } else {
+                        val e = runCatching { svc.inputError }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: "text rejected by system"
+                        Triple(false, e, rf)
+                    }
+                }
+                else -> Triple(false, "未知 input 子操作：${sub ?: "null"}（仅支持 tap|drag|key|text）", args.lastOrNull()?.takeIf { it.startsWith("/") }?.let { File(it) })
+            }
+        } catch (t: Throwable) {
+            runCatching { Log.e(TAG, "[RootMain] input top threw", t) }
+            Triple(false, t.message ?: t.toString(), args.lastOrNull()?.takeIf { it.startsWith("/") }?.let { File(it) })
         }
     }
 

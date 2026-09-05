@@ -928,7 +928,7 @@ object PowerController {
     // ------------------------------------------------------------------
 
     /**
-     * 解析调用方 APK 路径（拼 `CLASSPATH=` 用，勿硬编码）。
+     * 解析调用方 APK 路径（拼 `CLASSPATH=` 用，勿硬编码；Universal-1 起公开给反控 Root 段复用同款思路）。
      *
      * 优先级：[appContextRef]（特权进程 init 存的；App 进程若调过 init 同样可用）→
      * `ActivityThread.currentApplication()` 反射（App 进程免 init 即可取，不新增权限）→ null（取不到则跳过 Root 段）。
@@ -936,7 +936,7 @@ object PowerController {
      * @param packageName 调用方包名（`context.packageName`，防 applicationIdSuffix 变体时回退自身）。
      * @return `applicationInfo.sourceDir`，取不到返回 null。
      */
-    private fun resolveApkPath(packageName: String): String? {
+    fun resolveApkPath(packageName: String): String? {
         runCatching {
             appContextRef?.get()?.let { ctx ->
                 runCatching {

@@ -56,6 +56,15 @@ object CaptureSocketLink {
     val videoFrames: AtomicLong = AtomicLong(0)
     val audioFrames: AtomicLong = AtomicLong(0)
 
+    /**
+     * 视频泵入分叉（Universal-1 JPEG 降级用 · App 进程内存回调，不做编解码）。
+     * [JpegTranscoder] 在 init 中赋值为其 `offer`，每视频帧另调一次
+     * （含关键帧内联 SPS+PPS 的完整 Annex-B payload + 是否关键帧）。
+     * 无订阅时 Jpeg 侧直接丢弃，本回调开销仅一次空函数调用。
+     */
+    @Volatile
+    var videoTap: ((payload: ByteArray, isKey: Boolean) -> Unit)? = null
+
     /** 首帧门闩（任意通道首帧即放行；重启重建）。 */
     @Volatile private var firstFrameLatch = CountDownLatch(1)
 
@@ -284,6 +293,8 @@ object CaptureSocketLink {
         )
         ScreenCaptureEngine.frameChannel.trySend(pkt)
         runCatching { ScreenCaptureEngine.onFrame?.invoke(pkt) }.onFailure { t -> lastError = t }
+        // JPEG 降级分叉（无订阅时 Jpeg 侧直接丢，仅一次调用开销；异常吞掉不污染搬运）。
+        runCatching { videoTap?.invoke(payload, isKey) }
     }
 
     private fun onAudioFrame(payload: ByteArray) {

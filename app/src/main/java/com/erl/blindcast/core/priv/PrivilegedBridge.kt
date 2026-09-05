@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.IBinder
 import android.util.Log
 import com.erl.blindcast.BuildConfig
+import com.erl.blindcast.core.blackout.PowerController
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -316,17 +317,112 @@ object PrivilegedBridge {
     }
 
     // ------------------------------------------------------------------
-    // 反控注入快捷入口（ControlWsRoute 专用 · 按次绑定用完即焚）
+    // 反控注入快捷入口（ControlWsRoute 专用 · Root优先→Shizuku→无路引导）
     // ------------------------------------------------------------------
+
+    /**
+     * Universal-1 反控两段路由共用：先 Root 单次 `app_process`（无 Shizuku 可用兜底，
+     * 单次冷起约 1-2s 可接受），失败再走 Shizuku 按次绑定，均失败返回组合引导文案。
+     *
+     * @param packageName 调用方包名（`context.packageName`，Root 段拼 CLASSPATH 用，勿硬编码）。
+     * @param subOp RootMain input 子操作（tap|drag|key|text）。
+     * @param params 子操作参数（tap:[x,y]；drag:[x0,y0,x1,y1]；key:[code]；text:[b64]）。
+     * @param shizukuBlock Shizuku 段执行体（按次绑定内原子注入，返回 ok to err）。
+     * @return first=是否成功；second=失败明细（成功时 null，为 Root 段 + Shizuku 段组合文案）。
+     */
+    private suspend fun injectRouted(
+        packageName: String,
+        subOp: String,
+        params: List<String>,
+        shizukuBlock: suspend () -> Pair<Boolean, String?>,
+    ): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
+        // Root 段（首选；跳过/失败记文案并回退 Shizuku，既有 Shizuku 逻辑不动）。
+        var rootNote: String? = null
+        var rootOk = false
+        try {
+            val rootRes = tryRootInput(packageName, subOp, params)
+            rootOk = rootRes.first
+            rootNote = rootRes.second
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp rootOk=$rootOk rootNote=${rootNote?.take(200)}")
+            if (rootOk) return@withContext true to null
+        } catch (t: Throwable) {
+            rootNote = "Root段异常（${t.message ?: t}）"
+            Log.e(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp root threw", t)
+        }
+        // Shizuku 段（既有按次绑定用完即焚不动；未运行/未授权抛引导文案，记入组合）。
+        try {
+            val (ok, err) = shizukuBlock()
+            if (ok) return@withContext true to null
+            val shizukuPart = err?.takeIf { it.isNotBlank() } ?: "Shizuku段执行失败（返回 false）"
+            return@withContext false to combineInputError(rootNote, "Shizuku段失败：$shizukuPart")
+        } catch (t: Throwable) {
+            val base = t.message ?: t.toString()
+            // withPrivileged 的未运行/未授权引导文案原样透出（调用方直接展示），仅前拼 Root 段。
+            val msg = combineInputError(rootNote, base)
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp shizuku threw msg=${msg.take(200)}")
+            return@withContext false to msg
+        }
+    }
+
+    /**
+     * 试 Root 段单次 input（失败不抛，只记文案供组合）。
+     * @return first=Root 段是否成功；second=Root 段文案（成功时 null）。
+     */
+    private suspend fun tryRootInput(
+        packageName: String,
+        subOp: String,
+        params: List<String>,
+    ): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
+        val available: Boolean = try {
+            RootExecutor.isRootAvailable()
+        } catch (_: Throwable) {
+            false
+        }
+        Log.d(TAG, "[PrivilegedBridge] ${tid()} tryRootInput sub=$subOp available=$available")
+        if (!available) {
+            return@withContext false to "Root段不可用（无su/未授权，去KernelSU管理器点允许BlindCast）"
+        }
+        val apkPath: String? = try {
+            PowerController.resolveApkPath(packageName)
+        } catch (_: Throwable) {
+            null
+        }
+        if (apkPath.isNullOrBlank()) {
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} tryRootInput skip no apkPath pkg=$packageName")
+            return@withContext false to "Root段跳过（取APK路径失败）"
+        }
+        try {
+            val (ok, err) = RootExecutor.runAsRootInput(packageName, apkPath, subOp, params)
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} tryRootInput done sub=$subOp ok=$ok err=${err?.take(200)}")
+            if (ok) true to null else false to (err?.takeIf { !it.isNullOrBlank() } ?: "Root段已试失败（见logcat [RootExecutor]/[RootMain]明细）")
+        } catch (t: Throwable) {
+            Log.e(TAG, "[PrivilegedBridge] ${tid()} tryRootInput run threw", t)
+            false to "Root段异常（${t.message ?: t}）"
+        }
+    }
+
+    /** 组合最终失败文案（Root 段 + Shizuku 段，任一为空取另一段）。 */
+    private fun combineInputError(rootNote: String?, shizukuPart: String?): String {
+        val root = rootNote?.takeIf { it.isNotBlank() }
+        val shizuku = shizukuPart?.takeIf { it.isNotBlank() }
+        return when {
+            root != null && shizuku != null -> "$root；$shizuku"
+            root != null -> root
+            shizuku != null -> shizuku
+            else -> "反控注入失败（未知原因）"
+        }
+    }
 
     /**
      * 特权轻点（Down+Up 原子；归一化坐标相对真实主屏）。
      * @return first=是否成功；second=失败明细（成功时 null）。
      */
     suspend fun injectTap(packageName: String, x: Float, y: Float): Pair<Boolean, String?> =
-        withPrivileged(packageName) { ops ->
-            val ok = ops.injectTap(x, y)
-            ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+        injectRouted(packageName, "tap", listOf(x.toString(), y.toString())) {
+            withPrivileged(packageName) { ops ->
+                val ok = ops.injectTap(x, y)
+                ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+            }
         }
 
     /**
@@ -337,24 +433,36 @@ object PrivilegedBridge {
         packageName: String,
         x0: Float, y0: Float, x1: Float, y1: Float,
     ): Pair<Boolean, String?> =
-        withPrivileged(packageName) { ops ->
-            val ok = ops.injectDrag(x0, y0, x1, y1)
-            ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+        injectRouted(packageName, "drag", listOf(x0.toString(), y0.toString(), x1.toString(), y1.toString())) {
+            withPrivileged(packageName) { ops ->
+                val ok = ops.injectDrag(x0, y0, x1, y1)
+                ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+            }
         }
 
     /** 特权完整按键 Down+Up（无状态）。@return 同 [injectTap]。 */
     suspend fun injectKey(packageName: String, keyCode: Int): Pair<Boolean, String?> =
-        withPrivileged(packageName) { ops ->
-            val ok = ops.injectKey(keyCode)
-            ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+        injectRouted(packageName, "key", listOf(keyCode.toString())) {
+            withPrivileged(packageName) { ops ->
+                val ok = ops.injectKey(keyCode)
+                ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+            }
         }
 
     /** 特权文本注入（虚拟键盘映射；无状态）。@return 同 [injectTap]。 */
-    suspend fun injectText(packageName: String, text: String): Pair<Boolean, String?> =
-        withPrivileged(packageName) { ops ->
-            val ok = ops.injectText(text)
-            ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+    suspend fun injectText(packageName: String, text: String): Pair<Boolean, String?> {
+        val b64 = try {
+            android.util.Base64.encodeToString(text.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+        } catch (_: Throwable) {
+            ""
         }
+        return injectRouted(packageName, "text", listOf(b64)) {
+            withPrivileged(packageName) { ops ->
+                val ok = ops.injectText(text)
+                ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
+            }
+        }
+    }
 
     // ------------------------------------------------------------------
     // 内部：单次绑定

@@ -3,6 +3,7 @@ package com.erl.blindcast.core.server.routes
 import com.erl.blindcast.BuildConfig
 import com.erl.blindcast.core.priv.PrivilegedBridge
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
+import com.erl.blindcast.core.scrcpy.JpegTranscoder
 import com.erl.blindcast.core.scrcpy.ScrcpyGate
 import com.erl.blindcast.core.scrcpy.TouchInjector
 import kotlinx.coroutines.runBlocking
@@ -12,11 +13,13 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
- * 反向控制 WebSocket 路由（Slice 4.1 · `GET /ws/control` 升级后落点）。
+ * 反向控制 WebSocket 路由（Slice 4.1 · `GET /ws/control` 升级后落点；
+ * Universal-1 起加 `videoMode` 声明供 JPEG 按需启停）。
  *
  * ## 指令协议（客户端 → 文本 JSON，服务端逐条回执 `{"type":"ack",...}`）
  * - `{"type":"down","x":0..1,"y":0..1}` / `move` / `up`
- *   → [TouchInjector] 归一化触控注入（左键拖拽，物理熄屏下照常驱动）；
+ *   → [TouchInjector] 归一化触控注入（左键拖拽，物理熄屏下照常驱动；
+ *   特权经 [PrivilegedBridge] Root优先→Shizuku 两段，无 Shizuku 纯 Root 机可用）；
  * - `{"type":"key","keycode":int}` → 完整按键（Down+Up）；
  * - `{"type":"click","button":"right"|"middle"|"left","x":..,"y":..}`
  *   → 右键 = `KEYCODE_BACK`（返回），中键 = `KEYCODE_HOME`，
@@ -24,6 +27,10 @@ import java.util.concurrent.CopyOnWriteArraySet
  * - `{"type":"text","text":"..."}` → 键盘打字注入（虚拟键盘映射）；
  * - `{"type":"audio","enabled":bool}` → 音频传输总闸（直通 [AudioCaptureEngine]，
  *   关闸零编码零网络消耗由引擎保证）；
+ * - `{"type":"videoMode","mode":"jpeg"|"h264"}` → 视频降级声明（Universal-1 ·
+ *   前端 `typeof VideoDecoder==="undefined"` 时发 `jpeg`，有硬解发 `h264`；
+ *   无声明默认 h264；有任一 jpeg 订阅者即跑 [JpegTranscoder] 解码链，
+ *   无订阅者停链省电；H264 老泵不受影响，切回不断）；
  * - `{"type":"ping"}` → `{"type":"pong"}`（应用层心跳，4.2 延迟显示用）。
  * - 未知 type / 非法参数 → `{ok:false, error:...}`，连接不断（4.2 联调期容错）。
  *
@@ -79,6 +86,7 @@ object ControlWsRoute {
         } finally {
             sessions.remove(conn)
             pendingGestures.remove(conn)
+            runCatching { JpegTranscoder.clear(conn) }
             runCatching { TouchInjector.cancelTouch() }
             runCatching { conn.close() }
         }
@@ -136,6 +144,15 @@ object ControlWsRoute {
                     val enabled = json.optBoolean("enabled", true)
                     runCatching { AudioCaptureEngine.setAudioEnabled(enabled) }
                     reply(conn, true, "audio", null)
+                }
+            }
+            "videoMode" -> {
+                val mode = json.optString("mode", "").lowercase()
+                if (mode != "jpeg" && mode != "h264") {
+                    reply(conn, false, "videoMode", "missing mode (jpeg|h264)")
+                } else {
+                    runCatching { JpegTranscoder.setVideoMode(conn, mode) }
+                    reply(conn, true, "videoMode", null)
                 }
             }
             "ping" -> replyRaw(conn, """{"type":"pong","ok":true}""")
