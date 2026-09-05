@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 常驻前台保活服务（Slice 6.1 · MVP.md 第四章 core/service）。
@@ -220,6 +221,12 @@ class BlindCastForegroundService : Service() {
     @Volatile private var captureMode: String = "none" // shizuku | root | none
     @Volatile private var rootStopFile: String? = null
 
+    /**
+     * Stream-Priv-2 并发互斥卫兵：onCreate 与 onStartCommand 双路调 bootStack
+     * （或重复 startService）并发只跑一份；boot 完成 finally 清标记。
+     */
+    private val booting = AtomicBoolean(false)
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -312,6 +319,11 @@ class BlindCastForegroundService : Service() {
     }
 
     private fun bootStack() {
+        // Stream-Priv-2：并发互斥，重复进入直接返回，boot 完成 finally 清标记。
+        if (!booting.compareAndSet(false, true)) {
+            Log.i(TAG, "bootStack skipped (already booting)")
+            return
+        }
         try {
             bootStackInternal()
             // 同进程重试成功且协议栈健康时清掉陈旧致命痕（失败态已在 catch 留痕，不误删）。
@@ -326,6 +338,8 @@ class BlindCastForegroundService : Service() {
         } catch (t: Exception) {
             recordError(t)
             runCatching { stopSelf() }
+        } finally {
+            booting.set(false)
         }
     }
 
@@ -373,11 +387,42 @@ class BlindCastForegroundService : Service() {
         val bitrate = bitrateMbps * 1_000_000
         // 本地引擎不再 App 进程直起（必吃 SecurityException 静默 false，旧根因）：
         // 只做特权链路（搬运服先起，特权建连 + 首帧等待放后台，避免阻塞主线程 ANR）。
+        // Stream-Priv-2 解耦降级：HTTP 已在上方先起（UI/API/WS 可用），采集失败只记
+        // captureError 进状态流（videoRunning=false），绝不碰 server；后台重试一次
+        //（5s 后），仍失败就停等下次开关。
         scope.launch {
-            val ok = runCatching { runPrivilegedCaptureBlocking(vw, vh, bitrate, fps) }.getOrDefault(false)
+            val okFirst = runCatching { runPrivilegedCaptureBlocking(vw, vh, bitrate, fps) }.getOrDefault(false)
             runCatching { _status.value = snapshot() }
-            Log.i(TAG, "[CaptureRoute] boot privileged done ok=$ok mode=$captureMode " +
+            Log.i(TAG, "[CaptureRoute] boot privileged done ok=$okFirst mode=$captureMode " +
                 "hasVideo=${CaptureSocketLink.hasVideo} hasAudio=${CaptureSocketLink.hasAudio}")
+            if (okFirst) return@launch
+            if (!isActive || !BlindCastServer.isRunning) {
+                Log.i(TAG, "[CaptureRoute] capture failed, skip retry (service stopped)")
+                return@launch
+            }
+            Log.i(TAG, "[CaptureRoute] capture failed, retry once after 5s " +
+                "(videoRunning=false, server keeps running)")
+            delay(5_000L)
+            if (!isActive || !BlindCastServer.isRunning) {
+                Log.i(TAG, "[CaptureRoute] retry skipped (service stopped)")
+                return@launch
+            }
+            if (CaptureSocketLink.hasVideo) {
+                runCatching { _status.value = snapshot() }
+                return@launch
+            }
+            Log.i(TAG, "[CaptureRoute] retrying privileged capture once")
+            val okRetry = runCatching { runPrivilegedCaptureBlocking(vw, vh, bitrate, fps) }.getOrDefault(false)
+            runCatching { _status.value = snapshot() }
+            Log.i(TAG, "[CaptureRoute] retry privileged done ok=$okRetry mode=$captureMode " +
+                "hasVideo=${CaptureSocketLink.hasVideo} hasAudio=${CaptureSocketLink.hasAudio}")
+            if (!okRetry) {
+                // 仍失败就停等下次开关：确保采集已收，不碰 server（HTTP/UI/API/WS 保持可用）。
+                runCatching { stopPrivilegedCapture() }
+                runCatching { _status.value = snapshot() }
+                Log.w(TAG, "[CaptureRoute] retry failed, capture stopped waiting next toggle; " +
+                    "serverRunning=${BlindCastServer.isRunning}")
+            }
         }
         if (keepAlive) {
             runCatching { UserActivityKeeper.start(this) }

@@ -65,38 +65,72 @@ object CaptureSocketLink {
     private var acceptThread: Thread? = null
 
     /**
-     * 启动搬运服（幂等可重配，同步返回，不阻塞等帧）。
+     * 启动搬运服（幂等，同步返回，不阻塞等帧）。
      * 首帧经 [awaitFirstFrame] 另行等待（bootStack 等首帧或 3s 超时再标 running）。
+     *
+     * Stream-Priv-2 加固：
+     * - 加锁幂等：已在运行重复 start 直接返回 true（不再先停再起，避免
+     *   onCreate/onStartCommand 双路并发抢绑自残）；
+     * - 抢绑自愈：bind 遇 EADDRINUSE/BindException 先关残留再重试（间隔 500ms，
+     *   最多 3 次），仍失败才抛（调用方经 runCatching 收敛为 captureError）。
      */
-    @Synchronized
     fun start(width: Int, height: Int, bitrate: Int, fps: Int): Boolean {
-        if (isRunning) stopLocked()
-        return try {
-            // 抽象命名残留（上次崩溃未释放）时先尽力重建：失败即记错返回 false。
-            val srv = LocalServerSocket(SOCKET_NAME)
-            server = srv
-            currentWidth = width
-            currentHeight = height
-            currentBitrate = bitrate
-            currentFps = fps
-            hasVideo = false
-            hasAudio = false
-            videoFrames.set(0)
-            audioFrames.set(0)
-            firstFrameLatch = CountDownLatch(1)
-            lastError = null
-            isRunning = true
-            val t = Thread(::acceptLoop, "BlindCast-CaptureLink")
-            t.isDaemon = true
-            acceptThread = t
-            t.start()
-            Log.i(TAG, "[CaptureSocketLink] listen ok abstract:$SOCKET_NAME ${width}x${height}")
-            true
-        } catch (t: Throwable) {
-            lastError = t
-            Log.e(TAG, "[CaptureSocketLink] listen failed abstract:$SOCKET_NAME", t)
+        synchronized(lock) {
+            if (isRunning) {
+                Log.i(TAG, "[CaptureSocketLink] start skipped (already running) abstract:$SOCKET_NAME")
+                return true
+            }
+            // 先清残留引用（上次崩溃/旧实例未释放），再进重试循环。
             releaseLocked()
-            false
+            var last: Throwable? = null
+            for (attempt in 1..3) {
+                try {
+                    val srv = LocalServerSocket(SOCKET_NAME)
+                    server = srv
+                    currentWidth = width
+                    currentHeight = height
+                    currentBitrate = bitrate
+                    currentFps = fps
+                    hasVideo = false
+                    hasAudio = false
+                    videoFrames.set(0)
+                    audioFrames.set(0)
+                    firstFrameLatch = CountDownLatch(1)
+                    lastError = null
+                    isRunning = true
+                    val t = Thread(::acceptLoop, "BlindCast-CaptureLink")
+                    t.isDaemon = true
+                    acceptThread = t
+                    t.start()
+                    Log.i(TAG, "[CaptureSocketLink] listen ok abstract:$SOCKET_NAME ${width}x${height} attempt=$attempt")
+                    return true
+                } catch (t: Throwable) {
+                    last = t
+                    lastError = t
+                    // 残留 fd 必须先关，否则抽象名持续被占重试必撞。
+                    releaseLocked()
+                    if (!isBindConflict(t)) {
+                        Log.e(TAG, "[CaptureSocketLink] listen failed (non-bind) abstract:$SOCKET_NAME", t)
+                        throw t
+                    }
+                    if (attempt < 3) {
+                        Log.w(TAG, "[CaptureSocketLink] bind conflict attempt=$attempt/3 err=${t.message}, retry in 500ms")
+                        try {
+                            Thread.sleep(500L)
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            break
+                        }
+                        releaseLocked()
+                    }
+                }
+            }
+            val err: Throwable = last
+                ?: IllegalStateException("CaptureSocketLink: bind failed after 3 retries")
+            lastError = err
+            Log.e(TAG, "[CaptureSocketLink] listen failed after 3 retries abstract:$SOCKET_NAME", err)
+            releaseLocked()
+            throw err
         }
     }
 
@@ -114,9 +148,13 @@ object CaptureSocketLink {
         }
     }
 
-    /** 停止搬运（幂等）：先停 socket（逆序收第一步），不 close 引擎复用 Channel。 */
-    @Synchronized
-    fun stop() = stopLocked()
+    /** 停止搬运（幂等）：先停 socket（逆序收第一步），不 close 引擎复用 Channel。重复 stop 无害。 */
+    fun stop() {
+        synchronized(lock) {
+            if (!isRunning && server == null && client == null && acceptThread == null) return
+            stopLocked()
+        }
+    }
 
     /** 取最近失败文案（状态流/Home 回读用）。 */
     fun errorMessage(): String? = lastError?.message ?: lastError?.toString()
@@ -131,6 +169,20 @@ object CaptureSocketLink {
         try { acceptThread?.join(1_000L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         acceptThread = null
         releaseLocked()
+    }
+
+    /** 抢绑判定：BindException 或链上 message 含 Address already in use / EADDRINUSE。 */
+    private fun isBindConflict(t: Throwable): Boolean {
+        var cur: Throwable? = t
+        while (cur != null) {
+            if (cur is java.net.BindException) return true
+            val msg = cur.message ?: ""
+            if (msg.contains("Address already in use", ignoreCase = true) ||
+                msg.contains("EADDRINUSE", ignoreCase = true)
+            ) return true
+            cur = cur.cause
+        }
+        return false
     }
 
     private fun releaseLocked() {
