@@ -240,7 +240,27 @@ object PrivilegedCapture {
         var sock: LocalSocket? = null
         return try {
             sock = LocalSocket()
-            sock.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT), SOCKET_CONNECT_TIMEOUT_MS)
+            // 注意：LocalSocket.connect(address, timeout) 在 Android 上直接抛
+            // UnsupportedOperationException（未实现），必须用无超时版 + 自管线程实现超时。
+            val address = LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT)
+            val connecting = sock
+            var connectError: Throwable? = null
+            val connectThread = Thread {
+                try {
+                    connecting.connect(address)
+                } catch (t: Throwable) {
+                    connectError = t
+                }
+            }.apply { isDaemon = true }
+            connectThread.start()
+            connectThread.join(SOCKET_CONNECT_TIMEOUT_MS.toLong())
+            if (connectThread.isAlive) {
+                runCatching { connecting.close() }
+                throw java.net.SocketTimeoutException(
+                    "LocalSocket connect $socketName timeout ${SOCKET_CONNECT_TIMEOUT_MS}ms",
+                )
+            }
+            connectError?.let { throw it }
             val out = BufferedOutputStream(sock.outputStream, 64 * 1024)
             clientSocket = sock
             socketOut = out
