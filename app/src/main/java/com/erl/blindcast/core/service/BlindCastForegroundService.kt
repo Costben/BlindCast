@@ -37,6 +37,17 @@ import kotlinx.coroutines.launch
 /**
  * 常驻前台保活服务（Slice 6.1 · MVP.md 第四章 core/service）。
  *
+ * ## FGS 类型为什么是 dataSync（Fix-FGS-1）
+ * - `connectedDevice` 不可用：targetSDK=37 上以该类型起 FGS 要求
+ *   `allOf [FOREGROUND_SERVICE_CONNECTED_DEVICE]` + `anyOf [BLUETOOTH_ADVERTISE/CONNECT/SCAN,
+ *   CHANGE_NETWORK_STATE, CHANGE_WIFI_STATE, ...]`，本 App 只持有前者、anyOf 一项没有，
+ *   `startForeground` 直接抛 `SecurityException` 致 `onCreate` 崩溃 + `START_STICKY` 重拉起循环。
+ * - `mediaProjection` 不可用：该类型要求持有 MediaProjection consent token
+ *  （`createScreenCaptureIntent` 用户授权前置），本服务走 Shizuku/Root 的 VirtualDisplay
+ *   直采、无 token，声明即错配。
+ * - `dataSync` 为通用常驻类型：仅需 `FOREGROUND_SERVICE_DATA_SYNC` 单权限，
+ *   与局域网投屏常驻语义兼容（状态轮询/串流保活视作数据同步），故 Manifest 与代码统一用它。
+ *
  * ## 保活三件套（为什么是 WakeLock + WifiLock，而不是 FLAG_KEEP_SCREEN_ON）
  * - `FLAG_KEEP_SCREEN_ON` 是 Window 标志，只能附着在前台 Activity 的窗口上；
  *   Service 没有窗口，无法持有。本服务改用等价的电源锁组合达到同一目的：
@@ -72,6 +83,8 @@ class BlindCastForegroundService : Service() {
         val bitrateBps: Int = -1,
         val clients: Int = 0,
         val blackedOut: Boolean = false,
+        /** Fix-FGS-1：最近一次前台化/引擎启动致命异常信息（null = 无异常，供 Home 只读展示）。 */
+        val lastError: String? = null,
     )
 
     companion object {
@@ -95,6 +108,20 @@ class BlindCastForegroundService : Service() {
 
         private val _status = MutableStateFlow(snapshot())
         val status: StateFlow<ServiceStatus> = _status.asStateFlow()
+
+        /**
+         * Fix-FGS-1：服务级致命异常留痕（与各引擎 `lastError` 语义一致：成功清零、失败覆写）。
+         * 前台化 `SecurityException` / `bootStack` 外层 catch 均经 [recordError] 进入状态流，
+         * Home 经 [status] 只读可见（不改 Home 逻辑，仅读 `ServiceStatus.lastError`）。
+         */
+        var lastError: Throwable? = null
+            private set
+
+        private fun recordError(t: Throwable) {
+            lastError = t
+            Log.e(TAG, "foreground service fatal", t)
+            runCatching { _status.value = snapshot() }
+        }
 
         /** 启动串流总服务（任意线程；UI 层唯一入口）。 */
         fun start(context: Context) {
@@ -128,6 +155,7 @@ class BlindCastForegroundService : Service() {
                 bitrateBps = ScreenCaptureEngine.currentBitrate,
                 clients = StreamWsRoute.sessionCount + ControlWsRoute.sessionCount,
                 blackedOut = PowerController.isBlackedOut,
+                lastError = lastError?.message ?: lastError?.toString(),
             )
         }
     }
@@ -140,9 +168,34 @@ class BlindCastForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startForegroundInternal()
-        acquireLocks()
-        bootStack()
+        // Fix-FGS-1 纵深兜底：前台化失败（SecurityException，如 FGS 类型权限缺失）绝不掀翻 App。
+        // 记录 lastError + 状态流可展示 + stopSelf 保持关态，打断 START_STICKY 重拉起循环。
+        try {
+            val fgOk = startForegroundInternal()
+            if (!fgOk) {
+                runCatching { _status.value = snapshot() }
+                return
+            }
+        } catch (se: SecurityException) {
+            recordError(se)
+            runCatching { stopSelf() }
+            return
+        } catch (t: Exception) {
+            recordError(t)
+            runCatching { stopSelf() }
+            return
+        }
+        runCatching { acquireLocks() }
+        // 开机读档自启路径（START_STICKY 重建同样走这里）：受 bootStack 内外双层保护。
+        try {
+            bootStack()
+        } catch (se: SecurityException) {
+            recordError(se)
+            runCatching { stopSelf() }
+        } catch (t: Exception) {
+            recordError(t)
+            runCatching { stopSelf() }
+        }
         scope.launch {
             while (isActive) {
                 _status.value = snapshot()
@@ -157,9 +210,19 @@ class BlindCastForegroundService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        // 粘性重启（系统杀死后拉起）：确保协议栈处于启动态。
-        if (!BlindCastServer.isRunning) bootStack()
-        _status.value = snapshot()
+        // 粘性重启（系统杀死后拉起）：确保协议栈处于启动态；同样受保护，失败保持关态。
+        try {
+            if (!BlindCastServer.isRunning) bootStack()
+            _status.value = snapshot()
+        } catch (se: SecurityException) {
+            recordError(se)
+            runCatching { stopSelf() }
+            return START_NOT_STICKY
+        } catch (t: Exception) {
+            recordError(t)
+            runCatching { stopSelf() }
+            return START_NOT_STICKY
+        }
         return START_STICKY
     }
 
@@ -191,6 +254,25 @@ class BlindCastForegroundService : Service() {
     }
 
     private fun bootStack() {
+        try {
+            bootStackInternal()
+            // 同进程重试成功且协议栈健康时清掉陈旧致命痕（失败态已在 catch 留痕，不误删）。
+            if (lastError != null && BlindCastServer.isRunning) {
+                lastError = null
+                runCatching { _status.value = snapshot() }
+            }
+        } catch (se: SecurityException) {
+            // 开机读档自启同样受保护：记 lastError/状态流 + stopSelf 保持关态，绝不抛崩。
+            recordError(se)
+            runCatching { stopSelf() }
+        } catch (t: Exception) {
+            recordError(t)
+            runCatching { stopSelf() }
+        }
+    }
+
+    /** bootStack 真体：偏好读档 → 引擎顺序启动（server → video → audio → keeper）。 */
+    private fun bootStackInternal() {
         val port = configuredPort()
         val token = runCatching { prefs().getString(KEY_TOKEN, "") ?: "" }.getOrDefault("")
         // Slice 6.2 偏好：画质/音频/scrcpy/保活（缺键回退默认，与 SettingsRepositoryImpl 一致）。
@@ -272,31 +354,54 @@ class BlindCastForegroundService : Service() {
         wakeLock = null
     }
 
-    private fun startForegroundInternal() {
-        val manager = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                getString(R.string.blindcast_service_channel),
-                NotificationManager.IMPORTANCE_LOW,
-            )
-            runCatching { manager?.createNotificationChannel(channel) }
-        }
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.blindcast_service_running))
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setOngoing(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            startForeground(NOTIF_ID, notification)
+    /**
+     * Fix-FGS-1：以 `dataSync` 类型前台化（仅需 `FOREGROUND_SERVICE_DATA_SYNC`）。
+     * 不用 `connectedDevice`（缺 anyOf 蓝牙/网络状态权限即 SecurityException），
+     * 不用 `mediaProjection`（无用户授权 token，错配）。
+     *
+     * @return true = 前台化成功；false = 已记 [lastError]/状态流并 `stopSelf`，调用方直接返回。
+     */
+    private fun startForegroundInternal(): Boolean {
+        try {
+            val manager = getSystemService(NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    getString(R.string.blindcast_service_channel),
+                    NotificationManager.IMPORTANCE_LOW,
+                )
+                runCatching { manager?.createNotificationChannel(channel) }
+            }
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(getString(R.string.app_name))
+                .setContentText(getString(R.string.blindcast_service_running))
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setOngoing(true)
+                .build()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIF_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                startForeground(NOTIF_ID, notification)
+            }
+            // 前台化成功：清掉同进程陈旧致命痕（失败路径已在 catch 留痕）。
+            if (lastError != null) {
+                lastError = null
+                runCatching { _status.value = snapshot() }
+            }
+            return true
+        } catch (se: SecurityException) {
+            recordError(se)
+            runCatching { stopSelf() }
+            return false
+        } catch (t: Exception) {
+            recordError(t)
+            runCatching { stopSelf() }
+            return false
         }
     }
 }
