@@ -213,3 +213,4 @@ updated: 2026-09-05
 - 2026-09-05: 战后修复线收官至 8f2858e（22 commits：首页清理/Hero三态/行图标/HA缩写/权限自愈/FGS-dataSync/Shizuku桥+应用内授权/日志/token发现/载库/转调/验效/按键链/Root后端/meow搬运与删除/特权采集/socket直连修复/行隐藏/bind幂等；锁屏链永删，AGPL清零）；HANDOFF.md 已同步至 HEAD，信箱末条 stream-priv-2 FINISHED→DONE，stream-priv-3（DM镜像）进行中。
 - 2026-09-05: stream-priv-3/4 收官（bea3c91 DM主路+SC备用；worker-4已归档撤回，主控亲修 588f1c7：stopped 初始true致drain出生即退+首帧门闩静默丢帧，改早清旗+SPS缺失告警）；真机首帧到达、动屏21fps/626KB，静态限流属编码器省流；`su+am` 可代拨开关（service非exported，run-as跨user无权限）。
 - 2026-09-05: 浏览器端到端打通（Chrome命令行treat-as-secure治http局域网非安全源；adb reverse在该PC绑不上监听已放弃）：WebCodecs live出图，延迟62ms，动屏FPS正常，静屏限流符合预期；待验=熄屏+串流同活。
+- 2026-09-05: power-fix-2 收官（e9282e7）：binder OFF 早断电但 DM STATE_ON 恒 ON 致假失败，改 SF 级 dumpsys 验效（SF-Off||DM-OFF）；AOD 真因=上一棒实验包 power-sleep 段送 DOZE_SUSPEND（keeper 停跑假说证伪）；实验场转 .216（Pixel 无锁屏密码，Magisk 放行，.165 封存）；web+App off 均 ok:true，on 秒回，tap 在 .216 缺 Shizuku 系环境门控。
