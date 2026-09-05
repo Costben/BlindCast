@@ -31,22 +31,13 @@ class SettingsViewModel(
         val BITRATE_MBPS_OPTIONS = listOf(2, 3, 4, 5, 6, 7, 8)
         val BLACKOUT_MODES = listOf("hardware", "overlay")
 
-        fun resolutionToSize(label: String, fallbackW: Int = 1280, fallbackH: Int = 720): Pair<Int, Int> {
-            return when (label) {
-                "1080P" -> 1920 to 1080
-                "720P" -> 1280 to 720
-                else -> {
-                    // 原生：取当前物理分辨率，取不到回退 720P。
-                    runCatching {
-                        val m = blindCastApp.resources.displayMetrics
-                        if (m.widthPixels > 0 && m.heightPixels > 0) {
-                            m.widthPixels to m.heightPixels
-                        } else {
-                            fallbackW to fallbackH
-                        }
-                    }.getOrDefault(fallbackW to fallbackH)
-                }
-            }
+        // TouchOffset-Fix-1：竖屏等比（旧横屏 1280x720/1920x1080 硬编码致黑边+触控右偏）。
+        // 竖屏 1080x2376 下 720P=720x1584、1080P=1080x2376；横屏机宽高互换等比。
+        fun resolutionToSize(label: String, fallbackW: Int = 720, fallbackH: Int = 1280): Pair<Int, Int> {
+            return runCatching {
+                val m = blindCastApp.resources.displayMetrics
+                com.erl.blindcast.core.scrcpy.VideoResolution.resolve(label, m.widthPixels, m.heightPixels, fallbackW, fallbackH)
+            }.getOrDefault(com.erl.blindcast.core.scrcpy.VideoResolution.resolve(label, 0, 0, fallbackW, fallbackH))
         }
     }
 

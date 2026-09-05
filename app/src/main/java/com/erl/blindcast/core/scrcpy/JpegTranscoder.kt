@@ -216,9 +216,9 @@ object JpegTranscoder {
                     sleep(POLL_IDLE_MS)
                     continue
                 }
-                // 宽高跟随搬运服当前值（默认 1280x720；变档时重建解码器）。
-                val wantW = CaptureSocketLink.currentWidth.takeIf { it > 0 } ?: 1280
-                val wantH = CaptureSocketLink.currentHeight.takeIf { it > 0 } ?: 720
+                // 宽高跟随搬运服当前值（默认竖屏 720x1280；TouchOffset-Fix-1 旧 1280x720 横屏致黑边）。
+                val wantW = CaptureSocketLink.currentWidth.takeIf { it > 0 } ?: 720
+                val wantH = CaptureSocketLink.currentHeight.takeIf { it > 0 } ?: 1280
                 if (item.isKey) extractSpsPps(item.payload)
                 if (!ensureCodec(wantW, wantH)) {
                     sleep(POLL_IDLE_MS)

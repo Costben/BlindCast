@@ -75,8 +75,9 @@ object RootCaptureMain {
                 // Smooth-1 建屏编码探针：无 socket 纯验证（编码器+三路建屏+drain 出帧写内存，
                 // 证明泵在裸进程能出帧；App 侧 CaptureSocketLink 另行验证）。
                 // args = ["probeCreate", w, h, bitrate, fps, seconds, resultFile?]。
-                val w = args.getOrNull(1)?.toIntOrNull() ?: 1280
-                val h = args.getOrNull(2)?.toIntOrNull() ?: 720
+                // TouchOffset-Fix-1：缺省改竖屏通用档（旧 1280x720 横屏）。
+                val w = args.getOrNull(1)?.toIntOrNull() ?: 720
+                val h = args.getOrNull(2)?.toIntOrNull() ?: 1280
                 val bitrate = args.getOrNull(3)?.toIntOrNull() ?: 4_000_000
                 val fps = args.getOrNull(4)?.toIntOrNull() ?: 30
                 val seconds = args.getOrNull(5)?.toIntOrNull()?.coerceIn(1, 30) ?: 5
@@ -113,8 +114,9 @@ object RootCaptureMain {
                 // H264Black-1 可配编码探针：DisplayGlobal 选项逐项开/关定位（无 socket）。
                 // args = ["probeStream", w, h, bitrate, fps, seconds, mirror, refresh, wm, resultFile?]。
                 // mirror: -1=不设(老行为), 0=主屏；refresh: 0=不设, >0=刷新率；wm: -1=不设, 0/1=关/开。
-                val w = args.getOrNull(1)?.toIntOrNull() ?: 1280
-                val h = args.getOrNull(2)?.toIntOrNull() ?: 720
+                // TouchOffset-Fix-1：缺省改竖屏通用档。
+                val w = args.getOrNull(1)?.toIntOrNull() ?: 720
+                val h = args.getOrNull(2)?.toIntOrNull() ?: 1280
                 val bitrate = args.getOrNull(3)?.toIntOrNull() ?: 4_000_000
                 val fps = args.getOrNull(4)?.toIntOrNull() ?: 30
                 val seconds = args.getOrNull(5)?.toIntOrNull()?.coerceIn(1, 30) ?: 5
@@ -141,8 +143,9 @@ object RootCaptureMain {
                 runCatching { Log.e(TAG, "[RootCaptureMain] unknown op ${args.getOrNull(0)} (only capture|probe)") }
                 return
             }
-            val w = args.getOrNull(1)?.toIntOrNull() ?: 1280
-            val h = args.getOrNull(2)?.toIntOrNull() ?: 720
+            // TouchOffset-Fix-1：缺省改竖屏通用档（真实值由前台服务经 VideoResolution 传入）。
+            val w = args.getOrNull(1)?.toIntOrNull() ?: 720
+            val h = args.getOrNull(2)?.toIntOrNull() ?: 1280
             val bitrate = args.getOrNull(3)?.toIntOrNull() ?: 4_000_000
             val fps = args.getOrNull(4)?.toIntOrNull() ?: 30
             val stopPath = args.getOrNull(5)

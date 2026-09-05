@@ -380,14 +380,13 @@ class BlindCastForegroundService : Service() {
         if (!serverOk) {
             Log.w(TAG, "BlindCastServer.start($port) failed", BlindCastServer.lastError)
         }
-        val (vw, vh) = when (resolution) {
-            "1080P" -> 1920 to 1080
-            "原生" -> runCatching {
-                val m = resources.displayMetrics
-                if (m.widthPixels > 0 && m.heightPixels > 0) m.widthPixels to m.heightPixels else 1280 to 720
-            }.getOrDefault(1280 to 720)
-            else -> 1280 to 720
-        }
+        // TouchOffset-Fix-1：竖屏等比自适应（旧 1280x720 横屏硬编码致左右黑边 + 点击右偏）。
+        // 竖屏机 1080x2376 下 720P=720x1584、1080P=1080x2376、原生=物理偶数对齐；横屏机宽高互换等比。
+        val (vw, vh) = runCatching {
+            val m = resources.displayMetrics
+            com.erl.blindcast.core.scrcpy.VideoResolution.resolve(resolution, m.widthPixels, m.heightPixels)
+        }.getOrDefault(com.erl.blindcast.core.scrcpy.VideoResolution.resolve(resolution, 0, 0))
+        Log.i(TAG, "[CaptureRoute] resolution=$resolution phys=${runCatching { resources.displayMetrics.widthPixels }.getOrDefault(-1)}x${runCatching { resources.displayMetrics.heightPixels }.getOrDefault(-1)} capture=${vw}x${vh}")
         val bitrate = bitrateMbps * 1_000_000
         // 本地引擎不再 App 进程直起（必吃 SecurityException 静默 false，旧根因）：
         // 只做特权链路（搬运服先起，特权建连 + 首帧等待放后台，避免阻塞主线程 ANR）。

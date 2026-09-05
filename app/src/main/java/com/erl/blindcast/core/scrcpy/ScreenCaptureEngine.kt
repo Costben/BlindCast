@@ -64,11 +64,13 @@ object ScreenCaptureEngine {
     /** VirtualDisplay 显示名（logcat / dumpsys 可见）。 */
     const val VIRTUAL_DISPLAY_NAME = "BlindCastCapture"
 
-    /** 默认采集宽度（720P，MVP.md 设置页推荐档）。 */
-    const val DEFAULT_WIDTH = 1280
+    // TouchOffset-Fix-1：默认改为竖屏 720P 通用档（旧 1280x720 横屏致黑边+触控右偏；
+    // 真实尺寸一律经 VideoResolution 按物理比等比计算，此默认仅兜底）。
+    /** 默认采集宽度（竖屏 720P 通用档）。 */
+    const val DEFAULT_WIDTH = 720
 
-    /** 默认采集高度（720P）。 */
-    const val DEFAULT_HEIGHT = 720
+    /** 默认采集高度（竖屏 720P 通用档 720x1280）。 */
+    const val DEFAULT_HEIGHT = 1280
 
     /** 默认码率：4 Mbps（设置页 2 ~ 8 Mbps 中档）。 */
     const val DEFAULT_BITRATE = 4_000_000
