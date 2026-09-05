@@ -60,10 +60,23 @@ object RootMain {
             }
             // 参数解析（全包住，缺参/非法参数同样写文件 + 非零退出，不抛）。
             val op = args.getOrNull(0)
+            // Stream-Priv-1 同名 op：Root 单次执行器不适合视频长流（短进程即退模型），
+            // 采集长流请走 RootCaptureMain 常驻（libsu app_process 常驻 + stop 文件信号，
+            // 同一 CaptureSocketLink 服）。此处保留同名入口仅作路由指引，不做采集。
+            if (op == "startCapture" || op == "captureVideo") {
+                val rp = args.getOrNull(1)?.takeIf { it.isNotBlank() } ?: args.getOrNull(2)
+                if (!rp.isNullOrBlank()) resultFile = File(rp)
+                errMsg = "Root 单次执行器不承载长流采集，请走 RootCaptureMain 常驻 " +
+                    "（本机优先 Shizuku UserService 常驻：daemon root 启动，SurfaceControl 身份够用，见 ForegroundService [CaptureRoute] 日志）"
+                runCatching {
+                    Log.i(TAG, "[RootMain] pid=$pid uid=$uid startCapture routed to RootCaptureMain daemon, reject single-shot")
+                }
+                return
+            }
             val onOff = args.getOrNull(1)
             val resultPath = args.getOrNull(2)
             if (op != "displayPower") {
-                errMsg = "未知操作：${op ?: "null"}（仅支持 displayPower）"
+                errMsg = "未知操作：${op ?: "null"}（仅支持 displayPower/startCapture）"
                 return
             }
             val on: Boolean = when (onOff) {

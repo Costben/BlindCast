@@ -5,6 +5,7 @@ import android.os.Process
 import android.util.Log
 import androidx.annotation.Keep
 import com.erl.blindcast.core.blackout.PowerController
+import com.erl.blindcast.core.scrcpy.PrivilegedCapture
 
 /**
  * Shizuku UserService 通道服务端（Priv-Bridge-1 通道，Priv-Bridge-2 改道 SurfaceControl，
@@ -231,6 +232,46 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
     override fun getLastError(): String? {
         return try {
             PowerController.lastError?.message ?: PowerController.lastPrivError
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * 特权采集启动（Stream-Priv-1 · 跑在 Shizuku UserService 常驻进程内）。
+     * 直调 [PrivilegedCapture.start]（SurfaceControl.createDisplay scrcpy 路线 +
+     * socket 回传 App 侧 CaptureSocketLink 服）。调用方须 daemon(true) 常驻绑定，
+     * 流期间不 destroy；stop 时先 [stopCapture] 再 destroy 宿主。
+     */
+    override fun startCapture(width: Int, height: Int, bitrate: Int, fps: Int): Boolean {
+        val tid = "t=${Thread.currentThread().id}(${Thread.currentThread().name})"
+        val pid = try { Process.myPid() } catch (_: Throwable) { -1 }
+        val uid = try { Process.myUid() } catch (_: Throwable) { -1 }
+        Log.i(TAG, "[PrivilegedUserService] $tid startCapture enter ${width}x${height} ${bitrate}bps ${fps}fps pid=$pid uid=$uid")
+        return try {
+            val ok = PrivilegedCapture.start(width, height, bitrate, fps)
+            Log.i(TAG, "[PrivilegedUserService] $tid startCapture exit ok=$ok " +
+                "video=${PrivilegedCapture.videoRunning} audio=${PrivilegedCapture.audioRunning} " +
+                "err=${PrivilegedCapture.errorMessage()}")
+            ok
+        } catch (t: Throwable) {
+            Log.e(TAG, "[PrivilegedUserService] $tid startCapture threw", t)
+            throw t
+        }
+    }
+
+    /** 停特权采集并释放 display/codec（幂等，长流 stop 时调）。 */
+    override fun stopCapture() {
+        val tid = "t=${Thread.currentThread().id}(${Thread.currentThread().name})"
+        Log.i(TAG, "[PrivilegedUserService] $tid stopCapture enter")
+        runCatching { PrivilegedCapture.stop() }
+        Log.i(TAG, "[PrivilegedUserService] $tid stopCapture exit")
+    }
+
+    /** 取特权采集最近失败明细（须同一次常驻绑定内调用）。 */
+    override fun getCaptureError(): String? {
+        return try {
+            PrivilegedCapture.errorMessage()
         } catch (_: Throwable) {
             null
         }

@@ -33,5 +33,16 @@ interface IPrivilegedOps {
     // （UserService 用完即焚，跨绑定静态量清零）。
     String getLastError() = 4;
 
-    // TODO(priv-bridge-next): 抓屏复用预留 —— 如 ParcelFileDescriptor captureFrame(...) = 5;
+    // Stream-Priv-1：特权采集（scrcpy 同构：SurfaceControl 直建 Display + socket 回传）。
+    // 跑在 Shizuku UserService 常驻进程（daemon(true)，流期间不 destroy；stop 时 destroy 宿主）。
+    // 旧编号 1..5 一律不动，新编号顺延 6..8。
+    // startCapture 在特权进程内调 PrivilegedCapture.start(w,h,bitrate,fps)（内部连
+    // abstract:blindcast_capture 回传 App 侧 CaptureSocketLink 服），true=编码已起
+    // （首帧另由 App 侧等 socket 首帧或 3s 超时判定）；false=失败，明细经 getCaptureError 回读。
+    boolean startCapture(int width, int height, int bitrate, int fps) = 6;
+    // 停特权采集并释放 display/codec（幂等；长流 stop 时调，调完 App 侧再 destroy 宿主）。
+    void stopCapture() = 7;
+    // 取特权采集最近失败明细（PrivilegedCapture.lastError.message，成功时 null；
+    // 须同一次常驻绑定内调用，用完即焚语义同 getLastError）。
+    String getCaptureError() = 8;
 }

@@ -14,10 +14,16 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.erl.blindcast.R
+import com.erl.blindcast.BuildConfig
 import com.erl.blindcast.core.blackout.EmergencyRecovery
 import com.erl.blindcast.core.blackout.PowerController
 import com.erl.blindcast.core.blackout.UserActivityKeeper
+import com.erl.blindcast.core.priv.IPrivilegedOps
+import com.erl.blindcast.core.priv.PrivilegedBridge
+import com.erl.blindcast.core.priv.PrivilegedUserService
+import com.erl.blindcast.core.priv.RootExecutor
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
+import com.erl.blindcast.core.scrcpy.CaptureSocketLink
 import com.erl.blindcast.core.scrcpy.ScrcpyGate
 import com.erl.blindcast.core.scrcpy.ScreenCaptureEngine
 import com.erl.blindcast.core.server.BlindCastServer
@@ -142,20 +148,63 @@ class BlindCastForegroundService : Service() {
             _status.value = snapshot()
         }
 
-        /** 当前快照：运行态读各引擎实时值，停止态读偏好端口。 */
+        /**
+         * 特权采集路由失败留痕（Stream-Priv-1 · 与服务致命 [lastError] 同语义：
+         * 成功清零、失败覆写，进状态流供 Home 只读展示；引擎直起已下线，此处只收特权链路错）。
+         */
+        @Volatile
+        var captureError: Throwable? = null
+            private set
+
+        fun recordCaptureError(t: Throwable) {
+            captureError = t
+            Log.e(TAG, "privileged capture failed", t)
+            runCatching { _status.value = snapshot() }
+        }
+
+        fun clearCaptureError() {
+            if (captureError != null) {
+                captureError = null
+                runCatching { _status.value = snapshot() }
+            }
+        }
+
+        /**
+         * 当前快照：运行态读特权链路实时值（首帧后），停止态读偏好端口。
+         * Stream-Priv-1 改道：server 照常本进程；video/audio 改特权链路，
+         * fps/bitrate 优先读 [CaptureSocketLink]（有首帧才有效），无首帧回退本地引擎
+         * （本地引擎已不再 App 进程启动，恒 -1，仅作诊断兼容）；lastError 聚合
+         * 服务致命 + 特权路由 + 搬运 + 引擎明细，Home 可见。
+         */
         private fun snapshot(): ServiceStatus {
             val running = BlindCastServer.isRunning
             val port = BlindCastServer.actualPort
                 .takeIf { running && it > 0 }
                 ?: BlindCastServer.port
+            val linkActive = CaptureSocketLink.hasVideo || CaptureSocketLink.isRunning
+            val fps = when {
+                CaptureSocketLink.hasVideo && CaptureSocketLink.currentFps > 0 -> CaptureSocketLink.currentFps
+                else -> ScreenCaptureEngine.currentFps
+            }
+            val bitrate = when {
+                CaptureSocketLink.hasVideo && CaptureSocketLink.currentBitrate > 0 -> CaptureSocketLink.currentBitrate
+                else -> ScreenCaptureEngine.currentBitrate
+            }
+            @Suppress("UNUSED_VARIABLE")
+            val linkHint = linkActive
+            val errText = lastError?.message ?: lastError?.toString()
+                ?: captureError?.message ?: captureError?.toString()
+                ?: CaptureSocketLink.errorMessage()
+                ?: ScreenCaptureEngine.lastError?.message
+                ?: AudioCaptureEngine.lastError?.message
             return ServiceStatus(
                 isRunning = running,
                 port = port,
-                fps = ScreenCaptureEngine.currentFps,
-                bitrateBps = ScreenCaptureEngine.currentBitrate,
+                fps = fps,
+                bitrateBps = bitrate,
                 clients = StreamWsRoute.sessionCount + ControlWsRoute.sessionCount,
                 blackedOut = PowerController.isBlackedOut,
-                lastError = lastError?.message ?: lastError?.toString(),
+                lastError = errText,
             )
         }
     }
@@ -163,6 +212,13 @@ class BlindCastForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+
+    // Stream-Priv-1 特权采集常驻句柄（Shizuku daemon(true) 长连 / Root 常驻二选一）。
+    private var privConn: android.content.ServiceConnection? = null
+    private var privOps: IPrivilegedOps? = null
+    private var privArgs: rikka.shizuku.Shizuku.UserServiceArgs? = null
+    @Volatile private var captureMode: String = "none" // shizuku | root | none
+    @Volatile private var rootStopFile: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -228,8 +284,10 @@ class BlindCastForegroundService : Service() {
 
     override fun onDestroy() {
         runCatching { scope.cancel() }
-        // 逆序回收：先停喂狗与采集，再停监听，最后熔断。
+        // 逆序回收（Stream-Priv-1）：先停喂狗，先停 socket 搬运，再 destroy 特权采集，
+        // 再停本地引擎兜底，最后停监听与熔断。
         runCatching { UserActivityKeeper.stop() }
+        runCatching { stopPrivilegedCapture() }
         runCatching { AudioCaptureEngine.stop() }
         runCatching { ScreenCaptureEngine.stop() }
         runCatching { BlindCastServer.stop() }
@@ -271,11 +329,20 @@ class BlindCastForegroundService : Service() {
         }
     }
 
-    /** bootStack 真体：偏好读档 → 引擎顺序启动（server → video → audio → keeper）。 */
+    /**
+     * bootStack 真体（Stream-Priv-1 改道）：偏好读档 → server 本进程 → video/audio 特权链路 → keeper。
+     * 实证根因：旧 bootStack 在普通应用进程起 ScreenCaptureEngine
+     * （DisplayManager.createVirtualDisplay 需签名级 CAPTURE_VIDEO_OUTPUT，吃
+     * SecurityException 静默 false）与 AudioCaptureEngine，引擎无错、错在跑错进程。
+     * 新链路 scrcpy 同构：特权采集（PrivilegedCapture 跑在 Shizuku UserService/Root 常驻）
+     * + LocalSocket 回传帧（CaptureSocketLink 搬运进既有 Channel，StreamWsRoute 不动）。
+     * 主线程只起服 + 发起异步特权建连；running 标定等 socket 首帧或 3s 超时（后台协程内），
+     * 失败记 captureError 进状态流/Home 可见，绝不阻塞 onCreate。
+     */
     private fun bootStackInternal() {
         val port = configuredPort()
         val token = runCatching { prefs().getString(KEY_TOKEN, "") ?: "" }.getOrDefault("")
-        // Slice 6.2 偏好：画质/音频/scrcpy/保活（缺键回退默认，与 SettingsRepositoryImpl 一致）。
+        // 偏好键冻结不动（Slice 6.2 与 SettingsRepositoryImpl 一致，缺键回退默认）。
         val p = runCatching { prefs() }.getOrNull()
         val resolution = p?.getString("video_resolution", "720P")?.takeIf { it in setOf("720P", "1080P", "原生") } ?: "720P"
         val fps = p?.getInt("video_fps", 30)?.takeIf { it == 30 || it == 60 } ?: 30
@@ -303,15 +370,14 @@ class BlindCastForegroundService : Service() {
             }.getOrDefault(1280 to 720)
             else -> 1280 to 720
         }
-        val videoOk = runCatching {
-            ScreenCaptureEngine.start(this, vw, vh, bitrateMbps * 1_000_000, fps)
-        }.getOrDefault(false)
-        if (!videoOk) {
-            Log.w(TAG, "ScreenCaptureEngine.start failed (no privilege?)", ScreenCaptureEngine.lastError)
-        }
-        val audioOk = runCatching { AudioCaptureEngine.start() }.getOrDefault(false)
-        if (!audioOk) {
-            Log.w(TAG, "AudioCaptureEngine.start failed (no privilege?)", AudioCaptureEngine.lastError)
+        val bitrate = bitrateMbps * 1_000_000
+        // 本地引擎不再 App 进程直起（必吃 SecurityException 静默 false，旧根因）：
+        // 只做特权链路（搬运服先起，特权建连 + 首帧等待放后台，避免阻塞主线程 ANR）。
+        scope.launch {
+            val ok = runCatching { runPrivilegedCaptureBlocking(vw, vh, bitrate, fps) }.getOrDefault(false)
+            runCatching { _status.value = snapshot() }
+            Log.i(TAG, "[CaptureRoute] boot privileged done ok=$ok mode=$captureMode " +
+                "hasVideo=${CaptureSocketLink.hasVideo} hasAudio=${CaptureSocketLink.hasAudio}")
         }
         if (keepAlive) {
             runCatching { UserActivityKeeper.start(this) }
@@ -319,6 +385,216 @@ class BlindCastForegroundService : Service() {
             runCatching { UserActivityKeeper.stop() }
         }
         _status.value = snapshot()
+    }
+
+    // ------------------------------------------------------------------
+    // Stream-Priv-1 特权采集路由（server 本进程 + video/audio 特权链路）
+    // ------------------------------------------------------------------
+
+    /** Shizuku 常驻绑定超时 15s（特权进程冷起 app_process 留足余量）。 */
+    private val PRIV_BIND_TIMEOUT_MS = 15_000L
+
+    /** Root 单次判定 + 常驻拉起总超时约 20s（复用 RootExecutor 语义）。 */
+    private val ROOT_STOP_POLL_MS = 500L
+
+    /**
+     * 后台阻塞式跑完特权建连 + 首帧等待（IO 线程调用，bootStack 经 scope.launch 进入）。
+     * 成功（3s 内有首帧）清 captureError；失败记 captureError 进状态流/Home 可见。
+     */
+    private fun runPrivilegedCaptureBlocking(vw: Int, vh: Int, bitrate: Int, fps: Int): Boolean {
+        // 1. 搬运服先起（App 进程 LocalServerSocket accept，特权侧 connect）。
+        val linkOk = runCatching { CaptureSocketLink.start(vw, vh, bitrate, fps) }.getOrDefault(false)
+        if (!linkOk) {
+            val t = IllegalStateException("搬运服启动失败：${CaptureSocketLink.errorMessage() ?: "unknown"}")
+            recordCaptureError(t)
+            return false
+        }
+        // 2. 特权建连二选一：Shizuku 常驻优先，Root 常驻备用（理由见日志，任务包要求写清）。
+        val pkg = packageName
+        var connOk = false
+        var mode = "none"
+        var detail: String? = null
+        if (runCatching { PrivilegedBridge.isPrivilegedGranted() }.getOrDefault(false)) {
+            val bound = runCatching { bindShizukuCapturePersistent(pkg) }.getOrNull() == true
+            if (bound) {
+                val started = runCatching { privOps?.startCapture(vw, vh, bitrate, fps) }.getOrDefault(false) == true
+                if (started) {
+                    connOk = true
+                    mode = "shizuku"
+                    Log.i(TAG, "[CaptureRoute] 最终选择=Shizuku UserService 常驻（daemon(true))；理由=本机 Shizuku daemon 以 root 启动，" +
+                        "其 UserService 特权身份对 SurfaceControl.createDisplay/setDisplayProjection 已够用（scrcpy 同构，" +
+                        "libandroid_runtime JNI，shell 上下文可调；不同于 displayPower 被 OPlus 静默忽略个案），" +
+                        "避免另起 Root 常驻宿主复杂度；RootCaptureMain 已实现为备用（Shizuku 未授权时启用）。")
+                } else {
+                    detail = runCatching { privOps?.captureError }.getOrNull()
+                        ?: CaptureSocketLink.errorMessage() ?: "shizuku startCapture=false"
+                    Log.w(TAG, "[CaptureRoute] shizuku startCapture=false err=$detail，拆常驻并试 Root 备用")
+                    runCatching { unbindShizukuCapture() }
+                }
+            } else {
+                detail = "shizuku 常驻绑定失败"
+                Log.w(TAG, "[CaptureRoute] shizuku bind failed，试 Root 备用")
+            }
+        } else {
+            val st = runCatching { PrivilegedBridge.shizukuState() }.getOrNull()
+            detail = "Shizuku 未授权（state=$st），"
+            Log.i(TAG, "[CaptureRoute] Shizuku 不可用（state=$st），试 Root 常驻备用")
+        }
+        if (!connOk) {
+            val rootOk = runCatching { startRootCapturePersistent(vw, vh, bitrate, fps) }.getOrDefault(false)
+            if (rootOk) {
+                connOk = true
+                mode = "root"
+                Log.i(TAG, "[CaptureRoute] 最终选择=RootCaptureMain 常驻（libsu app_process daemon）；理由=Shizuku 不可用" +
+                    "（${detail ?: "未授权/绑定失败"}），Root su 可用，拉起 uid0 常驻跑 PrivilegedCapture 直到 stop 文件信号；" +
+                    "Shizuku 恢复后下次启动仍优先 Shizuku。")
+            } else {
+                val t = IllegalStateException("特权采集建连失败：Shizuku(${detail ?: "未授权/绑定失败"})；Root(无 su/拉起失败)；" +
+                    "请去 Shizuku 管理器启动并授权，或到 KernelSU 授予 Root 后重试")
+                runCatching { CaptureSocketLink.stop() }
+                runCatching { unbindShizukuCapture() }
+                recordCaptureError(t)
+                return false
+            }
+        }
+        captureMode = mode
+        // 3. 等 socket 首帧或 3s 超时再标 running（任务包约定）。
+        val first = runCatching { CaptureSocketLink.awaitFirstFrame(CaptureSocketLink.FIRST_FRAME_TIMEOUT_MS) }.getOrDefault(false)
+        if (first) {
+            clearCaptureError()
+            Log.i(TAG, "[CaptureRoute] 首帧到达 mode=$mode video=${CaptureSocketLink.hasVideo} audio=${CaptureSocketLink.hasAudio}")
+            return true
+        }
+        val linkErr = CaptureSocketLink.errorMessage()
+        val privErr = if (mode == "shizuku") runCatching { privOps?.captureError }.getOrNull() else null
+        val t = IllegalStateException("特权采集 3s 无首帧（mode=$mode）：linkErr=$linkErr privErr=$privErr；" +
+            "特权进程可能被杀或 SurfaceControl 被 ROM 忽略，见特权进程 logcat [PrivilegedCapture] 明细")
+        // 超时即收（先停 socket，再 destroy 特权采集，逆序收）。
+        runCatching { stopPrivilegedCapture() }
+        recordCaptureError(t)
+        return false
+    }
+
+    /** Shizuku 常驻绑定（daemon(true)，流期间不 destroy；stop 时 destroy 宿主）。 */
+    private fun bindShizukuCapturePersistent(packageName: String): Boolean {
+        return try {
+            val args = rikka.shizuku.Shizuku.UserServiceArgs(
+                android.content.ComponentName(packageName, PrivilegedUserService::class.java.name),
+            ).daemon(true)
+                .processNameSuffix("privileged")
+                .debuggable(BuildConfig.DEBUG)
+                .version(BuildConfig.VERSION_CODE)
+            val latch = java.util.concurrent.CountDownLatch(1)
+            var ops: IPrivilegedOps? = null
+            var bindErr: Throwable? = null
+            val conn = object : android.content.ServiceConnection {
+                override fun onServiceConnected(name: android.content.ComponentName?, binder: android.os.IBinder?) {
+                    val ping = binder != null && runCatching { binder.pingBinder() }.getOrDefault(false)
+                    if (ping && binder != null) {
+                        ops = IPrivilegedOps.Stub.asInterface(binder)
+                    } else {
+                        bindErr = IllegalStateException("特权服务 binder 无效（ping 失败）")
+                    }
+                    latch.countDown()
+                }
+                override fun onServiceDisconnected(name: android.content.ComponentName?) {
+                    latch.countDown()
+                }
+            }
+            try {
+                rikka.shizuku.Shizuku.bindUserService(args, conn)
+            } catch (t: Throwable) {
+                bindErr = t
+                latch.countDown()
+            }
+            val ok = latch.await(PRIV_BIND_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS) && ops != null && bindErr == null
+            if (!ok) {
+                runCatching { rikka.shizuku.Shizuku.unbindUserService(args, conn, true) }
+                Log.w(TAG, "[CaptureRoute] bindShizukuCapture timeout/err=${bindErr?.message}")
+                return false
+            }
+            privConn = conn
+            privOps = ops
+            privArgs = args
+            Log.i(TAG, "[CaptureRoute] bindShizukuCapture daemon(true) ok")
+            true
+        } catch (t: Throwable) {
+            Log.e(TAG, "[CaptureRoute] bindShizukuCapture threw", t)
+            false
+        }
+    }
+
+    private fun unbindShizukuCapture() {
+        val ops = privOps
+        val conn = privConn
+        val args = privArgs
+        privOps = null
+        privConn = null
+        privArgs = null
+        if (ops != null || conn != null) {
+            runCatching { ops?.stopCapture() }
+            val destroyErr = runCatching { ops?.destroy() }.exceptionOrNull()
+            Log.i(TAG, "[CaptureRoute] shizuku destroy err=${destroyErr?.toString() ?: "none"}")
+            if (conn != null && args != null) {
+                val unbindErr = runCatching { rikka.shizuku.Shizuku.unbindUserService(args, conn, true) }.exceptionOrNull()
+                Log.i(TAG, "[CaptureRoute] shizuku unbind err=${unbindErr?.toString() ?: "none"}")
+            }
+        }
+    }
+
+    /**
+     * Root 常驻拉起（备用）：libsu `app_process` 跑 RootCaptureMain 常驻直到 stop 文件信号。
+     * App 侧仍复用同一 CaptureSocketLink 服（RootCaptureLink 逻辑折叠在此，不另起文件）。
+     */
+    private fun startRootCapturePersistent(vw: Int, vh: Int, bitrate: Int, fps: Int): Boolean {
+        return try {
+            if (!runCatching { RootExecutor.isRootAvailable() }.getOrDefault(false)) {
+                Log.i(TAG, "[CaptureRoute] root unavailable (no su/denied)")
+                return false
+            }
+            val apkPath = runCatching { applicationInfo.sourceDir }.getOrNull()?.takeIf { it.isNotBlank() }
+                ?: return false
+            val nonce = runCatching { java.util.UUID.randomUUID().toString().replace("-", "").take(8) }
+                .getOrDefault(System.currentTimeMillis().toString())
+            val stopFile = "/data/local/tmp/blindcast_capture_stop_${android.os.Process.myPid()}_$nonce"
+            rootStopFile = stopFile
+            runCatching { com.topjohnwu.superuser.Shell.cmd("rm -f $stopFile").exec() }
+            val socketName = com.erl.blindcast.core.scrcpy.PrivilegedCapture.SOCKET_NAME
+            val cmd = "CLASSPATH=$apkPath app_process /system/bin " +
+                "com.erl.blindcast.core.scrcpy.RootCaptureMain capture $vw $vh $bitrate $fps $stopFile $socketName &"
+            Log.i(TAG, "[CaptureRoute] root daemon cmd=$cmd")
+            val res = runCatching { com.topjohnwu.superuser.Shell.cmd(cmd).exec() }.getOrNull()
+            Log.i(TAG, "[CaptureRoute] root daemon launched code=${runCatching { res?.code }.getOrDefault(-1)}")
+            // 拉起即认为建连成功与否交由首帧判定（3s 窗口），此处只确认命令已下发。
+            true
+        } catch (t: Throwable) {
+            Log.e(TAG, "[CaptureRoute] startRootCapture threw", t)
+            false
+        }
+    }
+
+    private fun stopRootCapture() {
+        val stopFile = rootStopFile
+        rootStopFile = null
+        if (stopFile.isNullOrBlank()) return
+        runCatching {
+            com.topjohnwu.superuser.Shell.cmd("touch $stopFile").exec()
+            Thread.sleep(ROOT_STOP_POLL_MS)
+            com.topjohnwu.superuser.Shell.cmd("rm -f $stopFile").exec()
+        }
+        Log.i(TAG, "[CaptureRoute] root daemon stop signaled file=$stopFile")
+    }
+
+    /**
+     * 停特权采集（逆序收：先停 socket 搬运，再 destroy 特权宿主）。
+     * onDestroy 与首帧超时失败共用，幂等。
+     */
+    private fun stopPrivilegedCapture() {
+        runCatching { CaptureSocketLink.stop() }
+        // Shizuku 常驻：先 stopCapture 再 destroy 宿主（任务包约定流期间不 destroy）。
+        runCatching { unbindShizukuCapture() }
+        runCatching { stopRootCapture() }
+        captureMode = "none"
     }
 
     private fun acquireLocks() {

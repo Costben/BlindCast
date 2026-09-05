@@ -8,3 +8,11 @@
 -keepclassmembers class com.erl.blindcast.core.priv.RootMain {
     public static void main(java.lang.String[]);
 }
+# Stream-Priv-1：特权采集（PrivilegedCapture/CaptureSocketLink/RootCaptureMain）经
+# Shizuku UserService binder + su 下 app_process 反射拉起，均不可裁剪/混淆。
+-keep class com.erl.blindcast.core.scrcpy.PrivilegedCapture { *; }
+-keep class com.erl.blindcast.core.scrcpy.CaptureSocketLink { *; }
+-keep class com.erl.blindcast.core.scrcpy.RootCaptureMain { *; }
+-keepclassmembers class com.erl.blindcast.core.scrcpy.RootCaptureMain {
+    public static void main(java.lang.String[]);
+}
