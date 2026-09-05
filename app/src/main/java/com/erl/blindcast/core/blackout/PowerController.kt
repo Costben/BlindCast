@@ -1,6 +1,5 @@
 package com.erl.blindcast.core.blackout
 
-import android.os.Build
 import androidx.annotation.WorkerThread
 import com.erl.blindcast.core.priv.PrivilegedBridge
 import kotlinx.coroutines.CancellationException
@@ -8,14 +7,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * 硬件屏幕电源统一控制器（Slice 2.1 · 物理灭屏底层唯一对外入口；Priv-Bridge-1 接入提权路由）。
+ * 硬件屏幕电源统一控制器（Slice 2.1 · 物理灭屏底层唯一对外入口；Priv-Bridge-2 改道 SurfaceControl）。
  *
- * ## 三分支分发（MVP.md 四(二)(1)）
+ * ## 二分支分发（MVP.md 四(二)(1) · Priv-Bridge-2 修订）
  * - Android 9（SDK 28）：[SurfaceControl.getBuiltInDisplay] 取 token 后设电源模式；
- * - Android 10 ~ 13（SDK 29 ~ 33）：[SurfaceControl.getPhysicalDisplayIds] /
- *   [SurfaceControl.getPhysicalDisplayToken] 取主屏 token 后设电源模式；
- * - Android 14+（SDK 34+）：[DisplayControl] 经 `SYSTEMSERVERCLASSPATH`
- *   反射系统服务侧实现后设电源模式。
+ * - Android 10+（SDK 29+，含 14 / 15）：[SurfaceControl.getPhysicalDisplayIds] /
+ *   [SurfaceControl.getPhysicalDisplayToken] 取主屏 token 后设电源模式。
+ *   全部经 `android.view.SurfaceControl` 反射（JNI 在 libandroid_runtime，所有进程有，
+ *   shell 身份可调；隐藏 API 经项目既有 HiddenApiBypass 放行）。
+ * - Android 14+ 旧路线 [DisplayControl] 已废弃（DEPRECATED-14+-useless）：
+ *   其 JNI 只存在于 system_server 的 libandroid_servers.so，Shizuku app_process 内是空桩，
+ *   真机实证 `nativeGetPhysicalDisplayIds ... is the library loaded?` 后进程自杀。
  *
  * 熄屏语义：`POWER_MODE_OFF` 物理切断屏幕电源（OLED / 背光断电、触控停止上报），
  * 渲染管线与 CPU 保持满血前台运行；点亮语义：`POWER_MODE_NORMAL` 恢复屏幕电源。
@@ -35,10 +37,11 @@ import kotlinx.coroutines.withContext
  *
  * ## 直调 vs 路由
  * - 直调版（[setDisplayPower] / [blackout] / [restore] / suspend 版）**必须在提权进程内执行**：
- *   Shizuku UserService（system_server 上下文）或以 Root 身份启动的 app_process 进程。
+ *   Shizuku UserService（shell / root 身份的独立 app_process）或以 Root 身份启动的 app_process 进程。
  *   普通 App 进程直接调用将失败并返回 `false`（异常记录在 [lastError]）。
  *   特权进程侧（[com.erl.blindcast.core.priv.PrivilegedUserService]）调的正是直调版。
  * - App 进程（含 UI / Service / EmergencyRecovery 所在进程）一律走 routed 版。
+ * - blackoutRouted/restoreRouted 逻辑不变（仍经 UserService），PrivilegedUserService 内直调改道后的 SurfaceControl 版。
  *
  * ## 范围声明
  * - 仅做底层能力封装：不接 UI、不启动任何线程（4s 喂狗与崩溃熔断在 Slice 2.2
@@ -53,10 +56,10 @@ import kotlinx.coroutines.withContext
  */
 object PowerController {
 
-    /** 熄屏模式（透传给 [SurfaceControl] / [DisplayControl]）。 */
+    /** 熄屏模式（透传给 [SurfaceControl]）。 */
     const val POWER_MODE_OFF = 0
 
-    /** 正常点亮模式（透传给 [SurfaceControl] / [DisplayControl]）。 */
+    /** 正常点亮模式（透传给 [SurfaceControl]）。 */
     const val POWER_MODE_NORMAL = 2
 
     /** 当前是否处于已熄屏状态（volatile，只在调用成功时翻转）。 */
@@ -70,11 +73,11 @@ object PowerController {
         private set
 
     /**
-     * 本设备 SDK 是否落在任一受支持分支内（SDK >= 28 即三分支全覆盖）。
+     * 本设备 SDK 是否落在受支持分支内（SDK >= 28 即二分支全覆盖）。
      * 项目 minSdk = 31，恒为 true；保留该开关用于未来 ROM 黑名单扩展。
      */
     val isSupported: Boolean
-        get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+        get() = true
 
     /**
      * 设置主显示屏电源（同步阻塞，含 Binder 调用，禁止主线程直调）。
@@ -91,12 +94,10 @@ object PowerController {
     fun setDisplayPower(on: Boolean): Boolean {
         val mode = if (on) POWER_MODE_NORMAL else POWER_MODE_OFF
         return try {
-            // 按 SDK 版本分发：14+ 走 DisplayControl（SYSTEMSERVERCLASSPATH），以下走 SurfaceControl。
-            val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                DisplayControl.setDefaultDisplayPowerMode(mode)
-            } else {
-                SurfaceControl.setDefaultDisplayPowerMode(mode)
-            }
+            // Priv-Bridge-2：SDK>=29（9 走 getBuiltInDisplay；10+ 含 14/15 统一走
+            // getPhysicalDisplayIds/getPhysicalDisplayToken/setDisplayPowerMode，
+            // 全部 android.view.SurfaceControl 反射）。DisplayControl 已废弃不再使用。
+            val ok = SurfaceControl.setDefaultDisplayPowerMode(mode)
             if (ok) {
                 isBlackedOut = !on
                 lastError = null

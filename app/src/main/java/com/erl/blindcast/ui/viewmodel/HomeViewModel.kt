@@ -19,6 +19,7 @@ import com.erl.blindcast.blindCastApp
 import com.erl.blindcast.core.blackout.PowerController
 import com.erl.blindcast.core.blackout.UserActivityKeeper
 import com.erl.blindcast.core.ha.HaSensorReporter
+import com.erl.blindcast.core.priv.PrivilegedBridge
 import com.erl.blindcast.core.server.BlindCastServer
 import com.erl.blindcast.core.service.BlindCastForegroundService
 import com.erl.blindcast.permission.PermissionManager
@@ -106,9 +107,18 @@ class HomeViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) { updateFromSnapshot() }
     }
 
-    /** 立即息屏挂机：经 Shizuku 特权路由物理熄屏 + 启动 4s 喂狗（后台执行，含跨进程绑定）。 */
+    /**
+     * 立即息屏挂机：经 Shizuku 特权路由物理熄屏 + 启动 4s 喂狗（后台执行，含跨进程绑定）。
+     *
+     * Priv-Bridge-2 应用内一键授权：daemon 在跑但未授权时自动走一次
+     * [PrivilegedBridge.awaitPermission]（弹系统授权框），允许则继续熄屏，
+     * 拒绝/超时才 Toast 报错；daemon 没跑则直接报“去启动 Shizuku”。
+     */
     fun blackoutNow() {
         viewModelScope.launch(Dispatchers.IO) {
+            if (PrivilegedBridge.isShizukuRunning() && !PrivilegedBridge.isPrivilegedGranted()) {
+                runCatching { PrivilegedBridge.awaitPermission() }
+            }
             val ok = try {
                 PowerController.blackoutRouted(app.packageName)
             } catch (ce: kotlinx.coroutines.CancellationException) {

@@ -7,28 +7,26 @@ import java.lang.reflect.Method;
 import dalvik.system.PathClassLoader;
 
 /**
- * Android 14+（SDK 34+）显示电源控制反射封装。
+ * Android 14+（SDK 34+）显示电源控制反射封装 —— DEPRECATED-14+-useless，运行时不再使用。
  *
- * <p>三分支算法（见 MVP.md 四(二)(1) · 物理熄屏）：Android 14 起
- * {@code android.view.SurfaceControl} 的显示电源隐藏方法不可用，改为经
- * {@code SYSTEMSERVERCLASSPATH} 类路径反射加载系统服务侧的
- * {@code com.android.server.display.DisplayControl}，再调用其
+ * <p>死因（OPlus Android 15 真机实证，Shizuku daemon root 运行已授权）：
+ * {@code com.android.server.display.DisplayControl} 的 JNI 实现只存在于 system_server 的
+ * {@code libandroid_servers.so}，Shizuku {@code app_process} 里是空桩，调用
+ * {@code nativeGetPhysicalDisplayIds()} 直接抛
+ * {@code No implementation found ... is the library loaded?} 后 {@code System.exit(0)}。
+ * 链路本身已通（UserService 拉起、APK 类加载成功），但此路 JNI 层面不通，故废弃。
+ *
+ * <p>替代路线（Priv-Bridge-2）：SDK 28 走 {@link SurfaceControl#getBuiltInDisplay}，
+ * SDK 29+（含 14 / 15）统一走 {@link SurfaceControl} 的
  * {@code getPhysicalDisplayIds() / getPhysicalDisplayToken(long) /
- * setDisplayPowerMode(IBinder, int)} 静态方法。电源模式语义与
- * {@link SurfaceControl} 一致：{@code POWER_MODE_OFF = 0} 熄屏，
- * {@code POWER_MODE_NORMAL = 2} 点亮。
+ * setDisplayPowerMode(IBinder, int)}——其 JNI 在 {@code libandroid_runtime}（所有进程有），
+ * shell 身份可调（Harbour Duck 同款路线），隐藏 API 经项目既有 HiddenApiBypass 放行。
  *
- * <p><b>调用点约束（Shizuku / Root 提权进程调用点预留）：</b>本类所有方法必须在提权进程内执行——
- * Shizuku UserService（system_server 上下文）或以 Root 身份启动的 app_process 进程。
- * 普通 App 进程内 {@code SYSTEMSERVERCLASSPATH} 环境变量通常不可见，且缺少签名级权限，
- * 调用将抛出 {@link IllegalStateException} / {@link SecurityException}。
- * Slice 2.1 仅做底层能力封装，不启动任何线程、不触碰 UI；喂狗保活与崩溃熔断在
- * Slice 2.2 实现（{@code UserActivityKeeper} / {@code EmergencyRecovery}，
- * 届时在销毁路径强制回调点亮）。
+ * <p>本文件仅保留防历史引用断裂，运行时禁止调用（{@code PowerController} 已改道 SurfaceControl）。
  *
- * <p>Slice 2.1 · 纯反射无状态工具类（屏显状态由 {@code PowerController} 维护）。
- * 仅允许在 {@code SDK_INT >= 34} 的设备上调用，低版本请使用 {@link SurfaceControl}。
+ * @deprecated 14+ 熄屏改走 SurfaceControl，本类运行时无用，仅保留文件。
  */
+@Deprecated
 public final class DisplayControl {
 
     /** 熄屏：物理切断屏幕电源（OLED / 背光断电，触控停止上报）。 */

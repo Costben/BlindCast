@@ -38,14 +38,19 @@ import rikka.shizuku.ShizukuProvider
  * - 存活：[isShizukuRunning]（[Shizuku.pingBinder]，binder 未就绪抛异常时按 false 计）。
  * - 鉴权：[isPrivilegedGranted]（存活 + `checkSelfPermission() == PERMISSION_GRANTED`；
  *   注意 `checkSelfPermission()` 在 binder 未就绪时会抛 IllegalStateException，内部已吞错）。
- * - 申请：[requestPermission] + [addRequestPermissionResultListener] /
- *   [removeRequestPermissionResultListener]（透传 Shizuku 回调，调用方按 Android 运行时权限
- *   范式处理：GRANTED 继续绑定，`shouldShowRequestPermissionRationale()` 为 true 说明用户勾了
+ * - 四态：[shizukuState]（NOT_RUNNING / RUNNING_UNAUTHORIZED / GRANTED，供权限页授权行展示
+ *   “未运行 / 运行中 / 已授权 / 未授权”）。
+ * - 申请（应用内一键授权，Priv-Bridge-2）：[awaitPermission] 注册一次性监听 → 发起申请 →
+ *   挂起等结果，Shizuku 授权弹窗自动弹出，用户点允许即回 true；权限页授权行与
+ *   `HomeViewModel.blackoutNow`（daemon 在跑但未授权时自动走一次）均调此入口。
+ *   底层另透传 [requestPermission] + [addRequestPermissionResultListener] /
+ *   [removeRequestPermissionResultListener]（调用方按 Android 运行时权限范式处理：
+ *   GRANTED 继续绑定，`shouldShowRequestPermissionRationale()` 为 true 说明用户勾了
  *   “拒绝并不再询问”，需引导去 Shizuku 管理器手动开）。
  * - 绑定/解绑：[withPrivileged] 按次绑定（`daemon(false)`，用完即焚，不留常驻特权进程）。
  *
  * 线程：所有 binder/绑定调用都在 [Dispatchers.IO] 上执行，可在任意调度器上调用；
- * `onServiceConnected` 回调线程由 Shizuku 决定，恢复协程是线程安全的。
+ * `onServiceConnected` 回调线程由 Shizuku 决定，恢复协程是线程安全的.
  */
 object PrivilegedBridge {
 
@@ -106,6 +111,24 @@ object PrivilegedBridge {
         } catch (_: Throwable) {
             false
         }
+    }
+
+    /**
+     * Shizuku 四态（Priv-Bridge-2 · 权限页“Shizuku 授权”行展示用）。
+     * - [NOT_RUNNING]：daemon 未运行（未启动 Shizuku）→ 点行弹 Toast 引导启动；
+     * - [RUNNING_UNAUTHORIZED]：运行中但未授权 → 点行调 [awaitPermission] 弹系统授权框；
+     * - [GRANTED]：已授权 → 点行无操作（仅刷新）。
+     */
+    enum class ShizukuState {
+        NOT_RUNNING,
+        RUNNING_UNAUTHORIZED,
+        GRANTED,
+    }
+
+    /** 读取当前 Shizuku 四态（同步，两次 binder 查询，均吞错计为未运行/未授权）。 */
+    fun shizukuState(): ShizukuState {
+        if (!isShizukuRunning()) return ShizukuState.NOT_RUNNING
+        return if (isPrivilegedGranted()) ShizukuState.GRANTED else ShizukuState.RUNNING_UNAUTHORIZED
     }
 
     /**

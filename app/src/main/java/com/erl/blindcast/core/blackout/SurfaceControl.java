@@ -4,23 +4,33 @@ import android.os.IBinder;
 
 import java.lang.reflect.Method;
 
+import org.lsposed.hiddenapibypass.HiddenApiBypass;
+
 /**
- * {@code android.view.SurfaceControl} 隐藏 API 反射封装（Android 9 ~ 13 分支）。
+ * {@code android.view.SurfaceControl} 隐藏 API 反射封装（Priv-Bridge-2 · 唯一物理熄屏底层）。
  *
- * <p>三分支算法（见 MVP.md 四(二)(1) · 物理熄屏）：
+ * <p>二分支算法（MVP.md 四(二)(1) · Priv-Bridge-2 修订：14+ 熄屏改走 SurfaceControl）：
  * <ul>
  *   <li>Android 9（SDK 28）：{@code SurfaceControl.getBuiltInDisplay()} 直接取内置屏 token；</li>
- *   <li>Android 10 ~ 13（SDK 29 ~ 33）：{@code getPhysicalDisplayIds()} 枚举物理屏 ID，
- *       再经 {@code getPhysicalDisplayToken(long)} 取主屏（index 0）token；</li>
- *   <li>Android 14+（SDK 34+）：本类不再适用，请改用 {@link DisplayControl}。</li>
+ *   <li>Android 10+（SDK 29+，含 14 / 15）：{@code getPhysicalDisplayIds()} 枚举物理屏 ID，
+ *       再经 {@code getPhysicalDisplayToken(long)} 取主屏（index 0）token。</li>
  * </ul>
  *
  * <p>取到 token 后统一经 {@code setDisplayPowerMode(IBinder, int)} 物理切断 / 恢复屏幕电源：
  * {@code POWER_MODE_OFF = 0} 熄屏，{@code POWER_MODE_NORMAL = 2} 点亮。
  *
+ * <p>实证结论（OPlus Android 15 真机，Shizuku daemon root 运行）：
+ * {@code com.android.server.display.DisplayControl} 的 JNI 实现只存在于 system_server 的
+ * {@code libandroid_servers.so}，Shizuku {@code app_process} 内是空桩——14+ 走 DisplayControl
+ * 此路不通。而 {@code SurfaceControl} 的 JNI 在 {@code libandroid_runtime}（所有进程有），
+ * shell 身份可调（Harbour Duck 同款路线），故 10+ 含 14 / 15 统一走本类。
+ *
+ * <p>隐藏 API 豁免：本类经项目既有 {@link HiddenApiBypass} 方案放行
+ * {@code Landroid/view/SurfaceControl}，每次反射前调用 {@code ensureHiddenApiExempted()}。
+ *
  * <p><b>调用点约束（Shizuku / Root 提权进程调用点预留）：</b>本类所有方法必须在提权进程内执行——
- * Shizuku UserService（system_server 上下文）或以 Root 身份启动的 app_process 进程。
- * 普通 App 进程缺少签名级显示电源权限且受隐藏 API 访问限制，直接调用将抛出
+ * Shizuku UserService（shell UID 2000 / root UID 0 的独立 app_process）或以 Root 身份启动的
+ * app_process 进程。普通 App 进程缺少签名级显示电源权限，直接调用将抛出
  * {@link SecurityException} 或反射异常。Slice 2.1 仅做底层能力封装，不启动任何线程、
  * 不触碰 UI；喂狗保活与崩溃熔断在 Slice 2.2 实现（{@code UserActivityKeeper} /
  * {@code EmergencyRecovery}，届时在销毁路径强制回调点亮）。
@@ -63,9 +73,22 @@ public final class SurfaceControl {
     }
 
     private static Method hiddenStaticMethod(String name, Class<?>... parameterTypes) throws Exception {
+        ensureHiddenApiExempted();
         Method m = surfaceControlClass().getDeclaredMethod(name, parameterTypes);
         m.setAccessible(true);
         return m;
+    }
+
+    /**
+     * 经项目既有 HiddenApiBypass 方案放行 {@code Landroid/view/SurfaceControl}。
+     * 提权进程与普通进程均可调用（失败只吞不抛，留给后续反射异常如实上报）。
+     */
+    private static void ensureHiddenApiExempted() {
+        try {
+            HiddenApiBypass.addHiddenApiExemptions("Landroid/view/SurfaceControl");
+        } catch (Throwable ignored) {
+            // 豁免失败不掩盖主异常：后续反射抛出的才是可诊断的真实原因。
+        }
     }
 
     /**
@@ -83,7 +106,7 @@ public final class SurfaceControl {
     }
 
     /**
-     * Android 10 ~ 13 分支：枚举物理显示屏 ID 数组。
+     * Android 10+ 分支（含 14 / 15）：枚举物理显示屏 ID 数组。
      *
      * @return 物理屏 ID 数组（至少包含主屏）
      * @throws Exception 反射失败时抛出
@@ -97,7 +120,7 @@ public final class SurfaceControl {
     }
 
     /**
-     * Android 10 ~ 13 分支：由物理屏 ID 取显示屏 token。
+     * Android 10+ 分支（含 14 / 15）：由物理屏 ID 取显示屏 token。
      *
      * @param physicalDisplayId {@link #getPhysicalDisplayIds()} 返回的 ID 之一
      * @return 显示屏 Binder token（非 null）
@@ -115,7 +138,7 @@ public final class SurfaceControl {
     }
 
     /**
-     * 取默认（主）显示屏 token：优先 Android 10 ~ 13 物理屏路径，
+     * 取默认（主）显示屏 token：优先 Android 10+ 物理屏路径（含 14 / 15），
      * 方法不存在时回退到 Android 9 内置屏路径。
      *
      * @return 主屏 Binder token（非 null）

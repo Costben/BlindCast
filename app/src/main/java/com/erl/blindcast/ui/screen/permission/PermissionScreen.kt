@@ -22,12 +22,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import android.widget.Toast
 import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.WebAsset
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
@@ -42,7 +44,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -54,11 +59,15 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.dropUnlessResumed
 import com.erl.blindcast.R
+import com.erl.blindcast.core.priv.PrivilegedBridge
 import com.erl.blindcast.permission.PermissionManager
 import com.erl.blindcast.permission.PermissionState
 import com.erl.blindcast.ui.LocalUiMode
 import com.erl.blindcast.ui.UiMode
 import com.erl.blindcast.ui.navigation3.LocalNavigator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.Icon as MiuixIcon
@@ -80,6 +89,15 @@ fun PermissionScreen() {
     val context = LocalContext.current
     val manager = remember(context) { PermissionManager(context) }
     val state by manager.state.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    // Priv-Bridge-2：Shizuku 四态（未运行 / 运行中·未授权 / 运行中·已授权），点行应用内一键授权。
+    var shizukuState by remember { mutableStateOf(PrivilegedBridge.ShizukuState.NOT_RUNNING) }
+    fun refreshShizuku() {
+        scope.launch(Dispatchers.IO) {
+            val fresh = PrivilegedBridge.shizukuState()
+            withContext(Dispatchers.Main) { shizukuState = fresh }
+        }
+    }
     val settingsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { manager.refresh() }
@@ -89,6 +107,7 @@ fun PermissionScreen() {
 
     LifecycleResumeEffect(manager) {
         manager.refresh()
+        refreshShizuku()
         onPauseOrDispose { }
     }
 
@@ -104,12 +123,43 @@ fun PermissionScreen() {
         onMicrophone = { permissionLauncher.launch(manager.microphonePermission()) },
         onBattery = { settingsLauncher.launch(manager.batteryWhitelistIntent()) },
         onOverlay = { settingsLauncher.launch(manager.overlaySettingsIntent()) },
+        onShizuku = {
+            scope.launch {
+                val cur = withContext(Dispatchers.IO) { PrivilegedBridge.shizukuState() }
+                withContext(Dispatchers.Main) { shizukuState = cur }
+                when (cur) {
+                    PrivilegedBridge.ShizukuState.NOT_RUNNING -> {
+                        Toast.makeText(
+                            context,
+                            PrivilegedBridge.SHIZUKU_NOT_RUNNING_MESSAGE,
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                    PrivilegedBridge.ShizukuState.GRANTED -> {
+                        // 已授权：仅刷新，无操作。
+                    }
+                    PrivilegedBridge.ShizukuState.RUNNING_UNAUTHORIZED -> {
+                        // 应用内一键授权：Shizuku 授权弹窗自动弹出，允许即回。
+                        val granted = PrivilegedBridge.awaitPermission()
+                        val fresh = withContext(Dispatchers.IO) { PrivilegedBridge.shizukuState() }
+                        withContext(Dispatchers.Main) { shizukuState = fresh }
+                        if (!granted && fresh != PrivilegedBridge.ShizukuState.GRANTED) {
+                            Toast.makeText(
+                                context,
+                                PrivilegedBridge.REQUIRE_SHIZUKU_MESSAGE,
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }
+            }
+        },
     )
     val onBack = dropUnlessResumed { navigator.pop() }
 
     when (LocalUiMode.current) {
-        UiMode.Miuix -> PermissionScreenMiuix(state, actions, onBack)
-        UiMode.Material -> PermissionScreenMaterial(state, actions, onBack)
+        UiMode.Miuix -> PermissionScreenMiuix(state, actions, shizukuState, onBack)
+        UiMode.Material -> PermissionScreenMaterial(state, actions, shizukuState, onBack)
     }
 }
 
@@ -119,12 +169,14 @@ private data class PermissionActions(
     val onMicrophone: () -> Unit,
     val onBattery: () -> Unit,
     val onOverlay: () -> Unit,
+    val onShizuku: () -> Unit,
 )
 
 @Composable
 private fun PermissionScreenMiuix(
     state: PermissionState,
     actions: PermissionActions,
+    shizukuState: PrivilegedBridge.ShizukuState,
     onBack: () -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
@@ -222,6 +274,10 @@ private fun PermissionScreenMiuix(
                         Icons.Default.WebAsset,
                         actions.onOverlay,
                     )
+                    ShizukuRowMiuix(
+                        shizukuState = shizukuState,
+                        onClick = actions.onShizuku,
+                    )
                 }
             }
             item { Spacer(Modifier.height(24.dp)) }
@@ -271,11 +327,63 @@ private fun PermissionRowMiuix(
     )
 }
 
+/**
+ * Priv-Bridge-2：权限页“Shizuku 授权”行（四态：运行中 / 未运行 / 已授权 / 未授权）。
+ * 点行 → 未运行弹 Toast 引导启动；运行中未授权调 awaitPermission 弹系统授权框；已授权仅刷新。
+ */
+@Composable
+private fun ShizukuRowMiuix(
+    shizukuState: PrivilegedBridge.ShizukuState,
+    onClick: () -> Unit,
+) {
+    val granted = shizukuState == PrivilegedBridge.ShizukuState.GRANTED
+    val summary = when (shizukuState) {
+        PrivilegedBridge.ShizukuState.GRANTED ->
+            stringResource(R.string.permission_shizuku_state_granted)
+        PrivilegedBridge.ShizukuState.RUNNING_UNAUTHORIZED ->
+            stringResource(R.string.permission_shizuku_state_unauthorized)
+        PrivilegedBridge.ShizukuState.NOT_RUNNING ->
+            stringResource(R.string.permission_shizuku_state_not_running)
+    }
+    val endText = when (shizukuState) {
+        PrivilegedBridge.ShizukuState.GRANTED ->
+            stringResource(R.string.permission_shizuku_granted)
+        PrivilegedBridge.ShizukuState.RUNNING_UNAUTHORIZED ->
+            stringResource(R.string.permission_shizuku_unauthorized)
+        PrivilegedBridge.ShizukuState.NOT_RUNNING ->
+            stringResource(R.string.permission_shizuku_not_running)
+    }
+    ArrowPreference(
+        title = stringResource(R.string.permission_shizuku),
+        summary = summary,
+        startAction = {
+            MiuixIcon(
+                imageVector = Icons.Default.Security,
+                contentDescription = null,
+                modifier = Modifier.padding(end = 8.dp),
+            )
+        },
+        endActions = {
+            MiuixText(
+                text = if (granted) endText else stringResource(R.string.permission_grant_action),
+                color =
+                    if (granted) MiuixTheme.colorScheme.primary
+                    else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontWeight = FontWeight.Medium,
+            )
+        },
+        onClick = onClick,
+        holdDownState = false,
+        enabled = true,
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PermissionScreenMaterial(
     state: PermissionState,
     actions: PermissionActions,
+    shizukuState: PrivilegedBridge.ShizukuState,
     onBack: () -> Unit,
 ) {
     Scaffold(
@@ -373,6 +481,10 @@ private fun PermissionScreenMaterial(
                             Icons.Default.WebAsset,
                             actions.onOverlay,
                         )
+                        ShizukuRowMaterial(
+                            shizukuState = shizukuState,
+                            onClick = actions.onShizuku,
+                        )
                     }
                 }
             }
@@ -410,6 +522,57 @@ private fun PermissionRowMaterial(
             AssistChip(
                 onClick = { },
                 label = { Text(stringResource(R.string.permission_granted)) },
+                leadingIcon = {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null)
+                },
+            )
+        } else {
+            OutlinedButton(onClick = onClick) {
+                Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null)
+                Text(stringResource(R.string.permission_grant_action))
+            }
+        }
+    }
+}
+
+/**
+ * Priv-Bridge-2：权限页“Shizuku 授权”行（Material 版，四态）。
+ */
+@Composable
+private fun ShizukuRowMaterial(
+    shizukuState: PrivilegedBridge.ShizukuState,
+    onClick: () -> Unit,
+) {
+    val granted = shizukuState == PrivilegedBridge.ShizukuState.GRANTED
+    val summary = when (shizukuState) {
+        PrivilegedBridge.ShizukuState.GRANTED ->
+            stringResource(R.string.permission_shizuku_state_granted)
+        PrivilegedBridge.ShizukuState.RUNNING_UNAUTHORIZED ->
+            stringResource(R.string.permission_shizuku_state_unauthorized)
+        PrivilegedBridge.ShizukuState.NOT_RUNNING ->
+            stringResource(R.string.permission_shizuku_state_not_running)
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.Security, contentDescription = null)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.permission_shizuku),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (granted) {
+            AssistChip(
+                onClick = { },
+                label = { Text(stringResource(R.string.permission_shizuku_granted)) },
                 leadingIcon = {
                     Icon(Icons.Default.CheckCircle, contentDescription = null)
                 },

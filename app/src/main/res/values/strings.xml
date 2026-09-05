@@ -22,6 +22,15 @@
     <string name="permission_grant_action">Grant</string>
     <string name="permission_status_ready_title">Permissions Ready</string>
     <string name="permission_status_missing_title">Permissions Required</string>
+    <!-- Priv-Bridge-2：权限页 Shizuku 授权行（四态：运行中 / 未运行 / 已授权 / 未授权） -->
+    <string name="permission_shizuku">Shizuku 授权</string>
+    <string name="permission_shizuku_running">运行中</string>
+    <string name="permission_shizuku_not_running">未运行</string>
+    <string name="permission_shizuku_granted">已授权</string>
+    <string name="permission_shizuku_unauthorized">未授权</string>
+    <string name="permission_shizuku_state_granted">运行中 · 已授权</string>
+    <string name="permission_shizuku_state_unauthorized">运行中 · 未授权</string>
+    <string name="permission_shizuku_state_not_running">未运行</string>
     <string name="home">Home</string>
     <string name="home_assistant">Home Assistant</string>
     <string name="bottom_bar_ha">HA</string>

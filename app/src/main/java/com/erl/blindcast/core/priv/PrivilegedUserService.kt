@@ -5,12 +5,15 @@ import androidx.annotation.Keep
 import com.erl.blindcast.core.blackout.PowerController
 
 /**
- * Shizuku UserService 通道服务端（Priv-Bridge-1）。
+ * Shizuku UserService 通道服务端（Priv-Bridge-1 通道，Priv-Bridge-2 改道 SurfaceControl）。
  *
  * 运行身份：本类实例由 Shizuku server（或 Sui）在独立 `app_process` 中实例化，
  * 以 root（UID 0）或 shell（UID 2000，adb 启动的 Shizuku）身份运行，因此可直接调用
- * [PowerController.setDisplayPower] 等签名级底层（普通 App 进程调同样代码必吃
- * SecurityException，见实证诊断）。
+ * [PowerController.setDisplayPower]（Priv-Bridge-2 起直调改道后的 SurfaceControl 版：
+ * SDK 28 走 getBuiltInDisplay，SDK 29+ 含 14/15 统一走 getPhysicalDisplayIds/
+ * getPhysicalDisplayToken/setDisplayPowerMode，全部 android.view.SurfaceControl 反射，
+ * JNI 在 libandroid_runtime，shell 身份可调；DisplayControl 已废弃不用）。
+ * 普通 App 进程调同样代码必吃 SecurityException，见实证诊断。
  *
  * 范式说明（遵循 Shizuku-API demo）：
  * - 直接继承 AIDL 生成的 [IPrivilegedOps.Stub]（13.x 无 `UserService` 基类，
