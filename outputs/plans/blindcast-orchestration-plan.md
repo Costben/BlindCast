@@ -211,3 +211,4 @@ updated: 2026-09-05
 - 2026-09-05: Slice 6.2 验收通过（HA页 + 设置页5卡全绑定 + ScrcpyGate，强制重编 SUCCESS），已提交，派发 Slice 6.3。
 - 2026-09-05: Slice 6.3 终验通过（15项矩阵全绿 + aapt包名/权限/assets三验 + DELIVERY.md），战役收官。
 - 2026-09-05: 战后修复线收官至 8f2858e（22 commits：首页清理/Hero三态/行图标/HA缩写/权限自愈/FGS-dataSync/Shizuku桥+应用内授权/日志/token发现/载库/转调/验效/按键链/Root后端/meow搬运与删除/特权采集/socket直连修复/行隐藏/bind幂等；锁屏链永删，AGPL清零）；HANDOFF.md 已同步至 HEAD，信箱末条 stream-priv-2 FINISHED→DONE，stream-priv-3（DM镜像）进行中。
+- 2026-09-05: stream-priv-3/4 收官（bea3c91 DM主路+SC备用；worker-4已归档撤回，主控亲修 588f1c7：stopped 初始true致drain出生即退+首帧门闩静默丢帧，改早清旗+SPS缺失告警）；真机首帧到达、动屏21fps/626KB，静态限流属编码器省流；`su+am` 可代拨开关（service非exported，run-as跨user无权限）。
