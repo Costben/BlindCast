@@ -1,5 +1,6 @@
 package com.erl.blindcast.core.blackout
 
+import android.os.Build
 import android.util.Log
 import androidx.annotation.WorkerThread
 import com.erl.blindcast.core.priv.PrivilegedBridge
@@ -11,17 +12,20 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 硬件屏幕电源统一控制器（Slice 2.1 · 物理灭屏底层唯一对外入口；Priv-Bridge-2 改道 SurfaceControl）。
+ * 硬件屏幕电源统一控制器（Slice 2.1 · 物理灭屏底层唯一对外入口；Priv-Bridge-2 改道 SurfaceControl；
+ * Priv-Bridge-5 加 14+ 混合路由）。
  *
- * ## 二分支分发（MVP.md 四(二)(1) · Priv-Bridge-2 修订）
- * - Android 9（SDK 28）：[SurfaceControl.getBuiltInDisplay] 取 token 后设电源模式；
- * - Android 10+（SDK 29+，含 14 / 15）：[SurfaceControl.getPhysicalDisplayIds] /
+ * ## 混合路由分发（MVP.md 四(二)(1) · Priv-Bridge-5 修订，机制参考 Aliothmoon/MAA-Meow (AGPL-3.0)）
+ * - Android 9 及以下（SDK 28 及以下）：[SurfaceControl.getBuiltInDisplay] 取 token 后设电源模式；
+ * - Android 10~13（SDK 29~33）：[SurfaceControl.getPhysicalDisplayIds] /
  *   [SurfaceControl.getPhysicalDisplayToken] 取主屏 token 后设电源模式。
  *   全部经 `android.view.SurfaceControl` 反射（JNI 在 libandroid_runtime，所有进程有，
  *   shell 身份可调；隐藏 API 经项目既有 HiddenApiBypass 放行）。
- * - Android 14+ 旧路线 [DisplayControl] 已废弃（DEPRECATED-14+-useless）：
- *   其 JNI 只存在于 system_server 的 libandroid_servers.so，Shizuku app_process 内是空桩，
- *   真机实证 `nativeGetPhysicalDisplayIds ... is the library loaded?` 后进程自杀。
+ * - Android 14+（SDK 34+）：特征探测（不只判 SDK）——若 [SurfaceControl.hasGetPhysicalDisplayIds]
+ *   为 true 走 SurfaceControl 路径，否则走 [DisplayControl] 路径
+ *  （`getPhysicalDisplayIds/getPhysicalDisplayToken`，经 SYSTEMSERVERCLASSPATH 载类后
+ *   `Runtime.loadLibrary0(..., "android_servers")` 预载 JNI，机制参考 MAA-Meow 自行实现）。
+ *   POWER_MODE_OFF=0 / NORMAL=2 两条路线一致。
  *
  * 熄屏语义：`POWER_MODE_OFF` 物理切断屏幕电源（OLED / 背光断电、触控停止上报），
  * 渲染管线与 CPU 保持满血前台运行；点亮语义：`POWER_MODE_NORMAL` 恢复屏幕电源。
@@ -165,20 +169,39 @@ object PowerController {
         val op = if (on) "restore" else "blackout"
         Log.d(TAG, "[PowerController] ${tid()} setDisplayPower enter on=$on mode=$mode")
         return try {
-            // Priv-Bridge-2：SDK>=29（9 走 getBuiltInDisplay；10+ 含 14/15 统一走
-            // getPhysicalDisplayIds/getPhysicalDisplayToken/setDisplayPowerMode，
-            // 全部 android.view.SurfaceControl 反射）。DisplayControl 已废弃不再使用。
-            val ok = SurfaceControl.setDefaultDisplayPowerMode(mode)
+            // Priv-Bridge-5 混合路由（特征探测，不只判 SDK）：
+            // SDK>=34 且 SurfaceControl 无 getPhysicalDisplayIds 方法 → DisplayControl fallback
+            // （SYSTEMSERVERCLASSPATH 载类 + loadLibrary0 预载 android_servers.so，机制参考 MAA-Meow）；
+            // 29~33 维持 SurfaceControl；28 及以下维持 SurfaceControl 内 getBuiltInDisplay 分支。
+            val sdk = Build.VERSION.SDK_INT
+            val hasIds = try {
+                SurfaceControl.hasGetPhysicalDisplayIds()
+            } catch (_: Throwable) {
+                false
+            }
+            val useDisplayControl = sdk >= 34 && !hasIds
+            val route = if (useDisplayControl) "DisplayControl" else "SurfaceControl"
+            Log.d(TAG, "[PowerController] ${tid()} hybrid sdk=$sdk hasIds=$hasIds " +
+                "route=$route mode=$mode")
+            val ok = if (useDisplayControl) {
+                DisplayControl.setDefaultDisplayPowerMode(mode)
+            } else {
+                SurfaceControl.setDefaultDisplayPowerMode(mode)
+            }
             if (ok) {
                 isBlackedOut = !on
                 lastError = null
                 recordPrivResult(op, true, null)
             } else {
-                val msg = "底层返回 false（mode=$mode），见特权进程 logcat [SurfaceControl] 逐屏明细"
+                val msg = if (useDisplayControl) {
+                    "底层返回 false（mode=$mode route=DisplayControl），见特权进程 logcat [DisplayControl] 明细"
+                } else {
+                    "底层返回 false（mode=$mode），见特权进程 logcat [SurfaceControl] 逐屏明细"
+                }
                 lastError = IllegalStateException(msg)
                 recordPrivResult(op, false, msg)
             }
-            Log.d(TAG, "[PowerController] ${tid()} setDisplayPower on=$on mode=$mode " +
+            Log.d(TAG, "[PowerController] ${tid()} setDisplayPower on=$on mode=$mode route=$route " +
                 "ok=$ok blackedOut=$isBlackedOut")
             ok
         } catch (t: Throwable) {

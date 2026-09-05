@@ -15,8 +15,9 @@ import java.util.Map;
 import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
 /**
- * {@code android.view.SurfaceControl} 隐藏 API 反射封装（Priv-Bridge-2 · 唯一物理熄屏底层；
- * Priv-Bridge-3 加全链路日志 + 调用实效核验；Priv-Bridge-4 加 token 多候选发现）。
+ * {@code android.view.SurfaceControl} 隐藏 API 反射封装（Priv-Bridge-2 · 物理熄屏主路径；
+ * Priv-Bridge-3 加全链路日志 + 调用实效核验；Priv-Bridge-4 加 token 多候选发现；
+ * Priv-Bridge-5 加 has 特征探测，供 PowerController 14+ 混合路由）。
  *
  * <p>三候选发现算法（MVP.md 四(二)(1) · Priv-Bridge-4 修订：OPlus Android 15 真机实证
  * {@code getPhysicalDisplayIds} 无此方法、{@code getBuiltInDisplay} 在 10+ 已删除，
@@ -36,9 +37,13 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass;
  *
  * <p>实证结论（OPlus Android 15 真机，Shizuku daemon root 运行）：
  * {@code com.android.server.display.DisplayControl} 的 JNI 实现只存在于 system_server 的
- * {@code libandroid_servers.so}，Shizuku {@code app_process} 内是空桩——14+ 走 DisplayControl
- * 此路不通。而 {@code SurfaceControl} 的 JNI 在 {@code libandroid_runtime}（所有进程有），
- * shell 身份可调（Harbour Duck 同款路线），故 10+ 含 14 / 15 统一走本类。
+ * {@code libandroid_servers.so}，Shizuku {@code app_process} 内默认是空桩——未预载时
+ * 14+ 走 DisplayControl 此路不通。而 {@code SurfaceControl} 的 JNI 在
+ * {@code libandroid_runtime}（所有进程有），shell 身份可调（Harbour Duck 同款路线），
+ * 故 10+ 含 14 / 15 优先走本类。
+ * Priv-Bridge-5 起 {@link DisplayControl} 经 {@code Runtime.loadLibrary0} 预载
+ * {@code android_servers.so} 后恢复为 14+ fallback 分支（机制参考
+ * Aliothmoon/MAA-Meow (AGPL-3.0)，混合路由见 {@code PowerController}）。
  *
  * <p>Priv-Bridge-3 排障结论（特权进程 status:0 干净退出但屏幕没黑、无 Toast）：
  * 调用曾返回 true（无异常）却无视觉效果，属静默 no-op。为此本类新增：
@@ -119,6 +124,73 @@ public final class SurfaceControl {
             HiddenApiBypass.addHiddenApiExemptions("Landroid/view/SurfaceControl");
         } catch (Throwable ignored) {
             // 豁免失败不掩盖主异常：后续反射抛出的才是可诊断的真实原因。
+        }
+    }
+
+    /**
+     * 特征探测：{@code SurfaceControl} 是否有 {@code getPhysicalDisplayIds()} 无参方法。
+     * Priv-Bridge-5 混合路由依据（不只判 SDK）：SDK&gt;=34 时有则走本类，无则走
+     * {@link DisplayControl} fallback。失败只记日志返回 false，不抛。
+     */
+    public static boolean hasGetPhysicalDisplayIds() {
+        try {
+            ensureHiddenApiExempted();
+            surfaceControlClass().getDeclaredMethod(METHOD_GET_PHYSICAL_DISPLAY_IDS);
+            Log.d(TAG, "[SurfaceControl] " + tid() + " hasGetPhysicalDisplayIds=true");
+            return true;
+        } catch (NoSuchMethodException noMethod) {
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " hasGetPhysicalDisplayIds=false (no method)");
+            return false;
+        } catch (Throwable t) {
+            Log.e(TAG, "[SurfaceControl] " + tid()
+                    + " hasGetPhysicalDisplayIds probe failed", t);
+            return false;
+        }
+    }
+
+    /**
+     * 特征探测：{@code SurfaceControl} 是否有
+     * {@code getPhysicalDisplayToken(long)} 方法（与 {@link #hasGetPhysicalDisplayIds}
+     * 配对使用，混合路由诊断用）。
+     */
+    public static boolean hasGetPhysicalDisplayToken() {
+        try {
+            ensureHiddenApiExempted();
+            surfaceControlClass().getDeclaredMethod(
+                    METHOD_GET_PHYSICAL_DISPLAY_TOKEN, long.class);
+            Log.d(TAG, "[SurfaceControl] " + tid() + " hasGetPhysicalDisplayToken=true");
+            return true;
+        } catch (NoSuchMethodException noMethod) {
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " hasGetPhysicalDisplayToken=false (no method)");
+            return false;
+        } catch (Throwable t) {
+            Log.e(TAG, "[SurfaceControl] " + tid()
+                    + " hasGetPhysicalDisplayToken probe failed", t);
+            return false;
+        }
+    }
+
+    /**
+     * 特征探测：{@code SurfaceControl} 是否有
+     * {@code setDisplayPowerMode(IBinder, int)} 方法（两条路线共用，诊断用）。
+     */
+    public static boolean hasSetDisplayPowerMode() {
+        try {
+            ensureHiddenApiExempted();
+            surfaceControlClass().getDeclaredMethod(
+                    METHOD_SET_DISPLAY_POWER_MODE, IBinder.class, int.class);
+            Log.d(TAG, "[SurfaceControl] " + tid() + " hasSetDisplayPowerMode=true");
+            return true;
+        } catch (NoSuchMethodException noMethod) {
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " hasSetDisplayPowerMode=false (no method)");
+            return false;
+        } catch (Throwable t) {
+            Log.e(TAG, "[SurfaceControl] " + tid()
+                    + " hasSetDisplayPowerMode probe failed", t);
+            return false;
         }
     }
 
