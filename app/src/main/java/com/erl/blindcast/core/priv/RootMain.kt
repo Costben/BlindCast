@@ -4,9 +4,6 @@ import android.os.Process
 import android.util.Log
 import androidx.annotation.Keep
 import com.erl.blindcast.core.blackout.PowerController
-import com.erl.blindcast.core.blackout.meow.ServiceManager as MeowServiceManager
-import com.erl.blindcast.core.blackout.meow.WakeUnlockController as MeowWakeUnlockController
-import com.erl.blindcast.core.blackout.meow.WakeUnlockResult as MeowWakeUnlockResult
 import java.io.File
 
 /**
@@ -25,11 +22,12 @@ import java.io.File
  *
  * ## 进程内行为
  * - 参数 `displayPower on/off`（`args[0]=="displayPower"`，`args[1]=="on"|"off"`，
- *   `args[2]=结果文件路径`），Root-Cut-1 顺序：先 [PowerController.tryBinderDisplayPower]
+ *   `args[2]=结果文件路径`），No-Lock-1 顺序：先 [PowerController.tryBinderDisplayPower]
  *   binder 物理断电/点亮直试（混合路由+日志不动，仅 binder→STATE 严格验效约 2s，
  *   熄屏验 STATE_OFF，点亮验 STATE_ON），成了直接返回 ok（无锁屏、无 AOD 真黑）；
- *   binder 验效失败才进 meow 锁屏链兜底（熄屏 lockAndSleep→ensureScreenOff，
- *   点亮 ensureScreenOn，既有不动）；
+ *   熄屏 binder 验效失败直接返 false，不进任何锁屏/按键兜底；
+ *   点亮 binder 验效失败则试 [PowerController.wakeByKey]
+ *  （KEYCODE_WAKEUP→KEYCODE_POWER，只点亮不制造新锁）；
  * - 结果写结果文件两行：`ok=true|false` / `err=<message>`（成功时 err 为空）；
  * - 全程 `runCatching` 包住不抛，`finally` 按成功失败 `System.exit(0/1)`；
  * - 普通 App 进程不要直接调本入口（本入口只在 root `app_process` 内有意义）。
@@ -81,13 +79,14 @@ object RootMain {
                 return
             }
             resultFile = File(resultPath)
-            // Root-Cut-1 接线：先 binder 物理断电/点亮直试（root 身份下 OPlus 很可能放行，
-            // 成了即无锁屏真黑），失败才进 meow 锁屏链兜底。混合路由+日志不动，App 侧
+            // No-Lock-1 接线：先 binder 物理断电/点亮直试（root 身份下 OPlus 很可能放行，
+            // 成了即无锁屏真黑）；熄屏 miss 直接失败不进锁屏链，点亮 miss 试 wakeByKey。
+            // 混合路由+日志不动，App 侧
             // isBlackedOut/lastError/日志/Home状态行/Toast/路由契约不变：App 侧 routed 入口
             // 仍据返回值 + 结果文件 ok/err 自行翻转，本进程经 recordPrivResult 记状态行。
             // 直调非 routed 版（必须在提权进程内：此处即 root app_process 本身）。
             val callOk: Boolean = runCatching {
-                meowSetDisplayPower(on)
+                setDisplayPowerNoLock(on)
             }.getOrElse { t ->
                 val msg = t.message ?: t.toString()
                 errMsg = "setDisplayPower抛异常：$msg"
@@ -149,80 +148,65 @@ object RootMain {
     }
 
     /**
-     * Root-Cut-1 特权熄屏/点亮（root app_process 内直调，同步阻塞）。
+     * No-Lock-1 特权熄屏/点亮（root app_process 内直调，同步阻塞）。
      * 顺序：先 [PowerController.tryBinderDisplayPower] binder 物理直试（混合路由+日志不动，
      * 仅 binder→STATE 严格验效约 2s：熄屏 STATE_OFF，点亮 STATE_ON），成了直接返回 ok
-     * （无锁屏、无 AOD 的真黑）；binder 验效失败才进 meow 锁屏链兜底（既有不动）：
-     * 熄屏先 [MeowWakeUnlockController.lockAndSleep]（lockNow+goToSleep+轮询），
-     * 未 OK（含 NO_KEYGUARD 无锁屏早返未息屏）则 fallback
-     * [MeowWakeUnlockController.ensureScreenOff] 保证物理熄屏；
-     * 点亮：[MeowWakeUnlockController.wakeScreen]（即 ensureScreenOn）。
-     * 成功/失败均经 [PowerController.recordPrivResult] 记状态行（供结果文件 err 回读），
-     * 失败文案区分 binder-root 段/meow 段；返回值即验效后最终结果
-     * （App 侧据此翻转 isBlackedOut/lastError，契约不变）。
+     * （无锁屏、无 AOD 的真黑）；熄屏 binder 验效失败直接返 false，
+     * 永不调 lockNow/lockAndSleep/ensureScreenOff，不注入 KEY_SLEEP/KEY_POWER；
+     * 点亮 binder 验效失败则试 [PowerController.wakeByKey]
+     * （KEYCODE_WAKEUP→KEYCODE_POWER，只点亮不制造新锁，自立无 lockNow）。
+     * 成功/失败均经 [PowerController.recordPrivResult] 记状态行（供结果文件 err 回读）；
+     * 返回值即验效后最终结果（App 侧据此翻转 isBlackedOut/lastError，契约不变）。
      */
-    private fun meowSetDisplayPower(on: Boolean): Boolean {
+    private fun setDisplayPowerNoLock(on: Boolean): Boolean {
         val op = if (on) "restore" else "blackout"
-        // 先 binder 物理直试（root 真身下先试，成了就不用锁屏链）。
-        val binderDesc: String? = try {
+        // 先 binder 物理直试（root 真身下先试，成了即无锁屏真黑）。
+        var binderDesc: String? = null
+        var binderRead: String? = null
+        try {
             val r = PowerController.tryBinderDisplayPower(on)
             if (r.verified) {
                 Log.d(TAG, "[RootMain] binder-first hit on=$on route=${r.route} read=${r.read}")
                 PowerController.recordPrivResult(op, true, null)
                 return true
             }
-            val d = PowerController.binderFirstSegmentDesc(on, r)
-            Log.d(TAG, "[RootMain] binder-first miss on=$on $d, fallback meow")
-            d
+            binderDesc = PowerController.binderFirstSegmentDesc(on, r)
+            binderRead = r.read
+            Log.d(TAG, "[RootMain] binder-first miss on=$on $binderDesc (No-Lock-1 no lock fallback for off)")
         } catch (t: Throwable) {
-            val d = "binder-root段异常：${t.message ?: t}"
-            Log.e(TAG, "[RootMain] binder-first threw on=$on $d", t)
-            d
+            binderDesc = "binder-root段异常：${t.message ?: t}"
+            Log.e(TAG, "[RootMain] binder-first threw on=$on $binderDesc", t)
         }
         return try {
             if (on) {
                 val ok = try {
-                    MeowWakeUnlockController.wakeScreen()
+                    PowerController.wakeByKey()
                 } catch (t: Throwable) {
-                    Log.e(TAG, "[RootMain] meow ensureScreenOn threw", t)
-                    PowerController.recordPrivResult(op, false, "点亮失败：${binderDesc}→meow段点亮异常：${t.message ?: t}")
+                    Log.e(TAG, "[RootMain] wakeByKey threw", t)
+                    PowerController.recordPrivResult(op, false, "点亮失败：${binderDesc}→按键唤醒段异常：${t.message ?: t}")
                     return false
                 }
                 if (ok) {
                     PowerController.recordPrivResult(op, true, null)
                 } else {
-                    val msg = "点亮失败：${binderDesc}→meow段ensureScreenOn验效未通过（BINDER→WAKEUP→POWER三段均miss，见root进程logcat [MeowWakeUnlock]明细）"
+                    val wakeErr = runCatching { PowerController.lastError?.message }
+                        .getOrNull()?.takeIf { !it.isNullOrBlank() }
+                        ?: runCatching { PowerController.lastPrivError }.getOrNull()
+                    val msg = "点亮失败：${binderDesc}→${wakeErr ?: "按键唤醒WAKEUP→POWER复验仍未STATE_ON"}（见root进程logcat [PowerController]明细）"
                     PowerController.recordPrivResult(op, false, msg)
                 }
                 ok
             } else {
-                val lockCode = try {
-                    MeowWakeUnlockController.lockAndSleep()
-                } catch (t: Throwable) {
-                    Log.e(TAG, "[RootMain] meow lockAndSleep threw", t)
-                    MeowWakeUnlockResult.UNSUPPORTED
-                }
-                if (lockCode == MeowWakeUnlockResult.OK) {
-                    PowerController.recordPrivResult(op, true, null)
-                    return true
-                }
-                val offOk = try {
-                    val pm = MeowServiceManager.getPowerManager()
-                    MeowWakeUnlockController.ensureScreenOff(pm)
-                } catch (t: Throwable) {
-                    Log.e(TAG, "[RootMain] meow ensureScreenOff threw", t)
-                    false
-                }
-                if (offOk) {
-                    PowerController.recordPrivResult(op, true, null)
-                } else {
-                    val msg = "熄屏失败：${binderDesc}→meow段lockAndSleep=$lockCode→ensureScreenOff验效未通过（BINDER→SLEEP→POWER三段均miss，见root进程logcat明细）"
-                    PowerController.recordPrivResult(op, false, msg)
-                }
-                offOk
+                val read = binderRead ?: runCatching { PowerController.lastError?.message }.getOrNull()
+                val msg = "熄屏失败：${binderDesc}；物理断电未生效（本机忽略），未执行锁屏兜底" +
+                    (if (!binderRead.isNullOrBlank()) "（当前$read" +
+                        "，见root进程logcat [PowerController][BinderFirst]明细）" else "")
+                PowerController.recordPrivResult(op, false, msg)
+                Log.d(TAG, "[RootMain] blackout binder-only miss, no fallback err=$msg")
+                false
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "[RootMain] meowSetDisplayPower threw", t)
+            Log.e(TAG, "[RootMain] setDisplayPowerNoLock threw", t)
             PowerController.recordPrivResult(op, false, t.message ?: t.toString())
             false
         }

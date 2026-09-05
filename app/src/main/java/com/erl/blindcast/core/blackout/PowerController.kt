@@ -18,9 +18,8 @@ import java.util.Locale
 
 /**
  * 硬件屏幕电源统一控制器（Slice 2.1 · 物理灭屏底层唯一对外入口；Priv-Bridge-2 改道 SurfaceControl；
- * Priv-Bridge-5 加 14+ 混合路由；Priv-Bridge-7 加验效轮询 + 按键兜底；
- * Priv-Bridge-8 延长按键兜底复验至约 6s 并接受 DOZE 为成功；
- * Priv-Bridge-9 熄屏加 KEY_POWER 最终兜底，对齐 MAA-Meow 三段链）。
+ * Priv-Bridge-5 加 14+ 混合路由；Priv-Bridge-7 加验效轮询；
+ * No-Lock-1 永久下线锁屏链：熄屏只许 binder 物理断电，无按键/锁屏兜底）。
  *
  * ## 混合路由分发（MVP.md 四(二)(1) · Priv-Bridge-5 修订，机制参考 Aliothmoon/MAA-Meow (AGPL-3.0)）
  * - Android 9 及以下（SDK 28 及以下）：[SurfaceControl.getBuiltInDisplay] 取 token 后设电源模式；
@@ -38,36 +37,30 @@ import java.util.Locale
  *   setDisplayPowerMode(IBinder,int) 方法，MAA-Meow 亦只有取 token 两方法）。
  *   POWER_MODE_OFF=0 / NORMAL=2 两条路线一致。
  *
- * ## 验效轮询 + 按键兜底（Priv-Bridge-7 · OPlus Android 15 真机实证，只借鉴 MAA-Meow 思想不抄代码；
- * ## Priv-Bridge-8 延长按键兜底复验并放宽成功集；
- * ## Priv-Bridge-9 熄屏加 KEY_POWER 最终兜底，对齐 MAA-Meow 三段链）
+ * ## 验效轮询（Priv-Bridge-7 · OPlus Android 15 真机实证；
+ * ## No-Lock-1 熄屏永久下线锁屏链：只许 binder 物理断电 + STATE_OFF 严格验效）
  * - 真机 trace：`setDisplayPowerMode(mode=0)` 为 void 签名，“ok=true”只代表没抛异常，
  *   OPlus SurfaceFlinger 静默忽略（10s 后 mScreenState 仍 ON）。故 binder 调完后必须验效。
  * - 验效：经 [SurfaceControl.pollDisplayState] 轮询
  *   `DisplayManager.getDisplay(DEFAULT_DISPLAY).state`（熄屏验 STATE_OFF 严格判定，
- *   点亮验 STATE_ON，最多约 2s，每次读回值均记日志；Priv-Bridge-8 保持不变，
- *   物理断电就该是 OFF）。特权进程无 Context 时回退 DisplayManagerGlobal 反射，
+ *   点亮验 STATE_ON，最多约 2s，每次读回值均记日志；物理断电就该是 OFF）。
+ *   特权进程无 Context 时回退 DisplayManagerGlobal 反射，
  *   同样可验（见 SurfaceControl.readDisplayState）。
- * - 兜底：验效失败则在特权进程内经既有 [TouchInjector]/InputManagerWrapper 注入
- *   KEYCODE_SLEEP（熄屏，Down+Up，SOURCE_KEYBOARD）再验效；熄屏 SLEEP 仍 miss 则再试
- *   KEYCODE_POWER（Priv-Bridge-9 最终兜底，Down+Up 同通道，物理按键通路 ROM 拦不住，
- *   复验同为 OFF/DOZE/DOZE_SUSPEND 约 6s）；点亮侧依次试 KEYCODE_WAKEUP、
- *   无则 KEYCODE_POWER（不动）。AIDL 见 sleepByKey/powerByKey/wakeByKey
- *   （编号顺延，旧方法不动；sleepByKey 保持 SLEEP 单键语义不动，powerByKey 为 POWER 单键）。
- * - Priv-Bridge-8（KEY_SLEEP injOk=true 后复验仍 ON→误判失败，但数分钟后 mScreenState
- *   稳定在 DOZE_SUSPEND 且进程存活，入睡过渡要 1~3s）：熄屏按键后复验走
- *   [SurfaceControl.pollDisplayStateOffOrDoze]，窗口约 6s（250ms 间隔不变，多轮），
- *   成功集放宽为 STATE_OFF/DOZE/DOZE_SUSPEND 任一；成功后调用方照常启动
- *   UserActivityKeeper（userActivity 不唤醒熟睡设备只延缓计时，doze 下稳定）。
- *   点亮侧验效保持 STATE_ON 不动。
- * - 失败文案写清走到哪一步（binder→SLEEP→POWER 三段各记：binder已调无异常但验效失败→
- *   已试 SLEEP→再试 POWER），进 lastError/Home 状态行/Toast，
- *   契约不变（仍经 recordPrivResult/lastPrivSummary）。
+ * - 熄屏无兜底（No-Lock-1 铁令）：binder 验效失败直接返 false，不注入
+ *   KEYCODE_SLEEP/KEYCODE_POWER，不调 lockNow/lockAndSleep/ensureScreenOff，
+ *   失败文案含“物理断电未生效（本机忽略），未执行锁屏兜底”，进
+ *   lastError/Home 状态行/Toast，契约不变（仍经 recordPrivResult/lastPrivSummary）。
+ * - 点亮侧保留兜底：在特权进程内经既有 [TouchInjector] 依次试 KEYCODE_WAKEUP、
+ *   无则 KEYCODE_POWER（均 Down+Up，SOURCE_KEYBOARD，只点亮不制造新锁）再验 STATE_ON。
+ *   AIDL 见 sleepByKey/powerByKey/wakeByKey（编号顺延；sleepByKey/powerByKey 为单发排障保留，
+ *   熄屏主链路不再调用；wakeByKey 为点亮兜底仍在用）。
+ * - 点亮侧验效保持 STATE_ON 不动。
  *
  * 熄屏语义：`POWER_MODE_OFF` 物理切断屏幕电源（OLED / 背光断电、触控停止上报），
  * 渲染管线与 CPU 保持满血前台运行；点亮语义：`POWER_MODE_NORMAL` 恢复屏幕电源。
  *
- * ## 提权三路径（Priv-Bridge-1 · 调用方必读；Root-Backend-1 修订为 Root→Shizuku→按键三段路由）
+ * ## 提权三路径（Priv-Bridge-1 · 调用方必读；Root-Backend-1 修订为 Root→Shizuku 两段路由；
+ * ## No-Lock-1 熄屏无按键兜底，点亮侧保留 WAKEUP→POWER）
  * - **Root 可用（首选）**：App 进程调用 [setDisplayPowerRouted] /
  *   [blackoutRouted] / [restoreRouted] 时先经 [RootExecutor.isRootAvailable] 判定，
  *   可用则经 [RootExecutor.runAsRootDisplayPower] 以 uid 0 真 root 身份单次 `app_process`
@@ -81,8 +74,8 @@ import java.util.Locale
  *   而是把 Root 段（无 su / 未授权引导去 KernelSU 点允许）+ Shizuku 引导文案
  *   （[PrivilegedBridge.REQUIRE_SHIZUKU_MESSAGE] / `SHIZUKU_NOT_RUNNING_MESSAGE`）
  *   记入 [lastError] 并返回 false，调用方（如 `HomeViewModel.blackoutNow`）据此弹 Toast。
- * - **按键兜底（既有不动）**：特权进程内 [setDisplayPower] 的 binder→验效→按键兜底全链路
- *   （熄屏 binder→SLEEP→POWER 三段，点亮 WAKEUP→POWER）保持不变。
+ * - **按键兜底（仅点亮侧保留）**：特权进程内 [setDisplayPower] 熄屏为 binder→验效
+ *   无兜底（No-Lock-1），点亮为 binder→WAKEUP→POWER 保持不变。
  *
  * ## 直调 vs 路由
  * - 直调版（[setDisplayPower] / [blackout] / [restore] / suspend 版）**必须在提权进程内执行**：
@@ -90,8 +83,9 @@ import java.util.Locale
  *   普通 App 进程直接调用将失败并返回 `false`（异常记录在 [lastError]）。
  *   特权进程侧（[com.erl.blindcast.core.priv.PrivilegedUserService]）调的正是直调版。
  * - App 进程（含 UI / Service / EmergencyRecovery 所在进程）一律走 routed 版。
- * - blackoutRouted/restoreRouted 三段路由（Root-Backend-1）：Root 可用→RootExecutor 单次
- *   app_process；否则 Shizuku 既有 UserService 通道；按键兜底在特权进程内既有不动。
+ * - blackoutRouted/restoreRouted 两段路由（Root-Backend-1 + No-Lock-1）：Root 可用→RootExecutor 单次
+ *   app_process；否则 Shizuku 既有 UserService 通道；熄屏特权侧 binder-only 无兜底，
+ *   点亮侧 binder→WAKEUP→POWER 保留。
  *   PrivilegedUserService 内直调改道后的 SurfaceControl 版。
  *
  * ## 范围声明
@@ -272,7 +266,8 @@ object PowerController {
      * 每次读回均记日志），仅截取“调 binder→严格验效”两步：
      * 熄屏验 STATE_OFF 严格判定（物理断电就该是 OFF），点亮验 STATE_ON，窗口约 2s。
      * 成功（binder 无异常且 true 且验效通过）调用方直接返回 ok（无锁屏、无 AOD 真黑）；
-     * 失败调用方进 meow 锁屏链兜底（本方法不翻转 [isBlackedOut]、不写 [lastError]、
+     * 熄屏失败调用方直接返 false，不进任何锁屏/按键兜底；点亮失败调用方试 wakeByKey
+     *（本方法不翻转 [isBlackedOut]、不写 [lastError]、
      * 不调 [recordPrivResult]，最终成败由调用方一次记入，契约不变）。
      *
      * 必须在提权进程内执行（Root app_process / Shizuku UserService），普通 App 进程调必败。
@@ -352,7 +347,7 @@ object PowerController {
     }
 
     /**
-     * Root-Cut-1：组装“binder-root 段”失败文案（供特权侧入口把 binder 段与 meow 段区分记入）。
+     * No-Lock-1：组装“binder-root 段”失败文案（熄屏直接拼“未执行锁屏兜底”，点亮供调用方拼 wake 段）。
      *
      * @param on true = 点亮，false = 熄屏（决定期望态措辞 STATE_ON / STATE_OFF）。
      * @param r [tryBinderDisplayPower] 返回结果。
@@ -417,30 +412,28 @@ object PowerController {
         get() = true
 
     /**
-     * 设置主显示屏电源（同步阻塞，含 Binder 调用 + 验效轮询 + 按键兜底，禁止主线程直调）。
+     * 设置主显示屏电源（同步阻塞，含 Binder 调用 + 验效轮询，禁止主线程直调）。
      *
      * 直调版：**必须在提权进程内执行**（Shizuku UserService / Root app_process）。
      * App 进程请用 [setDisplayPowerRouted]；特权进程侧（PrivilegedUserService）调本方法。
      *
-     * Priv-Bridge-7 全链路（OPlus Android 15 真机实证：void 签名 ok=true 只代表无异常，
-     * SurfaceFlinger 可静默忽略，故必须验效）：
+     * No-Lock-1 全链路（OPlus Android 15 真机实证：void 签名 ok=true 只代表无异常，
+     * SurfaceFlinger 可静默忽略，故必须验效；熄屏永不 fallback 锁屏链）：
      * 1. binder：既有混合路由调 setDisplayPowerMode（无异常记 binderOk）；
      * 2. 验效：[pollDisplayState] 轮询 Display 状态（熄屏验 STATE_OFF 严格判定，
-     *    点亮验 STATE_ON，约 2s，每次读回记日志；Priv-Bridge-8 保持不变，
-     *    物理断电就该是 OFF）；
-     * 3. 兜底：验效失败则在特权进程内经 [TouchInjector] 注入按键（熄屏 KEYCODE_SLEEP→
-     *    再试 KEYCODE_POWER，Priv-Bridge-9 最终兜底，对齐 MAA-Meow 三段链；
-     *    点亮 KEYCODE_WAKEUP→KEYCODE_POWER 不动，均 Down+Up，SOURCE_KEYBOARD）再验效。
-     *    熄屏每次按键后复验走 [pollDisplayStateOffOrDoze]（Priv-Bridge-8：窗口约 6s，
-     *    250ms 间隔不变，成功集放宽为 STATE_OFF/DOZE/DOZE_SUSPEND 任一，
-     *    按键实际生效只是入睡过渡要 1~3s；任一段成功后调用方照常启动 UserActivityKeeper，
-     *    userActivity 不唤醒熟睡设备只延缓计时，doze 下稳定）。
+     *    点亮验 STATE_ON，约 2s，每次读回记日志；物理断电就该是 OFF）；
+     * 3. 熄屏无兜底：验效失败直接返 false，不注入 KEYCODE_SLEEP/KEYCODE_POWER，
+     *    不调 lockNow/lockAndSleep/ensureScreenOff，失败文案含
+     *    “物理断电未生效（本机忽略），未执行锁屏兜底”；
+     *    点亮侧验效失败则在特权进程内经 [TouchInjector] 依次试 KEYCODE_WAKEUP→
+     *    KEYCODE_POWER（均 Down+Up，SOURCE_KEYBOARD，只点亮不制造新锁）再验效。
      *    点亮侧复验仍走严格 STATE_ON（约 2s），不动。
-     * 仅验效通过才算成功并翻转 [isBlackedOut]；失败文案写清走到哪一步
-     * （binder→SLEEP→POWER 三段各记），进 [lastError]/状态行/Toast，契约不变。
+     * 仅验效通过才算成功并翻转 [isBlackedOut]；熄屏失败文案为 binder 段 +
+     * “物理断电未生效（本机忽略），未执行锁屏兜底”，点亮失败文案写清
+     * binder→WAKEUP→POWER 各段，进 [lastError]/状态行/Toast，契约不变。
      *
      * @param on true = 点亮（[POWER_MODE_NORMAL]），false = 物理熄屏（[POWER_MODE_OFF]）。
-     * @return 验效通过 true；反射失败 / 系统拒绝 / 验效失败（含按键兜底后仍 miss）返回 false，
+     * @return 验效通过 true；反射失败 / 系统拒绝 / 验效失败返回 false，
      *   且失败原因记录在 [lastError]，[isBlackedOut] 保持不变。
      */
     @Synchronized
@@ -509,91 +502,27 @@ object PowerController {
                     "route=$route ok=true via=binder+verify blackedOut=$isBlackedOut")
                 return true
             }
-            // 兜底：验效失败则试按键（特权进程内经 TouchInjector/InputManagerWrapper）。
+            // No-Lock-1：熄屏无兜底（永不 fallback 锁屏链：不注 SLEEP/POWER，不调 lockNow）。
             val binderDesc = when {
                 binderErr != null -> "binder抛异常（${binderErr.message}）"
                 !binderOk -> "binder返回false"
                 else -> "binder已调无异常但验效失败"
             }
             Log.d(TAG, "[PowerController] ${tid()} $binderDesc route=$route mode=$mode " +
-                "firstRead=$firstRead, try key fallback")
+                "firstRead=$firstRead, no fallback (No-Lock-1)")
             if (!on) {
-                var injOk: Boolean
-                var injErr: String?
-                try {
-                    injOk = TouchInjector.injectKey(KeyEvent.KEYCODE_SLEEP)
-                    injErr = TouchInjector.lastError?.message
-                } catch (t: Throwable) {
-                    injOk = false
-                    injErr = t.message ?: t.toString()
-                    Log.e(TAG, "[PowerController] ${tid()} keyFallback SLEEP inject threw", t)
-                }
-                Log.d(TAG, "[PowerController] ${tid()} keyFallback SLEEP " +
-                    "injOk=$injOk err=${injErr ?: "none"}")
-                // Priv-Bridge-8：按键后复验窗口约 6s（250ms 间隔不变），成功集放宽为
-                // STATE_OFF/DOZE/DOZE_SUSPEND 任一（入睡过渡 1~3s，DOZE 即算成功；
-                // 成功后调用方照常启动 UserActivityKeeper，doze 下稳定）。
-                val secondVerified = pollDisplayStateOffOrDoze()
-                val secondRead = readDisplayForLog()
-                Log.d(TAG, "[PowerController] ${tid()} keyFallback SLEEP " +
-                    "secondVerified=$secondVerified read=$secondRead expect=OFF/DOZE/DOZE_SUSPEND")
-                if (secondVerified) {
-                    isBlackedOut = true
-                    lastError = null
-                    recordPrivResult(op, true, null)
-                    Log.d(TAG, "[PowerController] ${tid()} setDisplayPower on=false ok=true " +
-                        "via=key(SLEEP) expect=OFF/DOZE/DOZE_SUSPEND read=$secondRead " +
-                        "blackedOut=true keeper=callerStarts(userActivity doze-safe)")
-                    return true
-                }
-                // Priv-Bridge-9 最终兜底（对齐 MAA-Meow BINDER→SLEEP→POWER 三段链）：
-                // OPlus Android 15 真机实证 KEY_SLEEP 在 shell 身份下被 ROM 忽略
-                // （injOk=true 但 6s 复验全 ON，原生 input keyevent KEYCODE_SLEEP 同样睡不着），
-                // KEY_POWER 走物理按键通路 ROM 拦不住，经同通道 TouchInjector Down+Up 注入，
-                // 复验同为 OFF/DOZE/DOZE_SUSPEND 约 6s，成功即 ok=true 照常翻转并由调用方启动 keeper。
-                var powerInjOk = false
-                var powerInjErr: String? = null
-                try {
-                    powerInjOk = TouchInjector.injectKey(KeyEvent.KEYCODE_POWER)
-                    powerInjErr = TouchInjector.lastError?.message
-                } catch (t: Throwable) {
-                    powerInjOk = false
-                    powerInjErr = t.message ?: t.toString()
-                    Log.e(TAG, "[PowerController] ${tid()} keyFallback POWER inject threw", t)
-                }
-                Log.d(TAG, "[PowerController] ${tid()} keyFallback POWER " +
-                    "injOk=$powerInjOk err=${powerInjErr ?: "none"}")
-                val thirdVerified = pollDisplayStateOffOrDoze()
-                val thirdRead = readDisplayForLog()
-                Log.d(TAG, "[PowerController] ${tid()} keyFallback POWER " +
-                    "thirdVerified=$thirdVerified read=$thirdRead expect=OFF/DOZE/DOZE_SUSPEND")
-                if (thirdVerified) {
-                    isBlackedOut = true
-                    lastError = null
-                    recordPrivResult(op, true, null)
-                    Log.d(TAG, "[PowerController] ${tid()} setDisplayPower on=false ok=true " +
-                        "via=key(POWER) expect=OFF/DOZE/DOZE_SUSPEND read=$thirdRead " +
-                        "blackedOut=true keeper=callerStarts(userActivity doze-safe)")
-                    return true
-                }
-                val sleepDesc = "已试按键KEY_SLEEP注入(injOk=$injOk" +
-                    (if (injErr != null) ",err=$injErr" else "") +
-                    ")后复验(约6s)仍未STATE_OFF/DOZE/DOZE_SUSPEND($secondRead)"
-                val powerDesc = "再试KEY_POWER注入(injOk=$powerInjOk" +
-                    (if (powerInjErr != null) ",err=$powerInjErr" else "") +
-                    ")后复验(约6s)仍未STATE_OFF/DOZE/DOZE_SUSPEND($thirdRead)"
-                val keyDesc = "$sleepDesc→$powerDesc"
                 val msg = if (binderErr == null && binderOk) {
-                    // OPlus 静默忽略主路径：文案必须点清“无异常但验效失败→已试 SLEEP→再试 POWER”三段。
-                    "binder已调无异常但验效失败（route=$route mode=$mode，轮询约2s仍未STATE_OFF，$firstRead）→$keyDesc；" +
-                        "当前$thirdRead，OPlus ROM可能静默忽略SurfaceFlinger调用，" +
-                        "见特权进程logcat [SurfaceControl]/[PowerController]明细"
+                    "binder已调无异常但验效失败（route=$route mode=$mode，轮询约2s仍未STATE_OFF，$firstRead）；" +
+                        "物理断电未生效（本机忽略），未执行锁屏兜底；" +
+                        "当前$firstRead，见特权进程logcat [SurfaceControl]/[PowerController]明细"
                 } else if (binderErr != null) {
-                    "设值异常（route=$route mode=$mode）：${binderErr.message}；$keyDesc；" +
-                        "当前$thirdRead，见特权进程logcat [DisplayControl]/[SurfaceControl]明细"
+                    "设值异常（route=$route mode=$mode）：${binderErr.message}；" +
+                        "物理断电未生效（本机忽略），未执行锁屏兜底；" +
+                        "当前$firstRead，见特权进程logcat [DisplayControl]/[SurfaceControl]明细"
                 } else {
-                    "设值失败：底层返回false（mode=$mode route=$route）；$keyDesc；" +
-                        "当前$thirdRead，见特权进程logcat [DisplayControl]/[SurfaceControl]明细"
+                    "设值失败：底层返回false（mode=$mode route=$route）；" +
+                        "物理断电未生效（本机忽略），未执行锁屏兜底；" +
+                        "当前$firstRead，见特权进程logcat [DisplayControl]/[SurfaceControl]明细"
                 }
                 lastError = IllegalStateException(msg)
                 recordPrivResult(op, false, msg)
@@ -690,6 +619,7 @@ object PowerController {
 
     /**
      * 物理熄屏快捷入口（同步阻塞，禁止主线程直调）。
+     * No-Lock-1：binder-only + STATE_OFF 严格验效，失败直接 false，不进锁屏链。
      *
      * @return 同 [setDisplayPower]。
      */
@@ -714,20 +644,19 @@ object PowerController {
     suspend fun restoreSuspend(): Boolean = setDisplayPowerSuspend(true)
 
     // ------------------------------------------------------------------
-    // Priv-Bridge-7：按键兜底直调（必须在提权进程内执行；复用 TouchInjector，不动其逻辑）。
-    // Priv-Bridge-9：新增 powerByKey（POWER 单键），sleepByKey 保持 SLEEP 单键语义不动。
+    // 按键直调（必须在提权进程内执行；复用 TouchInjector）。
+    // No-Lock-1：熄屏主链路不再调用 sleepByKey/powerByKey；两者仅单发排障保留。
+    // 点亮 wakeByKey 为主链路点亮兜底仍在用（只点亮不制造新锁）。
     // ------------------------------------------------------------------
 
     /**
      * 按键熄屏直调·SLEEP 单键（同步阻塞，禁止主线程直调；必须在提权进程内执行）。
      *
-     * 经 [TouchInjector.injectKey] 注入 KEYCODE_SLEEP（Down+Up，SOURCE_KEYBOARD，
-     * 见 InputControlUtils.obtainKeyPress）后轮询验 STATE_OFF/DOZE/DOZE_SUSPEND 任一
-     * （Priv-Bridge-8：窗口约 6s，250ms 间隔不变，每次读回记日志；入睡过渡 1~3s，
-     * DOZE 即算成功，成功后调用方照常启动 UserActivityKeeper，doze 下稳定）。
+     * No-Lock-1：熄屏主链路（[setDisplayPower]/[blackoutRouted]）不再调用本方法；
+     * 本方法仅单发排障保留。经 [TouchInjector.injectKey] 注入 KEYCODE_SLEEP
+     *（Down+Up，SOURCE_KEYBOARD）后轮询验 STATE_OFF/DOZE/DOZE_SUSPEND 任一
+     *（窗口约 6s，每次读回记日志）。
      * 仅验效通过才算成功并翻转 [isBlackedOut]；供 AIDL sleepByKey 单发排障用。
-     * Priv-Bridge-9 起全链路熄屏请走 [setDisplayPower]（binder→SLEEP→POWER 三段），
-     * POWER 单键请走 [powerByKey]；本方法保持 SLEEP 单键语义不动。
      *
      * @return 验效通过 true，否则 false（明细进 [lastError]）。
      */
@@ -779,15 +708,10 @@ object PowerController {
     /**
      * 按键熄屏直调·POWER 单键（同步阻塞，禁止主线程直调；必须在提权进程内执行）。
      *
-     * Priv-Bridge-9 最终兜底单键版（对齐 MAA-Meow 三段链终段思想，不抄代码）：
-     * OPlus Android 15 真机实证 KEY_SLEEP 在 shell 身份下被 ROM 忽略
-     * （injOk=true 但 6s 复验全 ON，原生 input keyevent KEYCODE_SLEEP 同样睡不着），
-     * KEY_POWER 走物理按键通路 ROM 拦不住。经 [TouchInjector.injectKey] 注入
-     * KEYCODE_POWER（Down+Up，SOURCE_KEYBOARD，与 SLEEP 同通道）后轮询验
-     * STATE_OFF/DOZE/DOZE_SUSPEND 任一（窗口约 6s，250ms 间隔不变，每次读回记日志；
-     * 成功后调用方照常启动 UserActivityKeeper，doze 下稳定）。
-     * 仅验效通过才算成功并翻转 [isBlackedOut]；供 AIDL powerByKey 单发排障与
-     * [setDisplayPower] 终段语义复用（全链路失败文案由调用方组装三段）。
+     * No-Lock-1：熄屏主链路不再调用本方法；本方法仅单发排障保留。
+     * 经 [TouchInjector.injectKey] 注入 KEYCODE_POWER（Down+Up，SOURCE_KEYBOARD）
+     * 后轮询验 STATE_OFF/DOZE/DOZE_SUSPEND 任一（窗口约 6s，每次读回记日志）。
+     * 仅验效通过才算成功并翻转 [isBlackedOut]；供 AIDL powerByKey 单发排障用。
      *
      * @return 验效通过 true，否则 false（明细进 [lastError]）。
      */
@@ -929,7 +853,7 @@ object PowerController {
     // ------------------------------------------------------------------
 
     // ------------------------------------------------------------------
-    // Root-Backend-1：Root→Shizuku→按键三段路由支撑（Shizuku/按键段既有不动，仅前置 Root 段）。
+    // Root-Backend-1 + No-Lock-1：Root→Shizuku两段路由支撑（熄屏特权侧 binder-only 无兜底）。
     // ------------------------------------------------------------------
 
     /**
@@ -1019,16 +943,16 @@ object PowerController {
     /**
      * 设置主显示屏电源（App 进程入口，协程，可在任意调度器上调用）。
      *
-     * 路由逻辑（Root-Backend-1 三段：Root→Shizuku→按键）：
+     * 路由逻辑（Root-Backend-1 两段 + No-Lock-1：Root→Shizuku，熄屏无按键兜底）：
      * 1. Root 可用→[RootExecutor.runAsRootDisplayPower] 单次 `app_process` 直调
      *    [setDisplayPower]（uid 0 真 root，成功直接返回）；
      * 2. 否则 [PrivilegedBridge.isPrivilegedGranted] 为 true → 经 UserService
-     *    通道在特权进程内执行（含 binder→验效→按键兜底全链路，熄屏为 binder→SLEEP→POWER 三段）；
-     * 3. 按键兜底在特权进程内既有不动（见 [setDisplayPower]）。
+     *    通道在特权进程内执行（熄屏 binder→STATE_OFF 严格验效无兜底，
+     *    点亮 binder→WAKEUP→POWER 保留，见 [setDisplayPower]）。
      * 失败文案追加 Root 段（无 su / 未授权引导去 KernelSU 点允许），进
      * [lastError]/状态行/Toast，契约不变。
      * Priv-Bridge-7：Shizuku 段失败明细经 [PrivilegedBridge.setDisplayPowerDetailed] 同绑定内取回
-     * （含 binder→验效→已试按键步骤，Priv-Bridge-9 起熄屏为 binder→SLEEP→POWER 三段各记）。
+     * （熄屏为 binder 段 +“物理断电未生效（本机忽略），未执行锁屏兜底”，点亮为 binder→WAKEUP→POWER 各记）。
      *
      * @param packageName 调用方包名（`context.packageName`，用于定位 UserService 组件与解析 APK 路径）。
      * @param on true = 点亮，false = 物理熄屏。
@@ -1105,7 +1029,8 @@ object PowerController {
 
     /**
      * 物理熄屏（App 进程入口，[setDisplayPowerRouted] 特化，`on = false`；
-     * Root-Backend-1 三段路由 Root→Shizuku→按键，Root 可用先走 Root 单次 app_process）。
+     * No-Lock-1：只许 binder 物理断电 + STATE_OFF 严格验效，失败直接返 false，
+     * 不注入 SLEEP/POWER，不调锁屏链，失败文案含“物理断电未生效（本机忽略），未执行锁屏兜底”）。
      *
      * @param packageName 调用方包名。
      * @return 同 [setDisplayPowerRouted]。
@@ -1120,7 +1045,7 @@ object PowerController {
 
     /**
      * 点亮屏幕（App 进程入口，[setDisplayPowerRouted] 特化，`on = true`；
-     * Root-Backend-1 三段路由 Root→Shizuku→按键，Root 可用先走 Root 单次 app_process）。
+     * binder NORMAL + WAKEUP→POWER 唤醒键保留，只点亮不制造新锁）。
      *
      * @param packageName 调用方包名。
      * @return 同 [setDisplayPowerRouted]。
@@ -1135,8 +1060,8 @@ object PowerController {
 
     /**
      * 按键熄屏·SLEEP 单键（App 进程入口，[sleepByKey] 的路由版，经 UserService 通道）。
-     * 常规熄屏请走 [blackoutRouted] 全链路（binder→SLEEP→POWER 三段）；本入口供单发按键排障用。
-     * Priv-Bridge-9 起保持 SLEEP 单键语义不动，POWER 单键请走 [powerByKeyRouted]。
+     * No-Lock-1：常规熄屏请走 [blackoutRouted]（binder-only 无兜底）；本入口仅单发按键排障保留，
+     * 熄屏主链路不再调用。
      *
      * @param packageName 调用方包名。
      * @return 验效通过 true，否则 false（明细进 [lastError]，含特权侧回传）。
@@ -1190,8 +1115,7 @@ object PowerController {
 
     /**
      * 按键熄屏·POWER 单键（App 进程入口，[powerByKey] 的路由版，经 UserService 通道）。
-     * Priv-Bridge-9 最终兜底单键版：SLEEP 被 ROM 忽略时排障用；常规熄屏请走
-     * [blackoutRouted] 全链路（binder→SLEEP→POWER 三段，成功即 ok=true 并由调用方启动 keeper）。
+     * No-Lock-1：常规熄屏请走 [blackoutRouted]（binder-only 无兜底）；本入口仅单发排障保留。
      *
      * @param packageName 调用方包名。
      * @return 验效通过 true，否则 false（明细进 [lastError]，含特权侧回传）。

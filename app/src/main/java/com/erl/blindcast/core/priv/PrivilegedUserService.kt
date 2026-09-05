@@ -5,13 +5,10 @@ import android.os.Process
 import android.util.Log
 import androidx.annotation.Keep
 import com.erl.blindcast.core.blackout.PowerController
-import com.erl.blindcast.core.blackout.meow.ServiceManager as MeowServiceManager
-import com.erl.blindcast.core.blackout.meow.WakeUnlockController as MeowWakeUnlockController
-import com.erl.blindcast.core.blackout.meow.WakeUnlockResult as MeowWakeUnlockResult
 
 /**
  * Shizuku UserService 通道服务端（Priv-Bridge-1 通道，Priv-Bridge-2 改道 SurfaceControl，
- * Priv-Bridge-7 加验效轮询 + 按键兜底；Priv-Bridge-9 熄屏加 KEY_POWER 最终兜底）。
+ * No-Lock-1 熄屏永久下线锁屏链：只许 binder 物理断电 + STATE_OFF 严格验效）。
  *
  * 运行身份：本类实例由 Shizuku server（或 Sui）在独立 `app_process` 中实例化，
  * 以 root（UID 0）或 shell（UID 2000，adb 启动的 Shizuku）身份运行，因此可直接调用
@@ -19,10 +16,9 @@ import com.erl.blindcast.core.blackout.meow.WakeUnlockResult as MeowWakeUnlockRe
  * SDK 28 走 getBuiltInDisplay，SDK 29+ 含 14/15 统一走 getPhysicalDisplayIds/
  * getPhysicalDisplayToken/setDisplayPowerMode，全部 android.view.SurfaceControl 反射，
  * JNI 在 libandroid_runtime，shell 身份可调；DisplayControl 为 14+ fallback。
- * Priv-Bridge-7 起直调版内含 DisplayManager 验效轮询（STATE_OFF/ON，约 2s）+
- * 按键兜底（熄屏 KEYCODE_SLEEP，点亮 KEYCODE_WAKEUP→KEYCODE_POWER，经 TouchInjector）；
- * Priv-Bridge-9 起熄屏为 binder→SLEEP→POWER 三段（SLEEP 被 OPlus ROM 忽略时终段 POWER
- * 经同通道 TouchInjector 注入，物理按键通路 ROM 拦不住，复验 OFF/DOZE/DOZE_SUSPEND 约 6s）。
+ * No-Lock-1 起直调版内含 DisplayManager 验效轮询（熄屏 STATE_OFF 严格约 2s，
+ * 点亮 STATE_ON 约 2s）；熄屏无按键/锁屏兜底，点亮侧保留
+ * KEYCODE_WAKEUP→KEYCODE_POWER（经 TouchInjector，只点亮不制造新锁）。
  * 普通 App 进程调同样代码必吃 SecurityException，见实证诊断。
  *
  * 范式说明（遵循 Shizuku-API demo）：
@@ -70,19 +66,17 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
     /**
      * 设置主显示屏电源（跑在特权进程内，直调底层）。
      *
-     * Root-Cut-1 顺序：先 [PowerController.tryBinderDisplayPower] binder 物理断电/点亮直试
+     * No-Lock-1 顺序：先 [PowerController.tryBinderDisplayPower] binder 物理断电/点亮直试
      * （混合路由+日志不动，仅 binder→STATE 严格验效约 2s：熄屏 STATE_OFF，点亮 STATE_ON），
-     * 成了直接返回 ok（无锁屏、无 AOD 真黑）；binder 验效失败才进 meow 锁屏链兜底
-     * （熄屏 lockAndSleep→ensureScreenOff，点亮 ensureScreenOn，既有不动），逻辑原样来自
-     * MAA-Meow WakeUnlockController（BINDER→KEY_SLEEP→KEY_POWER + 验效，
-     * 经 PowerManager binder + TouchInjector 按键；熄屏先 lockNow 上锁再 goToSleep，
-     * 未 OK 则 fallback ensureScreenOff 保证物理熄屏）。
+     * 成了直接返回 ok（无锁屏、无 AOD 真黑）；熄屏 binder 验效失败直接返 false，
+     * 永不调锁屏链、不注入熄屏键；点亮 binder 验效失败则试 [PowerController.wakeByKey]
+     * （WAKEUP→POWER，只点亮不制造新锁）。
      * 返回值即验效后最终结果；失败明细经 [PowerController.recordPrivResult] 记入
-     * lastPrivError（区分 binder-root 段/meow 段），App 侧经 [getLastError] 同绑定内取回
+     * lastPrivError，App 侧经 [getLastError] 同绑定内取回
      * （用完即焚，跨绑定取不到），isBlackedOut/lastError/日志/Home状态行/Toast/路由契约全部不变
      * （App 侧 routed 入口据返回值 + 明细自行翻转）。
      *
-     * @param on true = 点亮（binder NORMAL+验效→meow ensureScreenOn），false = 物理熄屏（binder OFF+验效→meow lockAndSleep→ensureScreenOff）。
+     * @param on true = 点亮（binder NORMAL+验效→wakeByKey），false = 物理熄屏（binder OFF+验效，无兜底）。
      * @return 验效通过 true；失败返回 false（特权进程内失败多为 ROM 静默忽略，
      *   明细见 [getLastError]，调用方以返回值 + [getLastError] 为准）。
      */
@@ -90,9 +84,9 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
         val tid = "t=${Thread.currentThread().id}(${Thread.currentThread().name})"
         val pid = try { Process.myPid() } catch (_: Throwable) { -1 }
         val uid = try { Process.myUid() } catch (_: Throwable) { -1 }
-        Log.d(TAG, "[PrivilegedUserService] $tid setDisplayPower enter on=$on pid=$pid uid=$uid (binder-first+meow)")
+        Log.d(TAG, "[PrivilegedUserService] $tid setDisplayPower enter on=$on pid=$pid uid=$uid (binder-first no-lock)")
         return try {
-            val ok = meowSetDisplayPower(on)
+            val ok = setDisplayPowerNoLock(on)
             Log.d(TAG, "[PrivilegedUserService] $tid setDisplayPower exit on=$on ok=$ok " +
                 "err=${PowerController.lastError?.toString() ?: PowerController.lastPrivError}")
             ok
@@ -103,86 +97,70 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
     }
 
     /**
-     * Root-Cut-1 特权熄屏/点亮（Shizuku UserService 进程内直调，同步阻塞）。
+     * No-Lock-1 特权熄屏/点亮（Shizuku UserService 进程内直调，同步阻塞）。
      * 先 binder 物理直试（[PowerController.tryBinderDisplayPower]，严格验效约 2s），
-     * 成了直接返回 ok（无锁屏真黑）；失败才进 meow 锁屏链兜底（既有不动）：
-     * 熄屏先 lockAndSleep，未 OK（含 NO_KEYGUARD 无锁屏早返）则 fallback ensureScreenOff；
-     * 点亮：wakeScreen（即 ensureScreenOn）。成功/失败均记 recordPrivResult
-     * （失败文案区分 binder-root 段/meow 段，供 getLastError 回读）。
+     * 成了直接返回 ok（无锁屏真黑）；熄屏失败直接返 false，不进锁屏链；
+     * 点亮失败试 [PowerController.wakeByKey]（只点亮不制造新锁）。成功/失败均记 recordPrivResult
+     * （熄屏失败文案含“物理断电未生效（本机忽略），未执行锁屏兜底”，供 getLastError 回读）。
      */
-    private fun meowSetDisplayPower(on: Boolean): Boolean {
+    private fun setDisplayPowerNoLock(on: Boolean): Boolean {
         val op = if (on) "restore" else "blackout"
-        // 先 binder 物理直试（root 真身下 OPlus 很可能放行，成了就不用锁屏链）。
-        val binderDesc: String? = try {
+        // 先 binder 物理直试（特权身份下成了即无锁屏真黑）。
+        var binderDesc: String? = null
+        var binderRead: String? = null
+        try {
             val r = PowerController.tryBinderDisplayPower(on)
             if (r.verified) {
                 Log.d(TAG, "[PrivilegedUserService] binder-first hit on=$on route=${r.route} read=${r.read}")
                 PowerController.recordPrivResult(op, true, null)
                 return true
             }
-            val d = PowerController.binderFirstSegmentDesc(on, r)
-            Log.d(TAG, "[PrivilegedUserService] binder-first miss on=$on $d, fallback meow")
-            d
+            binderDesc = PowerController.binderFirstSegmentDesc(on, r)
+            binderRead = r.read
+            Log.d(TAG, "[PrivilegedUserService] binder-first miss on=$on $binderDesc (No-Lock-1 no lock fallback for off)")
         } catch (t: Throwable) {
-            val d = "binder-root段异常：${t.message ?: t}"
-            Log.e(TAG, "[PrivilegedUserService] binder-first threw on=$on $d", t)
-            d
+            binderDesc = "binder-root段异常：${t.message ?: t}"
+            Log.e(TAG, "[PrivilegedUserService] binder-first threw on=$on $binderDesc", t)
         }
         return try {
             if (on) {
                 val ok = try {
-                    MeowWakeUnlockController.wakeScreen()
+                    PowerController.wakeByKey()
                 } catch (t: Throwable) {
-                    Log.e(TAG, "[PrivilegedUserService] meow ensureScreenOn threw", t)
-                    PowerController.recordPrivResult(op, false, "点亮失败：${binderDesc}→meow段点亮异常：${t.message ?: t}")
+                    Log.e(TAG, "[PrivilegedUserService] wakeByKey threw", t)
+                    PowerController.recordPrivResult(op, false, "点亮失败：${binderDesc}→按键唤醒段异常：${t.message ?: t}")
                     return false
                 }
                 if (ok) {
                     PowerController.recordPrivResult(op, true, null)
                 } else {
-                    val msg = "点亮失败：${binderDesc}→meow段ensureScreenOn验效未通过（BINDER→WAKEUP→POWER三段均miss，见特权进程logcat [MeowWakeUnlock]明细）"
+                    val wakeErr = runCatching { PowerController.lastError?.message }
+                        .getOrNull()?.takeIf { !it.isNullOrBlank() }
+                        ?: runCatching { PowerController.lastPrivError }.getOrNull()
+                    val msg = "点亮失败：${binderDesc}→${wakeErr ?: "按键唤醒WAKEUP→POWER复验仍未STATE_ON"}（见特权进程logcat [PowerController]明细）"
                     PowerController.recordPrivResult(op, false, msg)
                 }
                 ok
             } else {
-                val lockCode = try {
-                    MeowWakeUnlockController.lockAndSleep()
-                } catch (t: Throwable) {
-                    Log.e(TAG, "[PrivilegedUserService] meow lockAndSleep threw", t)
-                    MeowWakeUnlockResult.UNSUPPORTED
-                }
-                if (lockCode == MeowWakeUnlockResult.OK) {
-                    PowerController.recordPrivResult(op, true, null)
-                    return true
-                }
-                val offOk = try {
-                    val pm = MeowServiceManager.getPowerManager()
-                    MeowWakeUnlockController.ensureScreenOff(pm)
-                } catch (t: Throwable) {
-                    Log.e(TAG, "[PrivilegedUserService] meow ensureScreenOff threw", t)
-                    false
-                }
-                if (offOk) {
-                    PowerController.recordPrivResult(op, true, null)
-                } else {
-                    val msg = "熄屏失败：${binderDesc}→meow段lockAndSleep=$lockCode→ensureScreenOff验效未通过（BINDER→SLEEP→POWER三段均miss，见特权进程logcat明细）"
-                    PowerController.recordPrivResult(op, false, msg)
-                }
-                offOk
+                val msg = "熄屏失败：${binderDesc}；物理断电未生效（本机忽略），未执行锁屏兜底" +
+                    (if (!binderRead.isNullOrBlank()) "（当前$binderRead" +
+                        "，见特权进程logcat [PowerController][BinderFirst]明细）" else "")
+                PowerController.recordPrivResult(op, false, msg)
+                Log.d(TAG, "[PrivilegedUserService] blackout binder-only miss, no fallback err=$msg")
+                false
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "[PrivilegedUserService] meowSetDisplayPower threw", t)
+            Log.e(TAG, "[PrivilegedUserService] setDisplayPowerNoLock threw", t)
             PowerController.recordPrivResult(op, false, t.message ?: t.toString())
             false
         }
     }
 
     /**
-     * 按键兜底直调：熄屏·SLEEP 单键（跑在特权进程内）。
+     * 按键直调：熄屏·SLEEP 单键（跑在特权进程内，仅单发排障保留）。
      * 经 [PowerController.sleepByKey] 注入 KEYCODE_SLEEP（Down+Up，SOURCE_KEYBOARD）
-     * 后验 STATE_OFF/DOZE/DOZE_SUSPEND（约 6s）。供 App 侧单发按键排障用，保持 SLEEP
-     * 单键语义不动；常规熄屏请走 [setDisplayPower] 全链路（binder→SLEEP→POWER 三段），
-     * POWER 单键请走 [powerByKey]。
+     * 后验 STATE_OFF/DOZE/DOZE_SUSPEND（约 6s）。No-Lock-1 熄屏主链路不再调用；
+     * 常规熄屏请走 [setDisplayPower]（binder-only 无兜底）。
      *
      * @return 验效通过 true，否则 false（明细见 [getLastError]）。
      */
@@ -201,11 +179,10 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
     }
 
     /**
-     * 按键兜底直调：熄屏·POWER 单键（跑在特权进程内）。
-     * Priv-Bridge-9 最终兜底单键版：经 [PowerController.powerByKey] 注入 KEYCODE_POWER
-     * （Down+Up，SOURCE_KEYBOARD，与 SLEEP 同通道 TouchInjector，物理按键通路 ROM 拦不住）
-     * 后验 STATE_OFF/DOZE/DOZE_SUSPEND（约 6s）。供 App 侧单发排障用
-     * （SLEEP 被 OPlus ROM 忽略时验证 POWER 通道）；常规熄屏请走 [setDisplayPower] 全链路。
+     * 按键直调：熄屏·POWER 单键（跑在特权进程内，仅单发排障保留）。
+     * 经 [PowerController.powerByKey] 注入 KEYCODE_POWER 后验
+     * STATE_OFF/DOZE/DOZE_SUSPEND（约 6s）。No-Lock-1 熄屏主链路不再调用；
+     * 常规熄屏请走 [setDisplayPower]（binder-only 无兜底）。
      *
      * @return 验效通过 true，否则 false（明细见 [getLastError]）。
      */
@@ -224,9 +201,9 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
     }
 
     /**
-     * 按键兜底直调：点亮（跑在特权进程内）。
-     * 经 [PowerController.wakeByKey] 依次试 KEYCODE_WAKEUP、无则 KEYCODE_POWER 后验 STATE_ON。
-     * Priv-Bridge-9 点亮侧不动。
+     * 按键直调：点亮（跑在特权进程内，主链路点亮兜底仍在用）。
+     * 经 [PowerController.wakeByKey] 依次试 KEYCODE_WAKEUP、无则 KEYCODE_POWER 后验 STATE_ON
+     * （只点亮不制造新锁）。
      *
      * @return 验效通过 true，否则 false（明细见 [getLastError]）。
      */
@@ -248,8 +225,8 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
      * 取特权进程侧最近一次失败明细（[PowerController.lastError.message]，成功时 null）。
      * 必须与 [setDisplayPower]/[sleepByKey]/[powerByKey]/[wakeByKey] 同一次绑定内调用（用完即焚）。
      *
-     * @return 失败文案（含走到哪一步：熄屏 binder→SLEEP→POWER 三段各记，点亮 binder→WAKEUP→POWER），
-     * 成功/无记录时 null。
+     * @return 失败文案（熄屏为 binder 段 +“物理断电未生效（本机忽略），未执行锁屏兜底”，
+     * 点亮为 binder→WAKEUP→POWER 各记），成功/无记录时 null。
      */
     override fun getLastError(): String? {
         return try {
