@@ -24,6 +24,7 @@
     <string name="permission_status_missing_title">Permissions Required</string>
     <string name="home">Home</string>
     <string name="home_assistant">Home Assistant</string>
+    <string name="bottom_bar_ha">HA</string>
     <string name="confirm">Confirm</string>
     <string name="settings">Settings</string>
     <!-- BlindCast Slice 1.2: 3-page skeleton placeholders (real binding lands in Slice 6.1/6.2) -->

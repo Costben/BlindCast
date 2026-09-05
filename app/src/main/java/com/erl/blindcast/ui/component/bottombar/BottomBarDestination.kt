@@ -38,7 +38,7 @@ enum class BottomBarDestination(
         pageIndex = 0,
     ),
     HomeAssistant(
-        label = R.string.home_assistant,
+        label = R.string.bottom_bar_ha,
         miuixIcon = Icons.Rounded.DeviceHub,
         materialSelectedIcon = Icons.Filled.DeviceHub,
         materialUnselectedIcon = Icons.Outlined.DeviceHub,
