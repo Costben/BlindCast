@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>BlindCast · 隐播控制台</title>
+<style>
+:root{
+  --bg:#0b0d12; --panel:rgba(255,255,255,.06); --line:rgba(255,255,255,.12);
+  --fg:#e8eaf0; --dim:rgba(232,234,240,.55); --neon:#34d399; --cyan:#7dd3fc;
+  --danger:#f87171; --warn:#fbbf24; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  display:flex;flex-direction:column;overflow:hidden}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.5;
+  background:radial-gradient(600px 300px at 15% -5%,rgba(52,211,153,.12),transparent 60%),
+             radial-gradient(700px 320px at 90% 0%,rgba(125,211,252,.10),transparent 60%)}
+/* ---- 顶栏 ---- */
+header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);
+  background:rgba(10,12,17,.72);backdrop-filter:blur(12px);z-index:5}
+.logo{font-weight:800;letter-spacing:.5px;font-size:15px;white-space:nowrap}
+.logo b{color:var(--neon)}
+.pills{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
+.pill{font-family:var(--mono);font-size:11px;padding:4px 10px;border-radius:999px;
+  border:1px solid var(--line);background:var(--panel);color:var(--dim);white-space:nowrap}
+.pill.ok{color:var(--neon);border-color:rgba(52,211,153,.4)}
+.pill.bad{color:var(--danger);border-color:rgba(248,113,113,.4)}
+/* ---- 舞台 ---- */
+#stage{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;
+  background:#05060a repeating-conic-gradient(rgba(255,255,255,.014) 0% 25%,transparent 0% 50%) 0 0/28px 28px}
+#canvas{background:#000;border-radius:8px;box-shadow:0 0 0 1px var(--line),0 12px 48px rgba(0,0,0,.6);
+  touch-action:none;cursor:crosshair;outline:none;max-width:100%;max-height:100%}
+#canvas:focus{box-shadow:0 0 0 1px rgba(52,211,153,.55),0 12px 48px rgba(0,0,0,.6)}
+.hint{position:absolute;left:12px;bottom:10px;font-family:var(--mono);font-size:11px;color:var(--dim);
+  background:rgba(0,0,0,.45);padding:4px 10px;border-radius:8px;pointer-events:none}
+/* ---- 悬浮控制栏 ---- */
+#dock{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;z-index:6;
+  display:flex;gap:6px;align-items:center;padding:8px 10px;border-radius:16px;max-width:96vw;overflow-x:auto;
+  background:rgba(16,19,26,.62);border:1px solid var(--line);backdrop-filter:blur(14px);
+  box-shadow:0 8px 32px rgba(0,0,0,.5)}
+#dock button{flex:0 0 auto;border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--fg);
+  border-radius:10px;min-width:42px;height:38px;font-size:16px;cursor:pointer;padding:0 10px}
+#dock button:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
+#dock button.on{background:rgba(52,211,153,.22);border-color:var(--neon);color:var(--neon)}
+#dock button.warn-on{background:rgba(251,191,36,.18);border-color:var(--warn);color:var(--warn)}
+#dock .sep{flex:0 0 auto;width:1px;height:24px;background:var(--line)}
+#dock .lbl{font-size:10px;color:var(--dim);font-family:var(--mono)}
+/* ---- 遮罩 / 弹窗 ---- */
+.overlay{position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;
+  background:rgba(5,6,10,.66);backdrop-filter:blur(6px)}
+.overlay.hide{display:none}
+.card{background:rgba(20,24,33,.78);border:1px solid var(--line);border-radius:18px;
+  padding:28px 30px;max-width:400px;width:92vw;text-align:center;backdrop-filter:blur(18px);
+  box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.card h1{margin:0 0 6px;font-size:20px}
+.card h1 b{color:var(--neon)}
+.card p{color:var(--dim);font-size:13px;line-height:1.8;margin:8px 0}
+.card input{width:100%;margin-top:10px;padding:12px 14px;font-size:15px;color:var(--fg);
+  background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:12px;outline:none}
+.card input:focus{border-color:var(--neon)}
+.card .row{display:flex;gap:10px;margin-top:14px}
+.btn{flex:1;padding:11px 0;border-radius:12px;border:1px solid rgba(52,211,153,.5);cursor:pointer;
+  background:rgba(52,211,153,.16);color:var(--neon);font-size:15px;font-weight:700}
+.btn:hover{background:rgba(52,211,153,.28)}
+.btn.ghost{border-color:var(--line);background:rgba(255,255,255,.05);color:var(--dim)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--neon);margin-right:6px;
+  box-shadow:0 0 8px var(--neon);animation:blink 1.6s infinite}
+@keyframes blink{50%{opacity:.35}}
+.shake{animation:shake .3s}
+@keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+#toast{position:fixed;top:56px;left:50%;transform:translateX(-50%);z-index:50;display:flex;
+  flex-direction:column;gap:8px;align-items:center;pointer-events:none}
+.toast-msg{font-family:var(--mono);font-size:12px;background:rgba(16,19,26,.9);border:1px solid var(--line);
+  padding:8px 16px;border-radius:10px;animation:fadein .2s}
+@keyframes fadein{from{opacity:0;transform:translateY(-6px)}}
+footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,234,240,.32);
+  display:flex;gap:12px;border-top:1px solid rgba(255,255,255,.06)}
+@media (max-width:640px){ .hint{display:none} footer{display:none} .logo span.sub{display:none} }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><b>▚ BlindCast</b> <span class="sub" style="color:var(--dim);font-weight:400">隐播控制台 · 硬解版</span></div>
+  <div class="pills">
+    <span class="pill" id="pillConn">○ 未连接</span>
+    <span class="pill" id="pillFps">FPS --</span>
+    <span class="pill" id="pillLat">延迟 --</span>
+    <span class="pill" id="pillBat">电量 --</span>
+  </div>
+</header>
+
+<div id="stage">
+  <canvas id="canvas" tabindex="0" width="720" height="1600"></canvas>
+  <div class="hint">左键拖拽=触控 · 右键=返回 · 中键=Home · 滚轮=滑动 · 键盘直接打字</div>
+
+  <div id="dock">
+    <button id="btnBack" title="返回 (Back)">◀</button>
+    <button id="btnHome" title="桌面 (Home)">●</button>
+    <button id="btnRecents" title="最近任务 (Recents)">■</button>
+    <span class="sep"></span>
+    <button id="btnVolDown" title="音量 -">🔉</button>
+    <button id="btnVolUp" title="音量 +">🔊</button>
+    <button id="btnMute" title="音频传输开关">🎵</button>
+    <span class="sep"></span>
+    <button id="btnPower" title="息屏 / 亮屏">⏻</button>
+    <button id="btnFull" title="全屏">⛶</button>
+    <button id="btnKeys" title="聚焦键盘输入">⌨</button>
+    <button id="btnJpeg" title="切换 JPEG/H264 (裸浏览器降级)">🎞</button>
+    <button id="btnReconnect" title="重连">⟳</button>
+  </div>
+
+  <!-- Token 鉴权弹窗 -->
+  <div class="overlay hide" id="authOverlay">
+    <div class="card" id="authCard">
+      <h1><b>▚ BlindCast</b> · 隐播</h1>
+      <p><span class="dot"></span>串流服务要求访问密码<br>输入 App 设置页配置的 Token</p>
+      <input id="tokenInput" type="password" placeholder="输入访问 Token" autocomplete="off">
+      <div class="row">
+        <button class="btn" id="btnAuth">进入控制台</button>
+      </div>
+      <p id="authErr" style="color:var(--danger);min-height:20px;margin-bottom:0"></p>
+    </div>
+  </div>
+
+  <!-- 连接入口遮罩 -->
+  <div class="overlay hide" id="bootOverlay">
+    <div class="card">
+      <h1><b>▚ BlindCast</b> · 隐播</h1>
+      <p id="bootMsg"><span class="dot"></span>服务运行中，点击进入低延迟控制台</p>
+      <div class="row"><button class="btn" id="btnEnter">进入控制台</button></div>
+      <p style="font-size:11px">WebCodecs 硬解 · WebSocket 推流 · 插件安全源</p>
+    </div>
+  </div>
+</div>
+
+<footer><span id="footStat"> BlindCast WebConsole · extension build </span><span id="footFrame">frame --</span></footer>
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
