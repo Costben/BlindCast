@@ -71,6 +71,9 @@
     <string name="blindcast_home_restore_summary" translatable="false">恢复屏幕显示（亦支持按两次物理电源键唤醒）</string>
     <string name="blindcast_home_screen_off" translatable="false">屏幕：已熄屏</string>
     <string name="blindcast_home_screen_on" translatable="false">屏幕：已点亮</string>
+    <!-- Priv-Bridge-3：快捷操作卡特权操作持久结果行（成功时间 / 失败文案，常驻展示不靠 Toast） -->
+    <string name="blindcast_home_priv_result_title" translatable="false">特权操作结果</string>
+    <string name="blindcast_home_priv_result_none" translatable="false">尚未执行熄屏 / 点亮</string>
     <string name="blindcast_home_lan_url_title" translatable="false">Web 访问地址（含 Token）</string>
     <string name="blindcast_home_copy_link" translatable="false">复制链接（已带Token）</string>
     <string name="blindcast_home_copied" translatable="false">已复制到剪贴板</string>

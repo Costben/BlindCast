@@ -2,6 +2,9 @@ package com.erl.blindcast.ui.viewmodel
 
 import android.app.ActivityManager
 import android.content.Context
+import android.hardware.display.DisplayManager
+import android.util.Log
+import android.view.Display
 import android.net.wifi.WifiManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -40,6 +43,37 @@ class HomeViewModel : ViewModel() {
     companion object {
         /** 本地状态轮询间隔 3s（电量/内存/WiFi/IP 均为轻量同步读取）。 */
         private const val LOCAL_POLL_MS = 3_000L
+
+        /** 全链路统一 TAG（与 SurfaceControl / PowerController / PrivilegedBridge 一致）。 */
+        private const val TAG = "BlindCast"
+    }
+
+    private fun tid(): String {
+        val t = Thread.currentThread()
+        return "t=${t.id}(${t.name})"
+    }
+
+    /**
+     * 尽力读回当前主屏显示状态（公开 DisplayManager API，无需提权，能读则读）。
+     * 只记日志与排障，不记隐私。
+     */
+    private fun readDisplayStateForLog(): String {
+        return try {
+            val dm = app.getSystemService(DisplayManager::class.java)
+                ?: return "dm=null"
+            val display = dm.getDisplay(Display.DEFAULT_DISPLAY)
+                ?: return "display=null"
+            val state = display.state
+            val name = try {
+                Display::class.java.getMethod("stateToString", Int::class.javaPrimitiveType)
+                    .invoke(null, state) as? String
+            } catch (_: Throwable) {
+                "?"
+            }
+            "state=$state($name)"
+        } catch (t: Throwable) {
+            "readFailed:${t.message}"
+        }
     }
 
     private val app: Context
@@ -116,21 +150,34 @@ class HomeViewModel : ViewModel() {
      */
     fun blackoutNow() {
         viewModelScope.launch(Dispatchers.IO) {
-            if (PrivilegedBridge.isShizukuRunning() && !PrivilegedBridge.isPrivilegedGranted()) {
-                runCatching { PrivilegedBridge.awaitPermission() }
+            val pkg = app.packageName
+            Log.d(TAG, "[HomeViewModel] ${tid()} blackoutNow enter")
+            val running = PrivilegedBridge.isShizukuRunning()
+            val grantedBefore = PrivilegedBridge.isPrivilegedGranted()
+            Log.d(TAG, "[HomeViewModel] ${tid()} blackoutNow auth running=$running granted=$grantedBefore")
+            if (running && !grantedBefore) {
+                val permOk = runCatching { PrivilegedBridge.awaitPermission() }.getOrDefault(false)
+                Log.d(TAG, "[HomeViewModel] ${tid()} blackoutNow awaitPermission ok=$permOk")
             }
             val ok = try {
-                PowerController.blackoutRouted(app.packageName)
+                PowerController.blackoutRouted(pkg)
             } catch (ce: kotlinx.coroutines.CancellationException) {
                 throw ce
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                Log.e(TAG, "[HomeViewModel] ${tid()} blackoutNow routed threw", t)
                 false
             }
+            val err = PowerController.lastError?.message
+            val readBack = readDisplayStateForLog()
+            Log.d(TAG, "[HomeViewModel] ${tid()} blackoutNow exit ok=$ok err=$err " +
+                "summary=${PowerController.lastPrivSummary()} display($readBack)")
             if (ok) {
-                runCatching { UserActivityKeeper.start(app) }
+                val keeperErr = runCatching { UserActivityKeeper.start(app) }.exceptionOrNull()
+                Log.d(TAG, "[HomeViewModel] ${tid()} blackoutNow keeper " +
+                    "err=${keeperErr?.toString() ?: "none"}")
             } else {
                 // Priv-Bridge-1：未授权/绑定失败只记文案弹 Toast，不抛、不动大结构。
-                publishActionError(PowerController.lastError?.message ?: "熄屏失败")
+                publishActionError(err ?: "熄屏失败")
             }
             updateFromSnapshot()
         }
@@ -139,15 +186,22 @@ class HomeViewModel : ViewModel() {
     /** 点亮物理屏幕（后台执行，经 Shizuku 特权路由，失败弹 Toast）。 */
     fun restoreScreen() {
         viewModelScope.launch(Dispatchers.IO) {
+            val pkg = app.packageName
+            Log.d(TAG, "[HomeViewModel] ${tid()} restoreScreen enter")
             val ok = try {
-                PowerController.restoreRouted(app.packageName)
+                PowerController.restoreRouted(pkg)
             } catch (ce: kotlinx.coroutines.CancellationException) {
                 throw ce
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                Log.e(TAG, "[HomeViewModel] ${tid()} restoreScreen routed threw", t)
                 false
             }
+            val err = PowerController.lastError?.message
+            val readBack = readDisplayStateForLog()
+            Log.d(TAG, "[HomeViewModel] ${tid()} restoreScreen exit ok=$ok err=$err " +
+                "summary=${PowerController.lastPrivSummary()} display($readBack)")
             if (!ok) {
-                publishActionError(PowerController.lastError?.message ?: "点亮失败")
+                publishActionError(err ?: "点亮失败")
             }
             updateFromSnapshot()
         }
@@ -216,6 +270,8 @@ class HomeViewModel : ViewModel() {
         }
 
         val hw = readHw()
+        // Priv-Bridge-3：特权操作持久结果（成功时间 / 失败文案，常驻快捷操作卡）。
+        val privSummary = runCatching { PowerController.lastPrivSummary() }.getOrNull()
         // Fix-Home-2：权限态由 ViewModel 轮询直读自愈，不依赖跨组件同步时序。
         val permSnapshot = runCatching { PermissionManager.readState(app) }.getOrNull()
         val freshGranted = permSnapshot?.requiredGranted
@@ -247,6 +303,7 @@ class HomeViewModel : ViewModel() {
                 hw = hw,
                 permissionGranted = granted,
                 missingPermissions = effectiveMissing,
+                privResult = privSummary,
             )
         }
     }

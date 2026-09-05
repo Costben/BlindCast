@@ -21,6 +21,8 @@ data class HomeUiState(
     // Priv-Bridge-1：最近一次快捷操作（熄屏/点亮）失败文案（成功不写）；seq 自增保证相同文案重复触发 Toast。
     val actionError: String? = null,
     val actionErrorSeq: Int = 0,
+    // Priv-Bridge-3：最近一次特权操作持久可见结果（成功时间 / 失败文案，常驻快捷操作卡，不靠 Toast）。
+    val privResult: String? = null,
 )
 
 /** Hero 大卡片：串流总服务实时快照。 */

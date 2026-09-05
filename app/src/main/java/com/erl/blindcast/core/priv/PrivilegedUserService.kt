@@ -1,6 +1,8 @@
 package com.erl.blindcast.core.priv
 
 import android.content.Context
+import android.os.Process
+import android.util.Log
 import androidx.annotation.Keep
 import com.erl.blindcast.core.blackout.PowerController
 
@@ -60,6 +62,24 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
      * @return 底层调用成功返回 true；失败返回 false（特权进程内失败多为 ROM 差异，
      *   异常同样吞入 [PowerController.lastError]，但跨进程不可见——调用方以返回值为准）。
      */
-    override fun setDisplayPower(on: Boolean): Boolean =
-        PowerController.setDisplayPower(on)
+    override fun setDisplayPower(on: Boolean): Boolean {
+        val tid = "t=${Thread.currentThread().id}(${Thread.currentThread().name})"
+        val pid = try { Process.myPid() } catch (_: Throwable) { -1 }
+        val uid = try { Process.myUid() } catch (_: Throwable) { -1 }
+        Log.d(TAG, "[PrivilegedUserService] $tid setDisplayPower enter on=$on pid=$pid uid=$uid")
+        return try {
+            val ok = PowerController.setDisplayPower(on)
+            Log.d(TAG, "[PrivilegedUserService] $tid setDisplayPower exit on=$on ok=$ok " +
+                "err=${PowerController.lastError?.toString()}")
+            ok
+        } catch (t: Throwable) {
+            Log.e(TAG, "[PrivilegedUserService] $tid setDisplayPower on=$on failed", t)
+            throw t
+        }
+    }
+
+    companion object {
+        /** 全链路统一 TAG（与 SurfaceControl / PowerController 一致，特权进程 logcat 可见）。 */
+        private const val TAG = "BlindCast"
+    }
 }

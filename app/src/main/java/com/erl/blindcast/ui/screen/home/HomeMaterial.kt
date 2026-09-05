@@ -63,6 +63,7 @@ fun HomePagerMaterial(
             )
             ActionsCard(
                 service = state.service,
+                privResult = state.privResult,
                 onBlackout = actions.onBlackout,
                 onRestore = actions.onRestore,
                 onToggleService = actions.onToggleService,
@@ -153,6 +154,7 @@ private fun HeroCard(
 @Composable
 private fun ActionsCard(
     service: ServiceCardState,
+    privResult: String? = null,
     onBlackout: () -> Unit,
     onRestore: () -> Unit,
     onToggleService: (Boolean) -> Unit,
@@ -162,6 +164,8 @@ private fun ActionsCard(
     } else {
         stringResource(R.string.blindcast_home_screen_on)
     }
+    // Priv-Bridge-3：最近一次特权操作持久可见（成功时间 / 失败文案），不靠一闪而过的 Toast。
+    val privLine = privResult ?: stringResource(R.string.blindcast_home_priv_result_none)
     TonalCard {
         Column(
             modifier = Modifier
@@ -197,6 +201,11 @@ private fun ActionsCard(
             }
             Text(
                 text = "${stringResource(R.string.blindcast_home_blackout_summary)} · $screenSummary",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Text(
+                text = "${stringResource(R.string.blindcast_home_priv_result_title)}：$privLine",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )

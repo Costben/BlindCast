@@ -99,6 +99,7 @@ fun HomePagerMiuix(
                         )
                         BlindCastActionsCard(
                             service = state.service,
+                            privResult = state.privResult,
                             onBlackout = actions.onBlackout,
                             onRestore = actions.onRestore,
                             onToggleService = actions.onToggleService,
@@ -241,6 +242,7 @@ private fun BlindCastHeroCard(
 @Composable
 private fun BlindCastActionsCard(
     service: ServiceCardState,
+    privResult: String? = null,
     onBlackout: () -> Unit,
     onRestore: () -> Unit,
     onToggleService: (Boolean) -> Unit,
@@ -250,6 +252,8 @@ private fun BlindCastActionsCard(
     } else {
         stringResource(R.string.blindcast_home_screen_on)
     }
+    // Priv-Bridge-3：最近一次特权操作持久可见（成功时间 / 失败文案），不靠一闪而过的 Toast。
+    val privLine = privResult ?: stringResource(R.string.blindcast_home_priv_result_none)
     Card(modifier = Modifier.fillMaxWidth()) {
         BasicComponent(
             title = stringResource(R.string.blindcast_home_action_start),
@@ -260,6 +264,11 @@ private fun BlindCastActionsCard(
             title = stringResource(R.string.blindcast_home_action_stop),
             summary = "${stringResource(R.string.blindcast_home_restore_summary)} · $screenSummary",
             onClick = onRestore,
+        )
+        BasicComponent(
+            title = stringResource(R.string.blindcast_home_priv_result_title),
+            summary = privLine,
+            onClick = {},
         )
         SwitchPreference(
             title = stringResource(R.string.blindcast_home_service_switch),

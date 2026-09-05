@@ -1,10 +1,14 @@
 package com.erl.blindcast.core.blackout
 
+import android.util.Log
 import androidx.annotation.WorkerThread
 import com.erl.blindcast.core.priv.PrivilegedBridge
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 硬件屏幕电源统一控制器（Slice 2.1 · 物理灭屏底层唯一对外入口；Priv-Bridge-2 改道 SurfaceControl）。
@@ -56,6 +60,9 @@ import kotlinx.coroutines.withContext
  */
 object PowerController {
 
+    /** 全链路统一 TAG（与 SurfaceControl / PrivilegedBridge / HomeViewModel 一致）。 */
+    private const val TAG = "BlindCast"
+
     /** 熄屏模式（透传给 [SurfaceControl]）。 */
     const val POWER_MODE_OFF = 0
 
@@ -71,6 +78,68 @@ object PowerController {
     @Volatile
     var lastError: Throwable? = null
         private set
+
+    // Priv-Bridge-3：最近一次特权操作持久可见结果（成功时间 / 失败文案，供 Home 快捷操作卡展示）。
+    /** 最近一次操作：blackout / restore（null = 尚未执行）。 */
+    @Volatile
+    var lastPrivOp: String? = null
+        private set
+
+    /** 最近一次操作是否成功（null = 尚未执行）。 */
+    @Volatile
+    var lastPrivSuccess: Boolean? = null
+        private set
+
+    /** 最近一次操作时间戳 ms（0 = 尚未执行）。 */
+    @Volatile
+    var lastPrivAtMs: Long = 0L
+        private set
+
+    /** 最近一次操作失败文案（成功时为 null，只记 message 不记隐私）。 */
+    @Volatile
+    var lastPrivError: String? = null
+        private set
+
+    private fun tid(): String {
+        val t = Thread.currentThread()
+        return "t=${t.id}(${t.name})"
+    }
+
+    /**
+     * 记录一次特权操作结果（直调与路由入口均调；成功记时间，失败记文案）。
+     *
+     * @param op blackout / restore。
+     * @param ok 是否成功。
+     * @param errMsg 失败文案（成功传 null）。
+     */
+    @Synchronized
+    fun recordPrivResult(op: String, ok: Boolean, errMsg: String?) {
+        lastPrivOp = op
+        lastPrivSuccess = ok
+        lastPrivAtMs = System.currentTimeMillis()
+        lastPrivError = if (ok) null else errMsg?.take(200)
+    }
+
+    /**
+     * 最近一次特权操作摘要（Home 快捷操作卡持久行展示用）。
+     *
+     * @return null = 尚未执行；否则如“上次熄屏成功 09-05 14:22:10”/“上次熄屏失败：xxx”。
+     */
+    fun lastPrivSummary(): String? {
+        val op = lastPrivOp ?: return null
+        val ok = lastPrivSuccess ?: return null
+        val opName = if (op == "blackout") "熄屏" else "点亮"
+        val time = try {
+            SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(lastPrivAtMs))
+        } catch (_: Throwable) {
+            lastPrivAtMs.toString()
+        }
+        return if (ok) {
+            "上次${opName}成功 $time"
+        } else {
+            "上次${opName}失败：${lastPrivError ?: "未知错误"}"
+        }
+    }
 
     /**
      * 本设备 SDK 是否落在受支持分支内（SDK >= 28 即二分支全覆盖）。
@@ -93,6 +162,8 @@ object PowerController {
     @WorkerThread
     fun setDisplayPower(on: Boolean): Boolean {
         val mode = if (on) POWER_MODE_NORMAL else POWER_MODE_OFF
+        val op = if (on) "restore" else "blackout"
+        Log.d(TAG, "[PowerController] ${tid()} setDisplayPower enter on=$on mode=$mode")
         return try {
             // Priv-Bridge-2：SDK>=29（9 走 getBuiltInDisplay；10+ 含 14/15 统一走
             // getPhysicalDisplayIds/getPhysicalDisplayToken/setDisplayPowerMode，
@@ -101,10 +172,19 @@ object PowerController {
             if (ok) {
                 isBlackedOut = !on
                 lastError = null
+                recordPrivResult(op, true, null)
+            } else {
+                val msg = "底层返回 false（mode=$mode），见特权进程 logcat [SurfaceControl] 逐屏明细"
+                lastError = IllegalStateException(msg)
+                recordPrivResult(op, false, msg)
             }
+            Log.d(TAG, "[PowerController] ${tid()} setDisplayPower on=$on mode=$mode " +
+                "ok=$ok blackedOut=$isBlackedOut")
             ok
         } catch (t: Throwable) {
             lastError = t
+            recordPrivResult(op, false, t.message ?: t.toString())
+            Log.e(TAG, "[PowerController] ${tid()} setDisplayPower on=$on mode=$mode failed", t)
             false
         }
     }
@@ -162,12 +242,20 @@ object PowerController {
      */
     suspend fun setDisplayPowerRouted(packageName: String, on: Boolean): Boolean =
         withContext(Dispatchers.IO) {
-            if (!PrivilegedBridge.isPrivilegedGranted()) {
-                lastError = if (PrivilegedBridge.isShizukuRunning()) {
+            val running = PrivilegedBridge.isShizukuRunning()
+            val granted = PrivilegedBridge.isPrivilegedGranted()
+            Log.d(TAG, "[PowerController] ${tid()} setDisplayPowerRouted enter on=$on " +
+                "running=$running granted=$granted")
+            if (!granted) {
+                lastError = if (running) {
                     SecurityException(PrivilegedBridge.REQUIRE_SHIZUKU_MESSAGE)
                 } else {
                     IllegalStateException(PrivilegedBridge.SHIZUKU_NOT_RUNNING_MESSAGE)
                 }
+                val msg = lastError?.message
+                recordPrivResult(if (on) "restore" else "blackout", false, msg)
+                Log.d(TAG, "[PowerController] ${tid()} setDisplayPowerRouted auth denied " +
+                    "on=$on running=$running granted=$granted err=$msg")
                 return@withContext false
             }
             val ok = try {
@@ -176,14 +264,21 @@ object PowerController {
                 throw ce
             } catch (t: Throwable) {
                 lastError = t
+                recordPrivResult(if (on) "restore" else "blackout", false, t.message ?: t.toString())
+                Log.e(TAG, "[PowerController] ${tid()} setDisplayPowerRouted on=$on bridge failed", t)
                 return@withContext false
             }
             if (ok) {
                 isBlackedOut = !on
                 lastError = null
+                recordPrivResult(if (on) "restore" else "blackout", true, null)
             } else {
-                lastError = IllegalStateException("特权进程执行失败（返回 false），请查看特权进程 logcat 定位 ROM 差异")
+                val msg = "特权进程执行失败（返回 false），请查看特权进程 logcat [SurfaceControl] 逐屏明细"
+                lastError = IllegalStateException(msg)
+                recordPrivResult(if (on) "restore" else "blackout", false, msg)
             }
+            Log.d(TAG, "[PowerController] ${tid()} setDisplayPowerRouted on=$on ok=$ok " +
+                "blackedOut=$isBlackedOut err=${lastError?.message}")
             ok
         }
 
@@ -193,8 +288,13 @@ object PowerController {
      * @param packageName 调用方包名。
      * @return 同 [setDisplayPowerRouted]。
      */
-    suspend fun blackoutRouted(packageName: String): Boolean =
-        setDisplayPowerRouted(packageName, false)
+    suspend fun blackoutRouted(packageName: String): Boolean {
+        Log.d(TAG, "[PowerController] ${tid()} blackoutRouted enter")
+        val ok = setDisplayPowerRouted(packageName, false)
+        Log.d(TAG, "[PowerController] ${tid()} blackoutRouted exit ok=$ok " +
+            "err=${lastError?.message} summary=${lastPrivSummary()}")
+        return ok
+    }
 
     /**
      * 点亮屏幕（App 进程入口，[setDisplayPowerRouted] 特化，`on = true`）。
@@ -202,6 +302,11 @@ object PowerController {
      * @param packageName 调用方包名。
      * @return 同 [setDisplayPowerRouted]。
      */
-    suspend fun restoreRouted(packageName: String): Boolean =
-        setDisplayPowerRouted(packageName, true)
+    suspend fun restoreRouted(packageName: String): Boolean {
+        Log.d(TAG, "[PowerController] ${tid()} restoreRouted enter")
+        val ok = setDisplayPowerRouted(packageName, true)
+        Log.d(TAG, "[PowerController] ${tid()} restoreRouted exit ok=$ok " +
+            "err=${lastError?.message} summary=${lastPrivSummary()}")
+        return ok
+    }
 }

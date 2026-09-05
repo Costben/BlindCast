@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.IBinder
+import android.util.Log
 import com.erl.blindcast.BuildConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,14 @@ import rikka.shizuku.ShizukuProvider
  * `onServiceConnected` 回调线程由 Shizuku 决定，恢复协程是线程安全的.
  */
 object PrivilegedBridge {
+
+    /** 全链路统一 TAG（与 SurfaceControl / PowerController / HomeViewModel 一致）。 */
+    private const val TAG = "BlindCast"
+
+    private fun tid(): String {
+        val t = Thread.currentThread()
+        return "t=${t.id}(${t.name})"
+    }
 
     /**
      * 未授权引导文案（[withPrivileged] 抛错 / PowerController.lastError 共用同一文案，
@@ -192,17 +201,42 @@ object PrivilegedBridge {
      */
     suspend fun <T> withPrivileged(packageName: String, block: (IPrivilegedOps) -> T): T =
         withContext(Dispatchers.IO) {
-            if (!isShizukuRunning()) throw IllegalStateException(SHIZUKU_NOT_RUNNING_MESSAGE)
-            if (!isPrivilegedGranted()) throw IllegalStateException(REQUIRE_SHIZUKU_MESSAGE)
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} withPrivileged enter")
+            if (!isShizukuRunning()) {
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} withPrivileged abort not_running")
+                throw IllegalStateException(SHIZUKU_NOT_RUNNING_MESSAGE)
+            }
+            if (!isPrivilegedGranted()) {
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} withPrivileged abort unauthorized")
+                throw IllegalStateException(REQUIRE_SHIZUKU_MESSAGE)
+            }
             val args = userServiceArgs(packageName)
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} withPrivileged bind start")
             // bindOps 内部含 BIND_TIMEOUT_MS 超时 + 失败解绑（超时抛 IllegalStateException）。
-            val bound = bindOps(args)
+            val bound = try {
+                bindOps(args)
+            } catch (t: Throwable) {
+                Log.e(TAG, "[PrivilegedBridge] ${tid()} withPrivileged bind failed", t)
+                throw t
+            }
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} withPrivileged bind ok, block start")
             try {
-                block(bound.ops)
+                val result = block(bound.ops)
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} withPrivileged block ok " +
+                    "resultType=${result?.let { it::class.java.simpleName } ?: "null"}")
+                result
+            } catch (t: Throwable) {
+                Log.e(TAG, "[PrivilegedBridge] ${tid()} withPrivileged block failed", t)
+                throw t
             } finally {
                 // 用完即焚：先让特权进程自杀（DeadObjectException 属预期，吞掉），再解绑（吞错，不掩盖主异常）。
-                runCatching { bound.ops.destroy() }
-                runCatching { Shizuku.unbindUserService(args, bound.conn, true) }
+                val destroyErr = runCatching { bound.ops.destroy() }.exceptionOrNull()
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} withPrivileged destroy " +
+                    "err=${destroyErr?.toString() ?: "none"}")
+                val unbindErr = runCatching { Shizuku.unbindUserService(args, bound.conn, true) }
+                    .exceptionOrNull()
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} withPrivileged unbind " +
+                    "err=${unbindErr?.toString() ?: "none"}")
             }
         }
 
@@ -211,8 +245,12 @@ object PrivilegedBridge {
      *
      * @return 特权进程内底层调用结果。
      */
-    suspend fun setDisplayPower(packageName: String, on: Boolean): Boolean =
-        withPrivileged(packageName) { ops -> ops.setDisplayPower(on) }
+    suspend fun setDisplayPower(packageName: String, on: Boolean): Boolean {
+        Log.d(TAG, "[PrivilegedBridge] ${tid()} setDisplayPower enter on=$on")
+        val ok = withPrivileged(packageName) { ops -> ops.setDisplayPower(on) }
+        Log.d(TAG, "[PrivilegedBridge] ${tid()} setDisplayPower exit on=$on ok=$ok")
+        return ok
+    }
 
     // ------------------------------------------------------------------
     // 内部：单次绑定
@@ -224,10 +262,14 @@ object PrivilegedBridge {
     )
 
     private suspend fun bindOps(args: Shizuku.UserServiceArgs): BoundOps {
+        Log.d(TAG, "[PrivilegedBridge] ${tid()} bindOps start timeoutMs=$BIND_TIMEOUT_MS")
         val done = CompletableDeferred<BoundOps>()
         val conn = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-                if (binder != null && runCatching { binder.pingBinder() }.getOrDefault(false)) {
+                val ping = binder != null && runCatching { binder.pingBinder() }.getOrDefault(false)
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} onServiceConnected " +
+                    "binderNull=${binder == null} ping=$ping")
+                if (ping) {
                     done.complete(BoundOps(this, IPrivilegedOps.Stub.asInterface(binder)))
                 } else {
                     done.completeExceptionally(IllegalStateException("特权服务 binder 无效（ping 失败）"))
@@ -237,18 +279,24 @@ object PrivilegedBridge {
             override fun onServiceDisconnected(name: ComponentName?) {
                 // 已建连后的断开由 block 侧 binder 异常体现；等待中建连失败才走这里
                 //（建连成功后 complete 已返回 false，此调用无副作用）。
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} onServiceDisconnected")
                 done.completeExceptionally(IllegalStateException("特权服务连接断开"))
             }
         }
         try {
             Shizuku.bindUserService(args, conn)
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} bindUserService called")
         } catch (t: Throwable) {
+            Log.e(TAG, "[PrivilegedBridge] ${tid()} bindUserService threw", t)
             done.completeExceptionally(t)
         }
         try {
-            return withTimeoutOrNull(BIND_TIMEOUT_MS) { done.await() }
+            val bound = withTimeoutOrNull(BIND_TIMEOUT_MS) { done.await() }
                 ?: throw IllegalStateException("绑定特权服务超时（${BIND_TIMEOUT_MS}ms），请确认 Shizuku 运行正常后重试")
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} bindOps ok")
+            return bound
         } catch (e: Throwable) {
+            Log.e(TAG, "[PrivilegedBridge] ${tid()} bindOps failed", e)
             // 超时 / 绑定失败 / 外部取消：一律解绑防泄漏，再原样上抛（CancellationException 不吞，保协程语义）。
             runCatching { Shizuku.unbindUserService(args, conn, true) }
             throw e
