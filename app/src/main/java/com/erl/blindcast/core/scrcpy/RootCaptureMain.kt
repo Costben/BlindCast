@@ -109,6 +109,34 @@ object RootCaptureMain {
                 code = if (okStart && running && bytes > 0) 0 else 1
                 return
             }
+            if (args.getOrNull(0) == "probeStream") {
+                // H264Black-1 可配编码探针：DisplayGlobal 选项逐项开/关定位（无 socket）。
+                // args = ["probeStream", w, h, bitrate, fps, seconds, mirror, refresh, wm, resultFile?]。
+                // mirror: -1=不设(老行为), 0=主屏；refresh: 0=不设, >0=刷新率；wm: -1=不设, 0/1=关/开。
+                val w = args.getOrNull(1)?.toIntOrNull() ?: 1280
+                val h = args.getOrNull(2)?.toIntOrNull() ?: 720
+                val bitrate = args.getOrNull(3)?.toIntOrNull() ?: 4_000_000
+                val fps = args.getOrNull(4)?.toIntOrNull() ?: 30
+                val seconds = args.getOrNull(5)?.toIntOrNull()?.coerceIn(1, 30) ?: 5
+                val mirror = args.getOrNull(6)?.toIntOrNull() ?: -1
+                val refresh = args.getOrNull(7)?.toFloatOrNull() ?: 0f
+                val wm = args.getOrNull(8)?.toIntOrNull() ?: -1
+                val mem = java.io.ByteArrayOutputStream(512 * 1024)
+                val report = runCatching {
+                    PrivilegedCapture.probeStreamEncode(w, h, bitrate, fps, seconds, mirror, refresh, wm, mem)
+                }.getOrElse { t -> "probeStream threw ${t.javaClass.simpleName}:${t.message}\n" }
+                runCatching { Log.i(TAG, "[RootCaptureMain][ProbeStream] $report") }
+                runCatching {
+                    args.getOrNull(9)?.takeIf { it.isNotBlank() }?.let { rp ->
+                        val f = File(rp)
+                        runCatching { f.parentFile?.mkdirs() }
+                        f.writeText(report + "\n")
+                        runCatching { f.setReadable(true, false) }
+                    }
+                }
+                code = if (report.contains("bytes=0")) 1 else 0
+                return
+            }
             if (args.getOrNull(0) != "capture") {
                 runCatching { Log.e(TAG, "[RootCaptureMain] unknown op ${args.getOrNull(0)} (only capture|probe)") }
                 return

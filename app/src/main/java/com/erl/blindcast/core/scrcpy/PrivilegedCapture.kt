@@ -273,6 +273,74 @@ object PrivilegedCapture {
     /** 本次建屏路由快照（诊断/探针用，null=未建屏）。 */
     fun displayRouteSnapshot(): String? = displayRoute
 
+    /**
+     * H264Black-1 可配编码探针（裸 root 进程内跑，无 socket 纯验证）。
+     * 按给定 DisplayGlobal 选项建屏编码 [seconds] 秒，输出写内存后统计 NALU 类型，
+     * 返回单行报告 `probeStream ok=.. route=.. bytes=.. sps=.. pps=.. idr=.. p=.. frames~..`。
+     * 调用方负责进程存活与 stop（见 RootCaptureMain probeStream）。
+     */
+    @Synchronized
+    fun probeStreamEncode(
+        width: Int, height: Int, bitrate: Int, fps: Int, seconds: Int,
+        mirrorDisplay: Int, refreshRate: Float, wmMirror: Int,
+        out: java.io.ByteArrayOutputStream,
+    ): String {
+        if (isRunning) stopLocked()
+        if (!checkVideoParams(width, height, bitrate, fps)) return "probeStream bad params"
+        stopped.set(false)
+        var okStart = false
+        try {
+            socketOut = out
+            ownsSocket = false
+            startVideoEncoderLockedEx(width, height, bitrate, fps, mirrorDisplay, refreshRate, wmMirror)
+            okStart = true
+        } catch (t: Throwable) {
+            lastError = t
+            runCatching { Log.e(TAG, "[PrivilegedCapture][ProbeStream] start failed", t) }
+            releaseVideoLocked()
+            socketOut = null
+            return "probeStream start=false err=${t.javaClass.simpleName}:${t.message}"
+        }
+        try {
+            Thread.sleep(seconds.coerceIn(1, 30) * 1000L)
+        } catch (_: InterruptedException) {
+        }
+        val route = displayRoute
+        val running = videoRunning
+        val bytes = out.size()
+        val stats = countNalus(out.toByteArray())
+        runCatching { stopLocked() }
+        socketOut = null
+        val rep = "probeStream ok=$okStart route=$route running=$running bytes=$bytes " +
+            "sps=${stats[7]} pps=${stats[8]} idr=${stats[5]} pframe=${stats[1]} sei=${stats[6]} " +
+            "mirror=$mirrorDisplay refresh=$refreshRate wm=$wmMirror err=${errorMessage()}"
+        runCatching { Log.i(TAG, "[PrivilegedCapture][ProbeStream] $rep") }
+        return rep
+    }
+
+    /** 统计 Annex-B 缓冲内各 NALU 类型出现次数（起始码 3/4 字节通用）。 */
+    private fun countNalus(annexB: ByteArray): Map<Int, Int> {
+        val counts = mutableMapOf<Int, Int>()
+        var i = 0
+        while (i + 2 < annexB.size) {
+            if (annexB[i] == 0.toByte() && annexB[i + 1] == 0.toByte()) {
+                val headerAt = when {
+                    annexB[i + 2] == 1.toByte() -> i + 3
+                    i + 3 < annexB.size && annexB[i + 2] == 0.toByte() && annexB[i + 3] == 1.toByte() -> i + 4
+                    else -> -1
+                }
+                if (headerAt in 0 until annexB.size) {
+                    val t = annexB[headerAt].toInt() and 0x1F
+                    counts[t] = (counts[t] ?: 0) + 1
+                    i = headerAt + 1
+                    continue
+                }
+            }
+            i++
+        }
+        return counts
+    }
+
     // ------------------------------------------------------------------
     // Smooth-1 显示路由探针（裸 root app_process 内跑：RootCaptureMain probe op 调用；
     // 只做反射清点 + Context 各路实测，不建屏不编码，无副作用，可反复跑）。
@@ -489,6 +557,20 @@ object PrivilegedCapture {
     // ------------------------------------------------------------------
 
     private fun startVideoEncoderLocked(width: Int, height: Int, bitrate: Int, fps: Int) {
+        // H264Black-1：DisplayGlobal 只补请求刷新率=编码 fps（静态屏约 1fps→2~4fps、
+        // 动屏满帧，首帧 IDR <1s 不变；displayIdToMirror/WM 镜像实测掏空内容故不设）。
+        // JPEG 路（JpegTranscoder/ScreencapJpegPoller）语义不动。
+        startVideoEncoderLockedEx(width, height, bitrate, fps, -1, fps.coerceIn(1, 120).toFloat(), -1)
+    }
+
+    /**
+     * H264Black-1 可配 DisplayGlobal 版（live 路经无参版走默认 -1/编码fps/-1；
+     * probeStream 经本函数逐项开/关定位）。
+     */
+    private fun startVideoEncoderLockedEx(
+        width: Int, height: Int, bitrate: Int, fps: Int,
+        mirrorDisplay: Int, refreshRate: Float, wmMirror: Int,
+    ) {
         val encoder = createHardwareAvcEncoder()
         try {
             encoder.configure(buildLowLatencyVideoFormat(width, height, bitrate, fps), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -506,7 +588,7 @@ object PrivilegedCapture {
         var globalHandle: GlobalDisplayHandle? = null
         var globalErr: Throwable? = null
         try {
-            globalHandle = createVirtualDisplayViaGlobal(surface, width, height)
+            globalHandle = createVirtualDisplayViaGlobalEx(surface, width, height, fps, mirrorDisplay, refreshRate, wmMirror)
         } catch (t: Throwable) {
             globalErr = t
             Log.w(TAG, "[PrivilegedCapture] DisplayGlobal route miss, fallback DisplayManager", t)
@@ -1089,11 +1171,17 @@ object PrivilegedCapture {
      *
      * @return 建屏句柄（displayId>=0 才算成功，否则抛错由调用方落下一路）。
      */
-    private fun createVirtualDisplayViaGlobal(surface: Surface, width: Int, height: Int): GlobalDisplayHandle {
+    /**
+     * H264Black-1 DisplayGlobal Builder（mirror<0/refresh<=0/wm<0 对应项不设）.
+     */
+    private fun createVirtualDisplayViaGlobalEx(
+        surface: Surface, width: Int, height: Int, fps: Int,
+        mirrorDisplay: Int, refreshRate: Float, wmMirror: Int,
+    ): GlobalDisplayHandle {
         ensureExempted()
         val dpi = getDensityDpi(null)
         val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR
-        Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.create enter ${width}x${height} dpi=$dpi flags=$flags")
+        Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.create enter ${width}x${height} dpi=$dpi flags=$flags fps=$fps mirror=$mirrorDisplay refresh=$refreshRate wm=$wmMirror")
         // 1) VirtualDisplayConfig（反射 Builder：(name,w,h,dpi) + setSurface + setFlags + build）。
         val cfgClass = Class.forName("android.hardware.display.VirtualDisplayConfig")
         val builderClass = Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")
@@ -1130,6 +1218,39 @@ object PrivilegedCapture {
                 Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.setFlags(int,int) ok")
             } catch (t: Throwable) {
                 throw IllegalStateException("DisplayGlobal setFlags failed ${t.javaClass.simpleName}:${t.message}", t)
+            }
+        }
+        // H264Black-1：裸 Builder 缺省行为即 smooth-1 线上行为（只设 surface+flags）；
+        // probeStream 逐项 best-effort 补：displayIdToMirror / refreshRate / WM 镜像，
+        // 缺方法只记日志不抛（老 ROM 无此方法时回退旧行为）。live 路默认全不补（-1/0/-1）。
+        if (mirrorDisplay >= 0) {
+            runCatching {
+                val m = builderClass.getDeclaredMethod("setDisplayIdToMirror", Int::class.javaPrimitiveType)
+                m.isAccessible = true
+                m.invoke(builder, mirrorDisplay)
+                Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.setDisplayIdToMirror($mirrorDisplay) ok")
+            }.onFailure { t ->
+                Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.setDisplayIdToMirror miss ${t.javaClass.simpleName}:${t.message}")
+            }
+        }
+        if (refreshRate > 0) {
+            runCatching {
+                val m = builderClass.getDeclaredMethod("setRequestedRefreshRate", Float::class.javaPrimitiveType)
+                m.isAccessible = true
+                m.invoke(builder, refreshRate)
+                Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.setRequestedRefreshRate($refreshRate) ok")
+            }.onFailure { t ->
+                Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.setRequestedRefreshRate miss ${t.javaClass.simpleName}:${t.message}")
+            }
+        }
+        if (wmMirror >= 0) {
+            runCatching {
+                val m = builderClass.getDeclaredMethod("setWindowManagerMirroringEnabled", Boolean::class.javaPrimitiveType)
+                m.isAccessible = true
+                m.invoke(builder, wmMirror != 0)
+                Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.setWindowManagerMirroringEnabled(${wmMirror != 0}) ok")
+            }.onFailure { t ->
+                Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.setWindowManagerMirroringEnabled miss ${t.javaClass.simpleName}:${t.message}")
             }
         }
         val build = builderClass.getDeclaredMethod("build")
