@@ -359,6 +359,105 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 实时跟手三件套（Smooth-1 · 非 AIDL 纯 Kotlin 方法，供 Root 常驻输入 daemon
+    // 经 socket 直调；AIDL 编号一律不动，Shizuku 按次绑定仍走 tap/drag 原子）。
+    //
+    // 语义与 TouchInjector 状态机一致：down 开手势（悬 finger 自愈补 Up），
+    // move/up 需有活跃手势（无则 false，调用方重 down）；daemon 内单例复用，
+    // 跨 socket 连接保持手势状态，实现 move 直透实时跟手。
+    // ------------------------------------------------------------------
+
+    /** 实时按下：开手势（归一化坐标相对真实主屏，与 injectTap 同换算）。 */
+    fun injectDown(normX: Float, normY: Float): Boolean {
+        val (x, y) = resolvePx(normX, normY) ?: return false
+        return try {
+            val ok = TouchInjector.injectTouchDownPx(x, y)
+            if (!ok) inputError = TouchInjector.lastError?.message ?: "down rejected by system"
+            else inputError = null
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectDown failed", t)
+            false
+        }
+    }
+
+    /** 实时移动：需有活跃 down 手势（无则 false，调用方重 down）。 */
+    fun injectMove(normX: Float, normY: Float): Boolean {
+        val (x, y) = resolvePx(normX, normY) ?: return false
+        return try {
+            val ok = TouchInjector.injectTouchMovePx(x, y)
+            if (!ok) inputError = TouchInjector.lastError?.message ?: "move rejected by system"
+            else inputError = null
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectMove failed", t)
+            false
+        }
+    }
+
+    /** 实时抬起：结束手势（无活跃手势则 false）。 */
+    fun injectUp(normX: Float, normY: Float): Boolean {
+        val (x, y) = resolvePx(normX, normY) ?: return false
+        return try {
+            val ok = TouchInjector.injectTouchUpPx(x, y)
+            if (!ok) inputError = TouchInjector.lastError?.message ?: "up rejected by system"
+            else inputError = null
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectUp failed", t)
+            false
+        }
+    }
+
+    /** 取消当前手势（最后已知坐标补 Up；无手势时 true，供断连解卡）。 */
+    fun cancelInput(): Boolean {
+        return try {
+            val ok = TouchInjector.cancelTouch()
+            if (!ok) inputError = TouchInjector.lastError?.message ?: "cancel rejected by system"
+            else inputError = null
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] cancelInput failed", t)
+            false
+        }
+    }
+
+    /**
+     * 注入链预热（Smooth-1 · 无副作用：只做显示尺寸解析 + TouchInjector 配置 +
+     * 注入服务反射寻址，不构造/不发送任何事件；常驻 daemon 拉起后调一次，
+     * 把首次 tap 约 600ms+ 的冷初始化摊掉，保证 tap ack 常态 ≤300ms）。
+     * @return 注入路径可用 true（尺寸未知/反射缺失 false，明细见 inputError）。
+     */
+    fun warmup(): Boolean {
+        return try {
+            val size = realDisplaySize()
+            if (size == null) {
+                inputError = "warmup: resolve display size failed (IWindowManager)"
+                return false
+            }
+            if (!TouchInjector.configure(size.first, size.second)) {
+                inputError = TouchInjector.lastError?.message ?: "warmup: configure display size failed"
+                return false
+            }
+            if (!com.erl.blindcast.core.scrcpy.InputManagerWrapper.isAvailable()) {
+                inputError = "warmup: no usable input/window service"
+                return false
+            }
+            inputError = null
+            Log.d(TAG, "[PrivilegedUserService] warmup ok display=${size.first}x${size.second}")
+            true
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] warmup failed", t)
+            false
+        }
+    }
+
     /**
      * 归一化坐标→真实主屏物理像素（特权进程内经 IWindowManager 反射解析，
      * 无需 Context；失败记 inputError 返 null）。

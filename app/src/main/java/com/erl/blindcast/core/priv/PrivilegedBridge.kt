@@ -336,31 +336,74 @@ object PrivilegedBridge {
         params: List<String>,
         shizukuBlock: suspend () -> Pair<Boolean, String?>,
     ): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
-        // Root 段（首选；跳过/失败记文案并回退 Shizuku，既有 Shizuku 逻辑不动）。
-        var rootNote: String? = null
-        var rootOk = false
+        // Smooth-1 常驻 daemon 段（首选；单次冷起约 1-2s → 常驻 ack 约数十 ms）。
+        // 存活时一次往返即注入；不可用记文案并回退既有单次 Root→Shizuku 两段（逻辑不动）。
         try {
-            val rootRes = tryRootInput(packageName, subOp, params)
-            rootOk = rootRes.first
-            rootNote = rootRes.second
-            Log.d(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp rootOk=$rootOk rootNote=${rootNote?.take(200)}")
-            if (rootOk) return@withContext true to null
+            val (daemonOk, daemonErr, latencyMs) = tryDaemonInput(packageName, subOp, params)
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp daemonOk=$daemonOk " +
+                "latencyMs=$latencyMs err=${daemonErr?.take(200)}")
+            if (daemonOk) return@withContext true to null
+            // daemon 失败：文案并入 rootNote，与单次段组合（调用方据最终文案排障）。
+            val daemonNote: String? = daemonErr?.takeIf { it.isNotBlank() }
+                ?.let { "常驻daemon段失败（${it}，延迟${latencyMs}ms）" }
+                ?: "常驻daemon段不可用"
+            // Root 段（既有单次 app_process；跳过/失败记文案并回退 Shizuku，既有 Shizuku 逻辑不动）。
+            var rootNote: String? = daemonNote
+            var rootOk = false
+            try {
+                val rootRes = tryRootInput(packageName, subOp, params)
+                rootOk = rootRes.first
+                rootNote = combineInputError(daemonNote, rootRes.second)
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp rootOk=$rootOk rootNote=${rootNote?.take(200)}")
+                if (rootOk) return@withContext true to null
+            } catch (t: Throwable) {
+                rootNote = combineInputError(daemonNote, "Root段异常（${t.message ?: t}）")
+                Log.e(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp root threw", t)
+            }
+            // Shizuku 段（既有按次绑定用完即焚不动；未运行/未授权抛引导文案，记入组合）。
+            try {
+                val (ok, err) = shizukuBlock()
+                if (ok) return@withContext true to null
+                val shizukuPart = err?.takeIf { it.isNotBlank() } ?: "Shizuku段执行失败（返回 false）"
+                return@withContext false to combineInputError(rootNote, "Shizuku段失败：$shizukuPart")
+            } catch (t: Throwable) {
+                val base = t.message ?: t.toString()
+                // withPrivileged 的未运行/未授权引导文案原样透出（调用方直接展示），仅前拼 Root 段。
+                val msg = combineInputError(rootNote, base)
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp shizuku threw msg=${msg.take(200)}")
+                return@withContext false to msg
+            }
         } catch (t: Throwable) {
-            rootNote = "Root段异常（${t.message ?: t}）"
-            Log.e(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp root threw", t)
+            Log.e(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp daemon threw", t)
+            // daemon 段抛异常同样回退老路（不掀翻反控）：按单次 Root→Shizuku 重走简化版。
+            return@withContext shizukuBlock()
         }
-        // Shizuku 段（既有按次绑定用完即焚不动；未运行/未授权抛引导文案，记入组合）。
+    }
+
+    /**
+     * 试常驻 daemon 段单次 input（失败不抛，只记文案供组合；成功含 ack 延迟）。
+     * @return Triple(ok, err, latencyMs)：latencyMs 为发→ack 回包耗时（daemon 不可用时 -1）。
+     */
+    private suspend fun tryDaemonInput(
+        packageName: String,
+        subOp: String,
+        params: List<String>,
+    ): Triple<Boolean, String?, Long> = withContext(Dispatchers.IO) {
         try {
-            val (ok, err) = shizukuBlock()
-            if (ok) return@withContext true to null
-            val shizukuPart = err?.takeIf { it.isNotBlank() } ?: "Shizuku段执行失败（返回 false）"
-            return@withContext false to combineInputError(rootNote, "Shizuku段失败：$shizukuPart")
+            val res = when (subOp) {
+                "tap" -> RootInputDaemon.tap(packageName, params[0].toFloat(), params[1].toFloat())
+                "drag" -> RootInputDaemon.drag(
+                    packageName,
+                    params[0].toFloat(), params[1].toFloat(), params[2].toFloat(), params[3].toFloat(),
+                )
+                "key" -> RootInputDaemon.key(packageName, params[0].toInt())
+                "text" -> RootInputDaemon.text(packageName, params[0])
+                else -> return@withContext Triple(false, "非法 input 子操作：$subOp", -1L)
+            }
+            Triple(res.first, res.second, res.third)
         } catch (t: Throwable) {
-            val base = t.message ?: t.toString()
-            // withPrivileged 的未运行/未授权引导文案原样透出（调用方直接展示），仅前拼 Root 段。
-            val msg = combineInputError(rootNote, base)
-            Log.d(TAG, "[PrivilegedBridge] ${tid()} injectRouted sub=$subOp shizuku threw msg=${msg.take(200)}")
-            return@withContext false to msg
+            Log.e(TAG, "[PrivilegedBridge] ${tid()} tryDaemonInput threw", t)
+            Triple(false, "常驻daemon段异常（${t.message ?: t}）", -1L)
         }
     }
 
@@ -463,6 +506,64 @@ object PrivilegedBridge {
             }
         }
     }
+
+    // ------------------------------------------------------------------
+    // 实时跟手三件套（Smooth-1 · 常驻 daemon 直透，无单次/Shizuku 回退；
+    // Shizuku 按次绑定无状态、无 AIDL down/move/up 编号，故 daemon 不可用时
+    // 调用方（ControlWsRoute）回退 pending 缓存 + up 时原子 tap/drag）。
+    // ------------------------------------------------------------------
+
+    /** 实时按下（常驻 daemon down，跨指令保持手势；失败调用方回退批量）。 */
+    suspend fun injectDown(packageName: String, x: Float, y: Float): Pair<Boolean, String?> =
+        withContext(Dispatchers.IO) {
+            try {
+                val (ok, err, latencyMs) = RootInputDaemon.down(packageName, x, y)
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} injectDown ok=$ok latencyMs=$latencyMs err=${err?.take(200)}")
+                if (ok) true to null else false to err
+            } catch (t: Throwable) {
+                Log.e(TAG, "[PrivilegedBridge] ${tid()} injectDown threw", t)
+                false to (t.message ?: t.toString())
+            }
+        }
+
+    /** 实时移动（常驻 daemon move 直透；失败调用方降级批量 + cancel 解卡）。 */
+    suspend fun injectMove(packageName: String, x: Float, y: Float): Pair<Boolean, String?> =
+        withContext(Dispatchers.IO) {
+            try {
+                val (ok, err, _) = RootInputDaemon.move(packageName, x, y)
+                if (!ok) {
+                    Log.d(TAG, "[PrivilegedBridge] ${tid()} injectMove miss err=${err?.take(200)}")
+                }
+                if (ok) true to null else false to err
+            } catch (t: Throwable) {
+                Log.e(TAG, "[PrivilegedBridge] ${tid()} injectMove threw", t)
+                false to (t.message ?: t.toString())
+            }
+        }
+
+    /** 实时抬起（常驻 daemon up 结束手势）。 */
+    suspend fun injectUp(packageName: String, x: Float, y: Float): Pair<Boolean, String?> =
+        withContext(Dispatchers.IO) {
+            try {
+                val (ok, err, latencyMs) = RootInputDaemon.up(packageName, x, y)
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} injectUp ok=$ok latencyMs=$latencyMs err=${err?.take(200)}")
+                if (ok) true to null else false to err
+            } catch (t: Throwable) {
+                Log.e(TAG, "[PrivilegedBridge] ${tid()} injectUp threw", t)
+                false to (t.message ?: t.toString())
+            }
+        }
+
+    /** 解卡（常驻 daemon cancel，best-effort 恒 true；断连/降级时调）。 */
+    suspend fun cancelInput(): Pair<Boolean, String?> =
+        withContext(Dispatchers.IO) {
+            try {
+                RootInputDaemon.cancel()
+            } catch (t: Throwable) {
+                Log.e(TAG, "[PrivilegedBridge] cancelInput threw", t)
+                true to null
+            }
+        }
 
     // ------------------------------------------------------------------
     // 内部：单次绑定

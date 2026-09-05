@@ -282,7 +282,10 @@ object CaptureSocketLink {
         videoFrames.incrementAndGet()
         // NALU 类型解析（与 ScreenCaptureEngine.parseNaluType 同规则，供 FramePacket.type）。
         val type = parseNaluType(payload)
-        val isKey = type == FramePacket.NALU_TYPE_IDR
+        // Smooth-1：isKey 必须扫描全包（特权侧关键帧为 sps+pps+idr 内联，首 NALU
+        // 为 SPS=7 而非 IDR=5；只看首 NALU 则 isKey 恒 false，JpegTranscoder 永等
+        // 不到 SPS/PPS 建解码器，H264 泵活着也零 JPEG。H264 老路只透传 payload 不动）。
+        val isKey = type == FramePacket.NALU_TYPE_IDR || containsNaluType(payload, FramePacket.NALU_TYPE_IDR)
         val pkt = FramePacket(
             type = type,
             isKeyFrame = isKey,
@@ -328,5 +331,26 @@ object CaptureSocketLink {
             i++
         }
         return FramePacket.NALU_TYPE_UNKNOWN
+    }
+
+    /** 包内是否含指定 NALU 类型（关键帧内联判定用；起始码 3/4 字节通用）。 */
+    private fun containsNaluType(annexB: ByteArray, nalType: Int): Boolean {
+        var i = 0
+        while (i + 2 < annexB.size) {
+            if (annexB[i] == 0.toByte() && annexB[i + 1] == 0.toByte()) {
+                val headerAt = when {
+                    annexB[i + 2] == 1.toByte() -> i + 3
+                    i + 3 < annexB.size && annexB[i + 2] == 0.toByte() && annexB[i + 3] == 1.toByte() -> i + 4
+                    else -> -1
+                }
+                if (headerAt in 0 until annexB.size) {
+                    if ((annexB[headerAt].toInt() and 0x1F) == nalType) return true
+                    i = headerAt + 1
+                    continue
+                }
+            }
+            i++
+        }
+        return false
     }
 }

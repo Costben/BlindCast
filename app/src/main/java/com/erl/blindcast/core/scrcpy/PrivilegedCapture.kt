@@ -13,12 +13,15 @@ import android.media.MediaFormat
 import android.media.MediaRecorder
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import android.os.Binder
 import android.os.Handler
 import android.os.IBinder
 import android.util.Log
 import android.view.Surface
+import com.erl.blindcast.BuildConfig
 import java.io.BufferedOutputStream
 import java.io.OutputStream
+import java.lang.reflect.Proxy
 import java.util.concurrent.atomic.AtomicBoolean
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 
@@ -31,7 +34,13 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass
  * 普通 App 进程调同样代码必吃 SecurityException（见实证诊断），本对象捕获后记
  * [lastError] 并返回 false，永不崩溃。
  *
- * ## Display 路线（Stream-Priv-3 · root 免权限镜像）
+ * ## Display 路线（Stream-Priv-3 · root 免权限镜像；Smooth-1 加 ⓪ 免 Context 路）
+ * ⓪ 路 `DisplayManagerGlobal`/`IDisplayManager` binder 直建（Smooth-1 首选，
+ *   裸 root `app_process` 免 Context：`VirtualDisplayConfig.Builder` 组配置 +
+ *   `IVirtualDisplayCallback` 动态代理（asBinder 恒返同一 Binder，回调吞掉）+
+ *   `createVirtualDisplay(config, callback, null, pkg)`，projection=null +
+ *   AUTO_MIRROR 即整屏镜像，root uid=0 免 CAPTURE_VIDEO_OUTPUT；
+ *   释放经 `releaseVirtualDisplay(callback)` 原样回传）；
  * 主路 `DisplayManager.createVirtualDisplay` 无 projection 隐藏重载（要
  * `CAPTURE_VIDEO_OUTPUT` 签名级权限，root uid=0 直接放行）：
  * - flags `VIRTUAL_DISPLAY_FLAG_PUBLIC + AUTO_MIRROR`，encode Surface 直连；
@@ -163,6 +172,12 @@ object PrivilegedCapture {
     private var virtualDisplay: VirtualDisplay? = null
     /** 本次建屏路由：DisplayManager / SurfaceControl（日志 + 释放分支用）。 */
     @Volatile private var displayRoute: String? = null
+    /**
+     * Smooth-1 DisplayGlobal 路由句柄（裸 root 进程免 Context 建屏）：
+     * callback 代理（release 时原样回传，asBinder 同一实例）+ 服务端 displayId。
+     */
+    private var globalDisplayCallback: Any? = null
+    private var globalDisplayId: Int = -1
     private var videoDrain: Thread? = null
 
     private var audioCodec: MediaCodec? = null
@@ -254,6 +269,121 @@ object PrivilegedCapture {
 
     /** 取最近失败文案（binder 跨进程回读用，成功/无记录 null）。 */
     fun errorMessage(): String? = lastError?.message ?: lastError?.toString()
+
+    /** 本次建屏路由快照（诊断/探针用，null=未建屏）。 */
+    fun displayRouteSnapshot(): String? = displayRoute
+
+    // ------------------------------------------------------------------
+    // Smooth-1 显示路由探针（裸 root app_process 内跑：RootCaptureMain probe op 调用；
+    // 只做反射清点 + Context 各路实测，不建屏不编码，无副作用，可反复跑）。
+    // ------------------------------------------------------------------
+
+    /**
+     * 清点本进程内显示路由家底并返回多行报告（同步阻塞，调用方裸进程主线程）。
+     * 每行同步记 `BlindCast/[Probe]` 日志（`adb logcat -d` 直接可见，无需拉文件）。
+     */
+    fun probeDisplayRoutes(): String {
+        val sb = StringBuilder()
+        fun rep(line: String) {
+            sb.appendLine(line)
+            runCatching { Log.i(TAG, "[PrivilegedCapture][Probe] $line") }
+        }
+        rep("sdk=${android.os.Build.VERSION.SDK_INT}")
+        ensureExempted()
+        // ① SurfaceControl.createDisplay 存活签名（SDK36 实证 0 个即全删）。
+        try {
+            val sc = Class.forName("android.view.SurfaceControl")
+            val sigs = sc.declaredMethods
+                .filter { it.name == "createDisplay" }
+                .map { m -> m.parameterTypes.joinToString(",", "(", ")") { it.simpleName } }
+            rep("SurfaceControl.createDisplay count=${sigs.size} sigs=$sigs")
+        } catch (t: Throwable) {
+            rep("SurfaceControl.createDisplay probe threw ${t.javaClass.simpleName}:${t.message}")
+        }
+        // ② DisplayManager.createVirtualDisplay 全签名（找 6-arg hit 路）。
+        try {
+            val dm = Class.forName("android.hardware.display.DisplayManager")
+            val sigs = dm.declaredMethods
+                .filter { it.name == "createVirtualDisplay" }
+                .map { m -> m.parameterTypes.joinToString(",", "(", ")") { it.simpleName } }
+            rep("DisplayManager.createVirtualDisplay count=${sigs.size} sigs=$sigs")
+        } catch (t: Throwable) {
+            rep("DisplayManager.createVirtualDisplay probe threw ${t.javaClass.simpleName}:${t.message}")
+        }
+        // ③ DisplayManagerGlobal：getInstance 可用性 + 建屏相关签名（免 Context 路）。
+        try {
+            val dmg = Class.forName("android.hardware.display.DisplayManagerGlobal")
+            val inst = runCatching {
+                val m = dmg.getDeclaredMethod("getInstance")
+                m.isAccessible = true
+                m.invoke(null)
+            }.getOrNull()
+            val sigs = dmg.declaredMethods
+                .filter { it.name.contains("VirtualDisplay") }
+                .map { m -> "${m.name}" + m.parameterTypes.joinToString(",", "(", ")") { it.simpleName } }
+            rep("DisplayManagerGlobal.getInstance null=${inst == null} virtualMethods=$sigs")
+        } catch (t: Throwable) {
+            rep("DisplayManagerGlobal probe threw ${t.javaClass.simpleName}:${t.message}")
+        }
+        // ④ IDisplayManager binder：display 服务 + 建屏签名（免 Context 终极路）。
+        try {
+            val sm = Class.forName("android.os.ServiceManager")
+                .getMethod("getService", String::class.java)
+                .invoke(null, "display") as? IBinder
+            rep("ServiceManager.getService(display) null=${sm == null}")
+            if (sm != null) {
+                val stub = Class.forName("android.hardware.display.IDisplayManager\$Stub")
+                val proxy = runCatching {
+                    stub.getMethod("asInterface", IBinder::class.java).invoke(null, sm)
+                }.getOrNull()
+                rep("IDisplayManager.asInterface null=${proxy == null} class=${proxy?.javaClass?.name}")
+                val sigs = runCatching {
+                    Class.forName("android.hardware.display.IDisplayManager").declaredMethods
+                        .filter { it.name.contains("VirtualDisplay", ignoreCase = true) }
+                        .map { m -> "${m.name}" + m.parameterTypes.joinToString(",", "(", ")") { it.simpleName } }
+                }.getOrNull()
+                rep("IDisplayManager.virtualMethods=$sigs")
+            }
+        } catch (t: Throwable) {
+            rep("IDisplayManager probe threw ${t.javaClass.simpleName}:${t.message}")
+        }
+        // ⑤ VirtualDisplayConfig/Builder 与 callback Stub 存在性。
+        try {
+            val cfg = Class.forName("android.hardware.display.VirtualDisplayConfig")
+            val builder = Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")
+            val bMethods = builder.declaredMethods.map { it.name }.toSortedSet()
+            rep("VirtualDisplayConfig ok builderMethods=$bMethods")
+        } catch (t: Throwable) {
+            rep("VirtualDisplayConfig probe threw ${t.javaClass.simpleName}:${t.message}")
+        }
+        try {
+            Class.forName("android.hardware.display.IVirtualDisplayCallback\$Stub")
+            rep("IVirtualDisplayCallback.Stub exists=true")
+        } catch (t: Throwable) {
+            rep("IVirtualDisplayCallback.Stub exists=false ${t.javaClass.simpleName}")
+        }
+        // ⑥ Context 四路实测（含 systemMain 真实异常，前后豁免已加）。
+        try {
+            val ctx = tryObtainContext()
+            rep("tryObtainContext null=${ctx == null} class=${ctx?.javaClass?.name}")
+        } catch (t: Throwable) {
+            rep("tryObtainContext threw ${t.javaClass.simpleName}:${t.message}")
+        }
+        // ⑦ AVC 编码器清单（泵的另一半：无编码器则 Display 建成也无帧）。
+        try {
+            val names = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
+                .filter { !it.isEncoder && it.supportedTypes.contains(VIDEO_MIME) }
+                .map { (if (it.isHardwareAccelerated) "hw:" else "sw:") + it.name }
+            val encNames = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
+                .filter { it.isEncoder && it.supportedTypes.contains(VIDEO_MIME) }
+                .map { (if (it.isHardwareAccelerated) "hw:" else "sw:") + it.name }
+            rep("avc.decoders=$names")
+            rep("avc.encoders=$encNames")
+        } catch (t: Throwable) {
+            rep("MediaCodec probe threw ${t.javaClass.simpleName}:${t.message}")
+        }
+        return sb.toString()
+    }
 
     // ------------------------------------------------------------------
     // 主流程
@@ -368,6 +498,25 @@ object PrivilegedCapture {
         }
         val surface = encoder.createInputSurface()
         videoSurface = surface
+        // Smooth-1 路由顺序（裸 root 进程 Context 四路全空、systemMain 抛错，实证）：
+        // ⓪ DisplayGlobal 免 Context 路（DisplayManagerGlobal.getInstance 在裸进程可用，
+        //    经 IDisplayManager binder 直建镜像屏，root 免 CAPTURE_VIDEO_OUTPUT）；
+        // ① DisplayManager 隐藏无 projection 重载（需 Context，Shizuku 进程主路）；
+        // ② SurfaceControl.createDisplay scrcpy 路线（SDK36 已删，保留逐个试）。
+        var globalHandle: GlobalDisplayHandle? = null
+        var globalErr: Throwable? = null
+        try {
+            globalHandle = createVirtualDisplayViaGlobal(surface, width, height)
+        } catch (t: Throwable) {
+            globalErr = t
+            Log.w(TAG, "[PrivilegedCapture] DisplayGlobal route miss, fallback DisplayManager", t)
+        }
+        if (globalHandle != null) {
+            globalDisplayCallback = globalHandle.callback
+            globalDisplayId = globalHandle.displayId
+            displayRoute = "DisplayGlobal"
+            Log.i(TAG, "[PrivilegedCapture] display route=DisplayGlobal ok ${width}x${height} displayId=${globalHandle.displayId}")
+        } else {
         // 主路优先：DisplayManager 隐藏无 projection 重载（root 免 CAPTURE_VIDEO_OUTPUT）。
         // 备用：SurfaceControl.createDisplay scrcpy 路线（OPlus 上主签名已无，需逐个试）。
         var vd: VirtualDisplay? = null
@@ -393,13 +542,15 @@ object PrivilegedCapture {
                 runCatching { surface.release() }
                 videoSurface = null
                 runCatching { encoder.release() }
-                // 主备双路全灭：把两路异常串起来，方便 getCaptureError 一眼定位。
+                // 三路全灭：把各路异常串起来，方便 getCaptureError 一眼定位。
+                val gMsg = globalErr?.let { "Global:${it.javaClass.simpleName}:${it.message}" } ?: "Global:unknown"
                 val dmMsg = dmErr?.let { "DM:${it.javaClass.simpleName}:${it.message}" } ?: "DM:unknown"
-                throw IllegalStateException("Display both routes failed [$dmMsg] [SC:${t.javaClass.simpleName}:${t.message}]", t)
+                throw IllegalStateException("Display all routes failed [$gMsg] [$dmMsg] [SC:${t.javaClass.simpleName}:${t.message}]", t)
             }
             displayToken = token
             displayRoute = route
             Log.i(TAG, "[PrivilegedCapture] display route=SurfaceControl ok ${width}x${height}")
+        }
         }
         videoCodec = encoder
         try {
@@ -421,6 +572,14 @@ object PrivilegedCapture {
 
     private fun releaseVideoLocked() {
         videoRunning = false
+        // Smooth-1 DisplayGlobal 路由：经 releaseVirtualDisplay 释放（callback 原样回传）。
+        val gcb = globalDisplayCallback
+        globalDisplayCallback = null
+        globalDisplayId = -1
+        if (gcb != null) {
+            runCatching { releaseGlobalDisplay(gcb) }
+            Log.d(TAG, "[PrivilegedCapture] globalDisplay released route=$displayRoute")
+        }
         val vd = virtualDisplay
         virtualDisplay = null
         if (vd != null) {
@@ -699,6 +858,17 @@ object PrivilegedCapture {
                 "Landroid/view/Display",
             )
         }
+        // Smooth-1：裸 app_process 取 Context 的反射同样走隐藏 API（ActivityThread /
+        // AppGlobals 在 SDK36 上无豁免即 NoSuchMethod，必须先放行再调 systemMain；
+        // 此前缺豁免是 Root-H264 常驻 DisplayManager unavailable 的首要嫌疑）。
+        runCatching {
+            HiddenApiBypass.addHiddenApiExemptions(
+                "Landroid/app/ActivityThread",
+                "Landroid/app/AppGlobals",
+                "Landroid/content/Context",
+                "Landroid/os/ServiceManager",
+            )
+        }
     }
 
     private fun surfaceControlClass(): Class<*> {
@@ -895,6 +1065,157 @@ object PrivilegedCapture {
         }
         Log.d(TAG, "[PrivilegedCapture] dpi fallback 320")
         return 320
+    }
+
+    /**
+     * Smooth-1 DisplayGlobal 免 Context 建屏句柄：callback 代理（release 原样回传，
+     * asBinder 恒返同一 Binder，服务端 linkToDeath/回调用）+ 服务端 displayId。
+     */
+    private data class GlobalDisplayHandle(val callback: Any, val displayId: Int)
+
+    /**
+     * ⓪ 路：DisplayGlobal 免 Context 镜像建屏（裸 root `app_process` 首选）。
+     *
+     * 实证（SDK36 .216 探针）：`SurfaceControl.createDisplay` 已删（0 个），
+     * Context 四路全空（`systemMain` 抛错），但 `DisplayManagerGlobal.getInstance()`
+     * 可用 + `IDisplayManager` binder 可达 + `VirtualDisplayConfig.Builder` +
+     * `IVirtualDisplayCallback$Stub` 均存在。故绕开需 Context 的 `DisplayManager`
+     * 包装，直调 `IDisplayManager.createVirtualDisplay(config, callback, null, pkg)`
+     * binder（projection=null + AUTO_MIRROR 即整屏镜像，root 免 CAPTURE_VIDEO_OUTPUT）。
+     *
+     * callback 用动态代理实现隐藏接口：`asBinder()` 恒返同一 `Binder`（服务端
+     * linkToDeath 可达；onPaused/onResumed/onStopped 回调进代理直接吞掉，
+     * 均为 oneway 事件，不影响镜像流）；其余方法按返回类型给默认值。
+     *
+     * @return 建屏句柄（displayId>=0 才算成功，否则抛错由调用方落下一路）。
+     */
+    private fun createVirtualDisplayViaGlobal(surface: Surface, width: Int, height: Int): GlobalDisplayHandle {
+        ensureExempted()
+        val dpi = getDensityDpi(null)
+        val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR
+        Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.create enter ${width}x${height} dpi=$dpi flags=$flags")
+        // 1) VirtualDisplayConfig（反射 Builder：(name,w,h,dpi) + setSurface + setFlags + build）。
+        val cfgClass = Class.forName("android.hardware.display.VirtualDisplayConfig")
+        val builderClass = Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")
+        val ctor = builderClass.getDeclaredConstructor(
+            String::class.java,
+            Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+        )
+        ctor.isAccessible = true
+        val builder = ctor.newInstance(DISPLAY_NAME, width, height, dpi)
+        try {
+            val setSurface = builderClass.getDeclaredMethod("setSurface", Surface::class.java)
+            setSurface.isAccessible = true
+            setSurface.invoke(builder, surface)
+        } catch (t: Throwable) {
+            throw IllegalStateException("DisplayGlobal setSurface failed ${t.javaClass.simpleName}:${t.message}", t)
+        }
+        var flagsOk = false
+        try {
+            val setFlags = builderClass.getDeclaredMethod("setFlags", Int::class.javaPrimitiveType)
+            setFlags.isAccessible = true
+            setFlags.invoke(builder, flags)
+            flagsOk = true
+            Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.setFlags(int) ok")
+        } catch (_: NoSuchMethodException) {
+            Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.setFlags(int) noMethod, try (int,int)")
+        }
+        if (!flagsOk) {
+            try {
+                val setFlags2 = builderClass.getDeclaredMethod(
+                    "setFlags", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                )
+                setFlags2.isAccessible = true
+                setFlags2.invoke(builder, flags, flags)
+                Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.setFlags(int,int) ok")
+            } catch (t: Throwable) {
+                throw IllegalStateException("DisplayGlobal setFlags failed ${t.javaClass.simpleName}:${t.message}", t)
+            }
+        }
+        val build = builderClass.getDeclaredMethod("build")
+        build.isAccessible = true
+        val config = build.invoke(builder)
+            ?: throw IllegalStateException("DisplayGlobal Builder.build returned null")
+        // 2) callback 动态代理（asBinder 恒返同一 Binder，其余吞掉）。
+        val cbIface = Class.forName("android.hardware.display.IVirtualDisplayCallback")
+        val binder = Binder()
+        var proxyRef: Any? = null
+        val proxy = Proxy.newProxyInstance(
+            cbIface.classLoader, arrayOf(cbIface),
+        ) { _, method, _ ->
+            when (method.name) {
+                "asBinder" -> binder
+                "toString" -> "BlindCastVDCallback"
+                "hashCode" -> System.identityHashCode(proxyRef)
+                "equals" -> false
+                else -> defaultReturn(method.returnType)
+            }
+        }
+        proxyRef = proxy
+        // 3) IDisplayManager.createVirtualDisplay(config, callback, null, pkg) 直调。
+        val sm = Class.forName("android.os.ServiceManager")
+            .getMethod("getService", String::class.java)
+            .invoke(null, "display") as? IBinder
+            ?: throw IllegalStateException("DisplayGlobal ServiceManager.getService(display) null")
+        val stub = Class.forName("android.hardware.display.IDisplayManager\$Stub")
+        val dmProxy = stub.getMethod("asInterface", IBinder::class.java).invoke(null, sm)
+            ?: throw IllegalStateException("DisplayGlobal IDisplayManager.asInterface null")
+        val idmClass = Class.forName("android.hardware.display.IDisplayManager")
+        val create = idmClass.declaredMethods
+            .firstOrNull { it.name == "createVirtualDisplay" && it.parameterTypes.size == 4 }
+            ?: throw IllegalStateException("DisplayGlobal IDisplayManager.createVirtualDisplay(4-arg) missing")
+        Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.create sig=(${create.parameterTypes.joinToString(",") { it.simpleName }})")
+        create.isAccessible = true
+        val pkg = BuildConfig.APPLICATION_ID
+        val displayId = try {
+            (create.invoke(dmProxy, config, proxy, null, pkg) as? Int) ?: -1
+        } catch (t: java.lang.reflect.InvocationTargetException) {
+            throw IllegalStateException(
+                "DisplayGlobal create threw ${t.targetException?.javaClass?.simpleName}:${t.targetException?.message}", t,
+            )
+        }
+        if (displayId < 0) throw IllegalStateException("DisplayGlobal create returned displayId=$displayId")
+        Log.i(TAG, "[PrivilegedCapture] DisplayGlobal.hit displayId=$displayId pkg=$pkg")
+        return GlobalDisplayHandle(proxy, displayId)
+    }
+
+    /** 反射代理默认返回值（callback 回调吞噬用；void 返回 null）。 */
+    private fun defaultReturn(type: Class<*>): Any? = when (type) {
+        Void.TYPE -> null
+        java.lang.Boolean.TYPE -> false
+        java.lang.Byte.TYPE -> 0.toByte()
+        java.lang.Short.TYPE -> 0.toShort()
+        java.lang.Integer.TYPE -> 0
+        java.lang.Long.TYPE -> 0L
+        java.lang.Float.TYPE -> 0f
+        java.lang.Double.TYPE -> 0.0
+        java.lang.Character.TYPE -> '\u0000'
+        else -> null
+    }
+
+    /** DisplayGlobal 路由释放（callback 原样回传调 releaseVirtualDisplay）。 */
+    private fun releaseGlobalDisplay(callback: Any) {
+        runCatching {
+            ensureExempted()
+            val cbIface = Class.forName("android.hardware.display.IVirtualDisplayCallback")
+            val dmgClass = Class.forName("android.hardware.display.DisplayManagerGlobal")
+            val getInstance = dmgClass.getDeclaredMethod("getInstance")
+            getInstance.isAccessible = true
+            val dmg = getInstance.invoke(null)
+                ?: throw IllegalStateException("DisplayManagerGlobal.getInstance null")
+            val release = dmgClass.declaredMethods
+                .firstOrNull { it.name == "releaseVirtualDisplay" && it.parameterTypes.size == 1 }
+                ?: throw IllegalStateException("releaseVirtualDisplay missing")
+            // 参数类型须为 callback 接口（防重载错配）。
+            if (!release.parameterTypes[0].isAssignableFrom(cbIface)) {
+                throw IllegalStateException("releaseVirtualDisplay param mismatch ${release.parameterTypes[0].name}")
+            }
+            release.isAccessible = true
+            release.invoke(dmg, callback)
+            Log.d(TAG, "[PrivilegedCapture] DisplayGlobal.release ok")
+        }.onFailure { t ->
+            Log.w(TAG, "[PrivilegedCapture] DisplayGlobal.release failed: ${t.message}")
+        }
     }
 
     /**

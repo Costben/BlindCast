@@ -31,6 +31,8 @@ import java.io.File
  *
  * ## 调用契约
  * - `args = ["capture", w, h, bitrate, fps, stopFile, socketName?]`；
+ * - `args = ["probe", resultFile?]`（Smooth-1 显示路由探针：只清点反射家底 +
+ *   Context 各路实测，不建屏不编码，报告进 logcat `BlindCast/[Probe]`，可选写文件）；
  * - 启动后阻塞轮询 `<stopFile>` 出现即停（500ms 步进，stop 侧 `touch` 即退）；
  * - 全程 runCatching 不抛，退出码 0=曾成功出帧后正常停，1=启动失败/异常；
  * - 普通 App 进程不要直接调（只在 root `app_process` 内有意义）。
@@ -54,8 +56,61 @@ object RootCaptureMain {
         var stopFile: File? = null
         try {
             runCatching { Log.i(TAG, "[RootCaptureMain] pid=$pid uid=$uid enter args=${args.toList().take(7)}") }
+            if (args.getOrNull(0) == "probe") {
+                // Smooth-1 探针：裸进程显示路由家底（无副作用，报告进 logcat + 可选文件）。
+                val report = runCatching { PrivilegedCapture.probeDisplayRoutes() }
+                    .getOrElse { t -> "probe threw ${t.message ?: t}\n" }
+                runCatching {
+                    args.getOrNull(1)?.takeIf { it.isNotBlank() }?.let { rp ->
+                        val f = File(rp)
+                        runCatching { f.parentFile?.mkdirs() }
+                        f.writeText(report)
+                        runCatching { f.setReadable(true, false) }
+                    }
+                }
+                code = 0
+                return
+            }
+            if (args.getOrNull(0) == "probeCreate") {
+                // Smooth-1 建屏编码探针：无 socket 纯验证（编码器+三路建屏+drain 出帧写内存，
+                // 证明泵在裸进程能出帧；App 侧 CaptureSocketLink 另行验证）。
+                // args = ["probeCreate", w, h, bitrate, fps, seconds, resultFile?]。
+                val w = args.getOrNull(1)?.toIntOrNull() ?: 1280
+                val h = args.getOrNull(2)?.toIntOrNull() ?: 720
+                val bitrate = args.getOrNull(3)?.toIntOrNull() ?: 4_000_000
+                val fps = args.getOrNull(4)?.toIntOrNull() ?: 30
+                val seconds = args.getOrNull(5)?.toIntOrNull()?.coerceIn(1, 30) ?: 5
+                val mem = java.io.ByteArrayOutputStream(256 * 1024)
+                val okStart = runCatching {
+                    PrivilegedCapture.startVideo(w, h, bitrate, fps, mem)
+                }.getOrDefault(false)
+                runCatching { Log.i(TAG, "[RootCaptureMain][ProbeCreate] start=$okStart err=${PrivilegedCapture.errorMessage()}") }
+                if (okStart) {
+                    try {
+                        Thread.sleep(seconds * 1000L)
+                    } catch (_: InterruptedException) {
+                    }
+                }
+                val route = PrivilegedCapture.displayRouteSnapshot()
+                val running = PrivilegedCapture.videoRunning
+                val bytes = mem.size()
+                runCatching { PrivilegedCapture.stop() }
+                val report = "probeCreate start=$okStart route=$route running=$running bytes=$bytes " +
+                    "err=${PrivilegedCapture.errorMessage()}\n"
+                runCatching { Log.i(TAG, "[RootCaptureMain][ProbeCreate] $report") }
+                runCatching {
+                    args.getOrNull(6)?.takeIf { it.isNotBlank() }?.let { rp ->
+                        val f = File(rp)
+                        runCatching { f.parentFile?.mkdirs() }
+                        f.writeText(report)
+                        runCatching { f.setReadable(true, false) }
+                    }
+                }
+                code = if (okStart && running && bytes > 0) 0 else 1
+                return
+            }
             if (args.getOrNull(0) != "capture") {
-                runCatching { Log.e(TAG, "[RootCaptureMain] unknown op ${args.getOrNull(0)} (only capture)") }
+                runCatching { Log.e(TAG, "[RootCaptureMain] unknown op ${args.getOrNull(0)} (only capture|probe)") }
                 return
             }
             val w = args.getOrNull(1)?.toIntOrNull() ?: 1280

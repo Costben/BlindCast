@@ -16,3 +16,10 @@
 -keepclassmembers class com.erl.blindcast.core.scrcpy.RootCaptureMain {
     public static void main(java.lang.String[]);
 }
+# Smooth-1：Root 常驻输入 daemon 由 su 下 app_process 按类名拉起 main(String[])，
+# App 侧客户端经 socket 直连，均不可裁剪/混淆。
+-keep class com.erl.blindcast.core.priv.RootInputMain { *; }
+-keepclassmembers class com.erl.blindcast.core.priv.RootInputMain {
+    public static void main(java.lang.String[]);
+}
+-keep class com.erl.blindcast.core.priv.RootInputDaemon { *; }

@@ -53,8 +53,9 @@ object JpegTranscoder {
     /** JPEG 输出质量（任务包约 60）。 */
     const val JPEG_QUALITY = 60
 
-    /** JPEG 输出最小间隔 100ms（约 10fps，上限 10-12fps 档内）。 */
-    const val JPEG_MIN_INTERVAL_MS = 100L
+    /** JPEG 输出最小间隔 80ms（Smooth-1 实测整链约 28ms/帧：解码+NV21+JPEG，
+     * 80ms 窗保证动态屏 ≥8fps；静态屏按需出帧不空转，省电语义不变）。 */
+    const val JPEG_MIN_INTERVAL_MS = 80L
 
     /** 无需求时 drain 空转步长 200ms（省电）。 */
     private const val NO_DEMAND_IDLE_MS = 200L

@@ -48,14 +48,18 @@ object ControlWsRoute {
     private val sessions = CopyOnWriteArraySet<WsConnection>()
 
     /**
-     * 待决手势（反控特权通道按次绑定用完即焚，跨绑定无状态，故 down/move 只缓存、
-     * up 时按有无位移一次打成 tap 或 drag 原子注入；断开时未 up 的缓存直接丢弃，
-     * 设备侧无任何残留触点）。
+     * 待决手势（Smooth-1 双模：
+     * - 常驻 daemon 存活时 down/move/up 经 daemon 实时直透（[realtime]=true，
+     *   daemon 内 TouchInjector 单例跨指令保持手势，move 不再等松手）；
+     * - daemon 不可用时只缓存（[realtime]=false），up 时按有无位移一次打成
+     *   tap 或 drag 原子注入（Universal-1 老路，Shizuku 按次绑定无状态之必须）；
+     *   断开时未 up 的缓存直接丢弃 + daemon cancel 解卡，设备侧无残留触点）。
      */
     private data class PendingTouch(
         val x0: Float, val y0: Float,
         var lastX: Float, var lastY: Float,
         var moved: Boolean = false,
+        var realtime: Boolean = false,
     )
     private val pendingGestures = ConcurrentHashMap<WsConnection, PendingTouch>()
 
@@ -85,7 +89,11 @@ object ControlWsRoute {
             }
         } finally {
             sessions.remove(conn)
-            pendingGestures.remove(conn)
+            // 未 up 即断开：丢缓存 + daemon 侧 cancel 解卡（防屏幕残留按住触点）。
+            val pending = pendingGestures.remove(conn)
+            if (pending != null && pending.realtime) {
+                runCatching { cancelPriv() }
+            }
             runCatching { JpegTranscoder.clear(conn) }
             runCatching { TouchInjector.cancelTouch() }
             runCatching { conn.close() }
@@ -174,7 +182,13 @@ object ControlWsRoute {
         }
         when (type) {
             "down" -> {
-                pendingGestures[conn] = PendingTouch(x, y, x, y)
+                val p = PendingTouch(x, y, x, y)
+                pendingGestures[conn] = p
+                // 实时优先：daemon down 透传（~数十 ms），成了后 move/up 直透跟手；
+                // 失败则 realtime=false，up 时回退原子 tap/drag（老路兜底）。
+                // down ack 恒 true（已缓存；实时 best-effort，不阻塞前端手势流）。
+                val (ok, _) = injectDownPriv(x, y)
+                p.realtime = ok
                 reply(conn, true, type, null)
             }
             "move" -> {
@@ -185,6 +199,15 @@ object ControlWsRoute {
                     p.lastX = x
                     p.lastY = y
                     p.moved = true
+                    if (p.realtime) {
+                        // 实时直透；透传失败说明 daemon  half-dead：降级批量，
+                        // 先 cancel daemon 侧已开手势（防残留按住），up 时走原子。
+                        val (ok, _) = injectMovePriv(x, y)
+                        if (!ok) {
+                            p.realtime = false
+                            runCatching { cancelPriv() }
+                        }
+                    }
                     reply(conn, true, type, null)
                 }
             }
@@ -192,6 +215,22 @@ object ControlWsRoute {
                 val p = pendingGestures.remove(conn)
                 if (p == null) {
                     reply(conn, false, type, "up without active down")
+                } else if (p.realtime) {
+                    // 实时抬起：结束 daemon 侧手势（跟手已在 move 中生效）。
+                    val (ok, err) = injectUpPriv(x, y)
+                    if (!ok) {
+                        // up  miss 极罕见（daemon 在 move 还活）：cancel 解卡后
+                        // 回退原子兜底，保证本次手势必有一次生效。
+                        runCatching { cancelPriv() }
+                        val (ok2, err2) = if (!p.moved) {
+                            injectTapPriv(p.x0, p.y0)
+                        } else {
+                            injectDragPriv(p.x0, p.y0, p.lastX, p.lastY)
+                        }
+                        reply(conn, ok2, type, err2)
+                    } else {
+                        reply(conn, true, type, null)
+                    }
                 } else {
                     val (ok, err) = if (!p.moved) {
                         injectTapPriv(p.x0, p.y0)
@@ -258,6 +297,24 @@ object ControlWsRoute {
     private fun injectTextPriv(text: String): Pair<Boolean, String?> =
         runCatching { runBlocking { PrivilegedBridge.injectText(pkg(), text) } }
             .getOrElse { false to (it.message ?: it.toString()) }
+
+    // Smooth-1 实时三件套委托（常驻 daemon 直透，无单次/Shizuku 回退；
+    // 失败由 handleTouch 降级批量 + up 原子兜底）。
+    private fun injectDownPriv(x: Float, y: Float): Pair<Boolean, String?> =
+        runCatching { runBlocking { PrivilegedBridge.injectDown(pkg(), x, y) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
+
+    private fun injectMovePriv(x: Float, y: Float): Pair<Boolean, String?> =
+        runCatching { runBlocking { PrivilegedBridge.injectMove(pkg(), x, y) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
+
+    private fun injectUpPriv(x: Float, y: Float): Pair<Boolean, String?> =
+        runCatching { runBlocking { PrivilegedBridge.injectUp(pkg(), x, y) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
+
+    private fun cancelPriv(): Pair<Boolean, String?> =
+        runCatching { runBlocking { PrivilegedBridge.cancelInput() } }
+            .getOrElse { true to null }
 
     private fun reply(conn: WsConnection, ok: Boolean, type: String?, error: String?) {
         val json = JSONObject().put("type", "ack").put("ok", ok)

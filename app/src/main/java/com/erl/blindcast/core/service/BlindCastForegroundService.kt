@@ -22,6 +22,7 @@ import com.erl.blindcast.core.priv.IPrivilegedOps
 import com.erl.blindcast.core.priv.PrivilegedBridge
 import com.erl.blindcast.core.priv.PrivilegedUserService
 import com.erl.blindcast.core.priv.RootExecutor
+import com.erl.blindcast.core.priv.RootInputDaemon
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
 import com.erl.blindcast.core.scrcpy.CaptureSocketLink
 import com.erl.blindcast.core.scrcpy.ScrcpyGate
@@ -295,6 +296,9 @@ class BlindCastForegroundService : Service() {
         // 再停本地引擎兜底，最后停监听与熔断。
         runCatching { UserActivityKeeper.stop() }
         runCatching { stopPrivilegedCapture() }
+        // Smooth-1：随服务停而停常驻输入 daemon（fire-and-forget，不阻塞销毁）。
+        runCatching { RootInputDaemon.stopAsync() }
+        Log.i(TAG, "[InputDaemon] stop signaled on destroy")
         runCatching { AudioCaptureEngine.stop() }
         runCatching { ScreenCaptureEngine.stop() }
         runCatching { BlindCastServer.stop() }
@@ -424,6 +428,14 @@ class BlindCastForegroundService : Service() {
                     "serverRunning=${BlindCastServer.isRunning}")
             }
         }
+        // Smooth-1 常驻输入 daemon（随服务启停）：后台 ensure，存活即复用；
+        // 反控 tap/drag/down/move/up 经 daemon ack（~数十 ms），不再每次冷起 app_process。
+        // 失败只记日志（ControlWsRoute 回退单次 Root→Shizuku 老路，反控不断）。
+        scope.launch {
+            val ok = runCatching { RootInputDaemon.ensureStarted(packageName) }.getOrDefault(false)
+            Log.i(TAG, "[InputDaemon] boot ensure ok=$ok")
+            runCatching { _status.value = snapshot() }
+        }
         if (keepAlive) {
             runCatching { UserActivityKeeper.start(this) }
         } else {
@@ -439,8 +451,9 @@ class BlindCastForegroundService : Service() {
     /** Shizuku 常驻绑定超时 15s（特权进程冷起 app_process 留足余量）。 */
     private val PRIV_BIND_TIMEOUT_MS = 15_000L
 
-    /** Root 单次判定 + 常驻拉起总超时约 20s（复用 RootExecutor 语义）。 */
-    private val ROOT_STOP_POLL_MS = 500L
+    /** Root 常驻停服宽限约 1.5s（Smooth-1：daemon 侧 stop 文件轮询步进 500ms，
+     * 宽限须覆盖 ≥2 个周期，防 touch→rm 窗口竞态漏杀致虚拟屏泄漏；实证 500ms 会漏）。 */
+    private val ROOT_STOP_POLL_MS = 1_500L
 
     /**
      * 后台阻塞式跑完特权建连 + 首帧等待（IO 线程调用，bootStack 经 scope.launch 进入）。
@@ -590,6 +603,8 @@ class BlindCastForegroundService : Service() {
     /**
      * Root 常驻拉起（备用）：libsu `app_process` 跑 RootCaptureMain 常驻直到 stop 文件信号。
      * App 侧仍复用同一 CaptureSocketLink 服（RootCaptureLink 逻辑折叠在此，不另起文件）。
+     * Smooth-1：拉起前先清残留 daemon（上次崩溃/强杀无 destroy 时的孤儿，其虚拟屏
+     * 占着 DisplayManager；此时搬运服刚起、无合法常驻，故全清安全）。
      */
     private fun startRootCapturePersistent(vw: Int, vh: Int, bitrate: Int, fps: Int): Boolean {
         return try {
@@ -597,6 +612,7 @@ class BlindCastForegroundService : Service() {
                 Log.i(TAG, "[CaptureRoute] root unavailable (no su/denied)")
                 return false
             }
+            runCatching { killStaleCaptureDaemons() }
             val apkPath = runCatching { applicationInfo.sourceDir }.getOrNull()?.takeIf { it.isNotBlank() }
                 ?: return false
             val nonce = runCatching { java.util.UUID.randomUUID().toString().replace("-", "").take(8) }
@@ -627,7 +643,26 @@ class BlindCastForegroundService : Service() {
             Thread.sleep(ROOT_STOP_POLL_MS)
             com.topjohnwu.superuser.Shell.cmd("rm -f $stopFile").exec()
         }
+        // Smooth-1：宽限后仍可能有漏网（进程启动中错过窗口）：按类名补刀，
+        // 停服时无合法常驻，全清安全（虚拟屏随进程死自动释放）。
+        runCatching { killStaleCaptureDaemons() }
         Log.i(TAG, "[CaptureRoute] root daemon stop signaled file=$stopFile")
+    }
+
+    /**
+     * 按类名清 Root 采集常驻（Smooth-1 · 孤儿回收）。
+     * 只匹配 `com.erl.blindcast.core.scrcpy.RootCaptureMain`（采集 daemon），
+     * 输入 daemon（RootInputMain）与电源单次（RootMain）一律不动。
+     */
+    private fun killStaleCaptureDaemons() {
+        try {
+            val res = com.topjohnwu.superuser.Shell
+                .cmd("pkill -f 'com.erl.blindcast.core.scrcpy.RootCaptureMain'")
+                .exec()
+            Log.i(TAG, "[CaptureRoute] killStaleCaptureDaemons done code=${runCatching { res.code }.getOrDefault(-1)}")
+        } catch (t: Throwable) {
+            Log.w(TAG, "[CaptureRoute] killStaleCaptureDaemons threw: ${t.message}")
+        }
     }
 
     /**
