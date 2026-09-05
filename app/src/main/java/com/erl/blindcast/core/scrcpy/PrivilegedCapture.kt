@@ -147,6 +147,7 @@ object PrivilegedCapture {
     @Volatile private var cachedSps: ByteArray? = null
     @Volatile private var cachedPps: ByteArray? = null
     @Volatile private var firstKeyFrameEmitted = false
+    @Volatile private var spsMissingWarned = false
     @Volatile private var cachedAudioConfig: ByteArray? = null
     @Volatile private var audioStartNs: Long = 0L
 
@@ -198,13 +199,13 @@ object PrivilegedCapture {
     fun startVideo(width: Int, height: Int, bitrate: Int, fps: Int, out: OutputStream): Boolean {
         if (isRunning) stopLocked()
         if (!checkVideoParams(width, height, bitrate, fps)) return false
+        stopped.set(false)
         return try {
             socketOut = out
             ownsSocket = false
             startVideoEncoderLocked(width, height, bitrate, fps)
             cachedAudioConfig = null
             isRunning = true
-            stopped.set(false)
             lastError = null
             Log.i(TAG, "[PrivilegedCapture] startVideo ok ${width}x${height} ${bitrate}bps ${fps}fps")
             true
@@ -229,12 +230,12 @@ object PrivilegedCapture {
         bitrate: Int = DEFAULT_AUDIO_BITRATE,
     ): Boolean {
         if (isRunning) stopLocked()
+        stopped.set(false)
         return try {
             socketOut = out
             ownsSocket = false
             startAudioEncoderLocked(sampleRate, channelCount, bitrate)
             isRunning = true
-            stopped.set(false)
             lastError = null
             Log.i(TAG, "[PrivilegedCapture] startAudio ok ${sampleRate}Hz x${channelCount} ${bitrate}bps")
             true
@@ -261,6 +262,9 @@ object PrivilegedCapture {
     private fun startInternal(width: Int, height: Int, bitrate: Int, fps: Int, socketName: String): Boolean {
         if (isRunning) stopLocked()
         if (!checkVideoParams(width, height, bitrate, fps)) return false
+        // 必须在起任何 drain 线程之前清停止旗：drain 循环首条件即读 stopped，
+        // 晚清会导致线程出生即退（编码器空转、出帧堆仓、零帧零错）。
+        stopped.set(false)
         var sock: LocalSocket? = null
         return try {
             sock = LocalSocket()
@@ -302,7 +306,6 @@ object PrivilegedCapture {
             currentBitrate = bitrate
             currentFps = fps
             isRunning = true
-            stopped.set(false)
             if (videoRunning) lastError = null
             Log.i(TAG, "[PrivilegedCapture] start ok ${width}x${height} ${bitrate}bps ${fps}fps " +
                 "video=$videoRunning audio=$audioRunning sock=$socketName")
@@ -347,6 +350,7 @@ object PrivilegedCapture {
         cachedSps = null
         cachedPps = null
         firstKeyFrameEmitted = false
+        spsMissingWarned = false
         cachedAudioConfig = null
     }
 
@@ -407,6 +411,7 @@ object PrivilegedCapture {
         cachedSps = null
         cachedPps = null
         firstKeyFrameEmitted = false
+        spsMissingWarned = false
         videoRunning = true
         val t = Thread(::videoDrainLoop, "BlindCast-PrivVideo")
         t.isDaemon = true
@@ -489,7 +494,14 @@ object PrivilegedCapture {
         val isKey = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
         val sps = cachedSps
         val pps = cachedPps
-        if (sps == null || pps == null) return
+        if (sps == null || pps == null) {
+            if (!spsMissingWarned) {
+                spsMissingWarned = true
+                Log.w(TAG, "[PrivilegedCapture] drop video frame: sps/pps not ready " +
+                    "(sps=${sps != null} pps=${pps != null} size=${info.size} flags=${info.flags})")
+            }
+            return
+        }
         if (!firstKeyFrameEmitted && !isKey) return
         val payload = if (isKey) sps + pps + raw else raw
         if (isKey) firstKeyFrameEmitted = true
