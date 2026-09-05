@@ -30,10 +30,14 @@ import dalvik.system.PathClassLoader;
  * 全程 try/catch 记 BlindCast 日志，失败不抛（留到方法调用时再错）。
  * 同类 native 预载手法在 scrcpy（Apache-2.0）中亦有实现，属通用 Android 技术。
  *
- * <p>混合路由（见 {@code PowerController}）：SDK&gt;=34 时先特征探测
+ * <p>混合路由（见 {@code PowerController}，Priv-Bridge-6 修订）：SDK&gt;=34 时先特征探测
  * {@code SurfaceControl} 是否有 {@code getPhysicalDisplayIds} 方法，有则走
- * {@link SurfaceControl}，无则走本类 {@code getPhysicalDisplayIds /
- * getPhysicalDisplayToken}；29~33 维持 {@link SurfaceControl}；28 及以下维持
+ * {@link SurfaceControl} 全链路（取 token + 设值），无则走本类
+ * {@code getPhysicalDisplayIds / getPhysicalDisplayToken} 只取 token，
+ * 拿到 token 后一律调 {@link SurfaceControl#setDisplayPowerMode} 设值
+ * （OPlus Android 15 真机实证：本机 {@code DisplayControl} 根本没有
+ * {@code setDisplayPowerMode(IBinder,int)} 方法，MAA-Meow 同样只有取 token 两方法，
+ * 设值一定走 {@code SurfaceControl}）；29~33 维持 {@link SurfaceControl}；28 及以下维持
  * {@code getBuiltInDisplay} 分支。POWER_MODE_OFF=0 / NORMAL=2 与 SurfaceControl 一致。
  *
  * <p>调用点约束：必须在提权进程内执行（Shizuku UserService / Root app_process），
@@ -60,7 +64,6 @@ public final class DisplayControl {
     private static final String LIB_ANDROID_SERVERS = "android_servers";
     private static final String METHOD_GET_PHYSICAL_DISPLAY_IDS = "getPhysicalDisplayIds";
     private static final String METHOD_GET_PHYSICAL_DISPLAY_TOKEN = "getPhysicalDisplayToken";
-    private static final String METHOD_SET_DISPLAY_POWER_MODE = "setDisplayPowerMode";
 
     private static volatile Class<?> sDisplayControlClass;
     private static volatile boolean sNativeLoaded;
@@ -262,6 +265,13 @@ public final class DisplayControl {
     /**
      * 对指定显示屏 token 设置电源模式。
      *
+     * <p>Priv-Bridge-6 语义修正（OPlus Android 15 真机实证）：
+     * 本机 {@code com.android.server.display.DisplayControl} 根本没有
+     * {@code setDisplayPowerMode(IBinder,int)} 方法（{@code NoSuchMethodException}），
+     * MAA-Meow 的 DisplayControl 同样只有取 token 两方法——设值一定走
+     * {@link SurfaceControl#setDisplayPowerMode}。本方法仅为防他处引用保留，
+     * 内部直接转调 SurfaceControl 版，不再反射本类。
+     *
      * @param displayToken 显示屏 Binder token（见各取 token 方法）
      * @param mode {@link #POWER_MODE_OFF} 熄屏 / {@link #POWER_MODE_NORMAL} 点亮
      * @return 系统服务返回 boolean；签名为 void 的实现上无异常即视为成功返回 true
@@ -270,37 +280,17 @@ public final class DisplayControl {
     public static boolean setDisplayPowerMode(IBinder displayToken, int mode) throws Exception {
         Log.d(TAG, "[DisplayControl] " + tid()
                 + " setDisplayPowerMode enter mode=" + mode
-                + " tokenNull=" + (displayToken == null));
-        if (displayToken == null) {
-            Log.e(TAG, "[DisplayControl] " + tid()
-                    + " setDisplayPowerMode token==null mode=" + mode);
-            throw new IllegalArgumentException("displayToken == null");
-        }
-        try {
-            Object result = hiddenStaticMethod(
-                    METHOD_SET_DISPLAY_POWER_MODE, IBinder.class, int.class)
-                    .invoke(null, displayToken, mode);
-            boolean ok;
-            if (result instanceof Boolean) {
-                ok = (Boolean) result;
-            } else {
-                // 服务侧签名为 void 时：反射调用无异常即视为成功
-                ok = true;
-            }
-            Log.d(TAG, "[DisplayControl] " + tid()
-                    + " setDisplayPowerMode mode=" + mode
-                    + " resultType=" + (result == null ? "void/null" : result.getClass().getSimpleName())
-                    + " ok=" + ok);
-            return ok;
-        } catch (Exception e) {
-            Log.e(TAG, "[DisplayControl] " + tid()
-                    + " setDisplayPowerMode mode=" + mode + " failed", e);
-            throw e;
-        }
+                + " tokenNull=" + (displayToken == null)
+                + " (delegate SurfaceControl, Priv-Bridge-6)");
+        // 本类无此方法：直接转调 SurfaceControl 设值（取 token 失败与设值失败由被调方日志区分）。
+        return SurfaceControl.setDisplayPowerMode(displayToken, mode);
     }
 
     /**
      * 对主显示屏设置电源模式（取 token + 设模式一次完成）。
+     *
+     * <p>Priv-Bridge-6：token 经本类 {@link #getDefaultDisplayToken()} 获取，
+     * 设值一律经 {@link SurfaceControl#setDisplayPowerMode}。
      *
      * @param mode {@link #POWER_MODE_OFF} 熄屏 / {@link #POWER_MODE_NORMAL} 点亮
      * @return 是否成功（底层返回 false 时为 false）
@@ -308,8 +298,10 @@ public final class DisplayControl {
      */
     public static boolean setDefaultDisplayPowerMode(int mode) throws Exception {
         Log.d(TAG, "[DisplayControl] " + tid()
-                + " setDefaultDisplayPowerMode enter mode=" + mode);
-        boolean ok = setDisplayPowerMode(getDefaultDisplayToken(), mode);
+                + " setDefaultDisplayPowerMode enter mode=" + mode
+                + " (token=DisplayControl, set=SurfaceControl)");
+        IBinder token = getDefaultDisplayToken();
+        boolean ok = SurfaceControl.setDisplayPowerMode(token, mode);
         Log.d(TAG, "[DisplayControl] " + tid()
                 + " setDefaultDisplayPowerMode mode=" + mode + " ok=" + ok);
         return ok;

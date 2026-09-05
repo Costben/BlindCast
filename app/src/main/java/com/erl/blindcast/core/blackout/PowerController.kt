@@ -22,9 +22,13 @@ import java.util.Locale
  *   全部经 `android.view.SurfaceControl` 反射（JNI 在 libandroid_runtime，所有进程有，
  *   shell 身份可调；隐藏 API 经项目既有 HiddenApiBypass 放行）。
  * - Android 14+（SDK 34+）：特征探测（不只判 SDK）——若 [SurfaceControl.hasGetPhysicalDisplayIds]
- *   为 true 走 SurfaceControl 路径，否则走 [DisplayControl] 路径
- *  （`getPhysicalDisplayIds/getPhysicalDisplayToken`，经 SYSTEMSERVERCLASSPATH 载类后
- *   `Runtime.loadLibrary0(..., "android_servers")` 预载 JNI，机制参考 MAA-Meow 自行实现）。
+ *   为 true 走 SurfaceControl 路径（取 token + 设值全走 SurfaceControl），否则走
+ *   DisplayControl 取 token + SurfaceControl 设值混合路径
+ *  （token 经 [DisplayControl.getPhysicalDisplayIds]/[DisplayControl.getPhysicalDisplayToken]，
+ *   经 SYSTEMSERVERCLASSPATH 载类后 `Runtime.loadLibrary0(..., "android_servers")` 预载 JNI，
+ *   机制参考 MAA-Meow 自行实现；设值一律经 `SurfaceControl.setDisplayPowerMode(token, mode)`，
+ *   Priv-Bridge-6 修正：OPlus Android 15 真机实证 DisplayControl 根本无
+ *   setDisplayPowerMode(IBinder,int) 方法，MAA-Meow 亦只有取 token 两方法）。
  *   POWER_MODE_OFF=0 / NORMAL=2 两条路线一致。
  *
  * 熄屏语义：`POWER_MODE_OFF` 物理切断屏幕电源（OLED / 背光断电、触控停止上报），
@@ -170,8 +174,10 @@ object PowerController {
         Log.d(TAG, "[PowerController] ${tid()} setDisplayPower enter on=$on mode=$mode")
         return try {
             // Priv-Bridge-5 混合路由（特征探测，不只判 SDK）：
-            // SDK>=34 且 SurfaceControl 无 getPhysicalDisplayIds 方法 → DisplayControl fallback
-            // （SYSTEMSERVERCLASSPATH 载类 + loadLibrary0 预载 android_servers.so，机制参考 MAA-Meow）；
+            // SDK>=34 且 SurfaceControl 无 getPhysicalDisplayIds 方法 → DisplayControl 取 token
+            // + SurfaceControl 设值混合路径（SYSTEMSERVERCLASSPATH 载类 + loadLibrary0 预载
+            // android_servers.so 取 token，设值一律 SurfaceControl.setDisplayPowerMode，
+            // Priv-Bridge-6 修正：DisplayControl 无 set 方法，机制参考 MAA-Meow）；
             // 29~33 维持 SurfaceControl；28 及以下维持 SurfaceControl 内 getBuiltInDisplay 分支。
             val sdk = Build.VERSION.SDK_INT
             val hasIds = try {
@@ -184,7 +190,20 @@ object PowerController {
             Log.d(TAG, "[PowerController] ${tid()} hybrid sdk=$sdk hasIds=$hasIds " +
                 "route=$route mode=$mode")
             val ok = if (useDisplayControl) {
-                DisplayControl.setDefaultDisplayPowerMode(mode)
+                // Priv-Bridge-6：DisplayControl 只取 token，设值一律走 SurfaceControl。
+                // 失败文案区分“取 token 失败”与“设值失败”（上游 Toast/状态行照常消费 message）。
+                val token = try {
+                    DisplayControl.getDefaultDisplayToken()
+                } catch (t: Throwable) {
+                    throw IllegalStateException(
+                        "取 token 失败（route=DisplayControl mode=$mode）: ${t.message ?: t}", t)
+                }
+                try {
+                    SurfaceControl.setDisplayPowerMode(token, mode)
+                } catch (t: Throwable) {
+                    throw IllegalStateException(
+                        "设值失败（route=DisplayControl取token+SurfaceControl设值 mode=$mode）: ${t.message ?: t}", t)
+                }
             } else {
                 SurfaceControl.setDefaultDisplayPowerMode(mode)
             }
@@ -194,7 +213,7 @@ object PowerController {
                 recordPrivResult(op, true, null)
             } else {
                 val msg = if (useDisplayControl) {
-                    "底层返回 false（mode=$mode route=DisplayControl），见特权进程 logcat [DisplayControl] 明细"
+                    "设值失败：底层返回 false（mode=$mode route=DisplayControl取token+SurfaceControl设值），见特权进程 logcat [DisplayControl]/[SurfaceControl] 明细"
                 } else {
                     "底层返回 false（mode=$mode），见特权进程 logcat [SurfaceControl] 逐屏明细"
                 }
