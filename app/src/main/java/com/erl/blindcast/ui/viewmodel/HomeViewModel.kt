@@ -14,12 +14,15 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.erl.blindcast.R
 import com.erl.blindcast.blindCastApp
 import com.erl.blindcast.core.blackout.PowerController
 import com.erl.blindcast.core.blackout.UserActivityKeeper
 import com.erl.blindcast.core.ha.HaSensorReporter
 import com.erl.blindcast.core.server.BlindCastServer
 import com.erl.blindcast.core.service.BlindCastForegroundService
+import com.erl.blindcast.permission.PermissionManager
+import com.erl.blindcast.permission.PermissionState
 import com.erl.blindcast.ui.screen.home.HomeUiState
 import com.erl.blindcast.ui.screen.home.HwState
 import com.erl.blindcast.ui.screen.home.LanState
@@ -61,8 +64,14 @@ class HomeViewModel : ViewModel() {
     fun refresh() {
         viewModelScope.launch {
             val preservedPermission = _uiState.value.permissionGranted
+            val preservedMissing = _uiState.value.missingPermissions
             val baseState = withContext(Dispatchers.IO) { buildState() }
-            _uiState.update { baseState.copy(permissionGranted = preservedPermission) }
+            _uiState.update {
+                baseState.copy(
+                    permissionGranted = preservedPermission,
+                    missingPermissions = preservedMissing,
+                )
+            }
             updateFromSnapshot()
             if (baseState.checkUpdateEnabled) {
                 val latestVersionInfo = withContext(Dispatchers.IO) { checkNewVersion() }
@@ -75,6 +84,7 @@ class HomeViewModel : ViewModel() {
      * Fix-Home-1：Hero 三态判定收敛入口。
      * 由 HomeScreen 把 PermissionState.requiredGranted 同步进来，
      * UI 层只读 [HomeUiState.permissionGranted] + service.isRunning，不再直读 PermissionState。
+     * Fix-Home-2：保留此同步（避免回退），但以 3s 轮询直读值为准；同值不覆写避免闪烁。
      */
     fun setPermissionGranted(granted: Boolean) {
         _uiState.update { current ->
@@ -166,8 +176,17 @@ class HomeViewModel : ViewModel() {
         }
 
         val hw = readHw()
-        _uiState.update {
-            it.copy(
+        // Fix-Home-2：权限态由 ViewModel 轮询直读自愈，不依赖跨组件同步时序。
+        val permSnapshot = runCatching { PermissionManager.readState(app) }.getOrNull()
+        val freshGranted = permSnapshot?.requiredGranted
+        val freshMissing = permSnapshot?.let { buildMissingLabels(it) }
+        _uiState.update { current ->
+            val granted = freshGranted ?: current.permissionGranted
+            val missing = freshMissing ?: current.missingPermissions
+            // 同值不覆写引用，避免缺项清单相同引发冗余重组闪烁。
+            val effectiveMissing =
+                if (current.missingPermissions == missing) current.missingPermissions else missing
+            current.copy(
                 service = ServiceCardState(
                     isRunning = svc.isRunning,
                     port = effectivePort,
@@ -186,8 +205,28 @@ class HomeViewModel : ViewModel() {
                     hasIp = hasIp,
                 ),
                 hw = hw,
+                permissionGranted = granted,
+                missingPermissions = effectiveMissing,
             )
         }
+    }
+
+    /** Fix-Home-2：按门禁缺项装配中文名清单（文件/通知/麦克风/电池白名单）。 */
+    private fun buildMissingLabels(state: PermissionState): List<String> {
+        val missing = ArrayList<String>(4)
+        if (!state.storage) {
+            missing.add(runCatching { app.getString(R.string.blindcast_home_missing_storage) }.getOrDefault("文件"))
+        }
+        if (!state.notification) {
+            missing.add(runCatching { app.getString(R.string.blindcast_home_missing_notification) }.getOrDefault("通知"))
+        }
+        if (!state.microphone) {
+            missing.add(runCatching { app.getString(R.string.blindcast_home_missing_microphone) }.getOrDefault("麦克风"))
+        }
+        if (!state.batteryWhitelist) {
+            missing.add(runCatching { app.getString(R.string.blindcast_home_missing_battery) }.getOrDefault("电池白名单"))
+        }
+        return missing
     }
 
     /**

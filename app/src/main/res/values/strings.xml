@@ -46,6 +46,12 @@
     <string name="blindcast_home_stopped_subtitle" translatable="false">点击下方开关启动挂机服务</string>
     <string name="blindcast_home_need_permission_title" translatable="false">缺少必要授权</string>
     <string name="blindcast_home_need_permission_subtitle" translatable="false">点击前往授权，完成授权后即可启动挂机服务</string>
+    <!-- Fix-Home-2：红卡自报缺项 -->
+    <string name="blindcast_home_missing_storage" translatable="false">文件</string>
+    <string name="blindcast_home_missing_notification" translatable="false">通知</string>
+    <string name="blindcast_home_missing_microphone" translatable="false">麦克风</string>
+    <string name="blindcast_home_missing_battery" translatable="false">电池白名单</string>
+    <string name="blindcast_home_need_permission_missing" translatable="false">缺：%1$s</string>
     <string name="blindcast_home_stats" translatable="false">帧率 %1$d FPS | 码率 %2$.1f Mbps | 在线 %3$d 人 | Token保护：%4$s</string>
     <string name="blindcast_home_stats_idle" translatable="false">帧率 — | 码率 — | 在线 %1$d 人 | Token保护：%2$s</string>
     <string name="blindcast_home_token_on" translatable="false">开启</string>

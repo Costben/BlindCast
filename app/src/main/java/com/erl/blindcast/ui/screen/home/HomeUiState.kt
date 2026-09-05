@@ -15,7 +15,9 @@ data class HomeUiState(
     val hw: HwState = HwState(),
     // Fix-Home-1：Hero 三态判定收敛（permissionGranted + service.isRunning 双字段）。
     // permissionGranted 对应 PermissionState.requiredGranted，由 HomeScreen 同步进 ViewModel。
+    // Fix-Home-2：ViewModel 3s 轮询直读自愈为准；missingPermissions 为缺项中文名清单，供红卡自报。
     val permissionGranted: Boolean = false,
+    val missingPermissions: List<String> = emptyList(),
 )
 
 /** Hero 大卡片：串流总服务实时快照。 */

@@ -17,13 +17,13 @@ import kotlinx.coroutines.flow.asStateFlow
 
 class PermissionManager(context: Context) {
 
-    private val appContext = context.applicationContext
-    private val _state = MutableStateFlow(readState())
+    private val appContext: Context = context.applicationContext ?: context
+    private val _state = MutableStateFlow(Companion.readState(appContext))
 
     val state: StateFlow<PermissionState> = _state.asStateFlow()
 
     fun refresh() {
-        _state.value = readState()
+        _state.value = Companion.readState(appContext)
     }
 
     fun notificationRuntimePermission(): String? =
@@ -63,24 +63,38 @@ class PermissionManager(context: Context) {
             data = Uri.parse("package:${appContext.packageName}")
         }
 
-    private fun readState() = PermissionState(
-        storage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else {
-            hasPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
-        },
-        notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            hasPermission(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            NotificationManagerCompat.from(appContext).areNotificationsEnabled()
-        },
-        microphone = hasPermission(Manifest.permission.RECORD_AUDIO),
-        batteryWhitelist =
-            (appContext.getSystemService(Context.POWER_SERVICE) as PowerManager)
-                .isIgnoringBatteryOptimizations(appContext.packageName),
-        overlay = Settings.canDrawOverlays(appContext),
-    )
+    private fun readState(): PermissionState = Companion.readState(appContext)
 
     private fun hasPermission(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(appContext, permission) == PermissionChecker.PERMISSION_GRANTED
+        Companion.hasPermission(appContext, permission)
+
+    companion object {
+        /**
+         * Fix-Home-2：直读四门禁，供 HomeViewModel 轮询自愈复用。
+         * 门禁定义不变：storage && notification && microphone && batteryWhitelist。
+         */
+        fun readState(context: Context): PermissionState {
+            val appCtx = context.applicationContext ?: context
+            return PermissionState(
+                storage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    Environment.isExternalStorageManager()
+                } else {
+                    hasPermission(appCtx, Manifest.permission.READ_EXTERNAL_STORAGE)
+                },
+                notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    hasPermission(appCtx, Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    NotificationManagerCompat.from(appCtx).areNotificationsEnabled()
+                },
+                microphone = hasPermission(appCtx, Manifest.permission.RECORD_AUDIO),
+                batteryWhitelist =
+                    (appCtx.getSystemService(Context.POWER_SERVICE) as PowerManager)
+                        .isIgnoringBatteryOptimizations(appCtx.packageName),
+                overlay = Settings.canDrawOverlays(appCtx),
+            )
+        }
+
+        private fun hasPermission(context: Context, permission: String): Boolean =
+            ContextCompat.checkSelfPermission(context, permission) == PermissionChecker.PERMISSION_GRANTED
+    }
 }

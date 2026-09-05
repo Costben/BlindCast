@@ -94,6 +94,7 @@ fun HomePagerMiuix(
                         BlindCastHeroCard(
                             service = state.service,
                             permissionGranted = state.permissionGranted,
+                            missingPermissions = state.missingPermissions,
                             onPermissionsClick = actions.onPermissionsClick,
                         )
                         BlindCastActionsCard(
@@ -120,6 +121,7 @@ fun HomePagerMiuix(
 private fun BlindCastHeroCard(
     service: ServiceCardState,
     permissionGranted: Boolean,
+    missingPermissions: List<String> = emptyList(),
     onPermissionsClick: () -> Unit,
 ) {
     // Fix-Home-1 三态：未授权=红（可点跳授权）/ 已授权未运行=灰 / 运行中=绿。
@@ -141,8 +143,15 @@ private fun BlindCastHeroCard(
         running -> stringResource(R.string.blindcast_home_running_title)
         else -> stringResource(R.string.blindcast_home_stopped_title)
     }
+    val baseNeedPermissionSubtitle = stringResource(R.string.blindcast_home_need_permission_subtitle)
+    val missingText = if (missingPermissions.isNotEmpty()) {
+        stringResource(R.string.blindcast_home_need_permission_missing, missingPermissions.joinToString("、"))
+    } else {
+        ""
+    }
     val subtitle = when {
-        needPermission -> stringResource(R.string.blindcast_home_need_permission_subtitle)
+        needPermission ->
+            if (missingText.isNotBlank()) "$baseNeedPermissionSubtitle · $missingText" else baseNeedPermissionSubtitle
         running && service.lanIp.isNotBlank() -> "http://${service.lanIp}:${service.port}"
         else -> stringResource(R.string.blindcast_home_stopped_subtitle)
     }
