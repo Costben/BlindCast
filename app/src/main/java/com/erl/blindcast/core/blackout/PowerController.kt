@@ -17,7 +17,8 @@ import java.util.Locale
 
 /**
  * 硬件屏幕电源统一控制器（Slice 2.1 · 物理灭屏底层唯一对外入口；Priv-Bridge-2 改道 SurfaceControl；
- * Priv-Bridge-5 加 14+ 混合路由；Priv-Bridge-7 加验效轮询 + 按键兜底）。
+ * Priv-Bridge-5 加 14+ 混合路由；Priv-Bridge-7 加验效轮询 + 按键兜底；
+ * Priv-Bridge-8 延长按键兜底复验至约 6s 并接受 DOZE 为成功）。
  *
  * ## 混合路由分发（MVP.md 四(二)(1) · Priv-Bridge-5 修订，机制参考 Aliothmoon/MAA-Meow (AGPL-3.0)）
  * - Android 9 及以下（SDK 28 及以下）：[SurfaceControl.getBuiltInDisplay] 取 token 后设电源模式；
@@ -35,16 +36,24 @@ import java.util.Locale
  *   setDisplayPowerMode(IBinder,int) 方法，MAA-Meow 亦只有取 token 两方法）。
  *   POWER_MODE_OFF=0 / NORMAL=2 两条路线一致。
  *
- * ## 验效轮询 + 按键兜底（Priv-Bridge-7 · OPlus Android 15 真机实证，只借鉴 MAA-Meow 思想不抄代码）
+ * ## 验效轮询 + 按键兜底（Priv-Bridge-7 · OPlus Android 15 真机实证，只借鉴 MAA-Meow 思想不抄代码；
+ * ## Priv-Bridge-8 延长按键兜底复验并放宽成功集）
  * - 真机 trace：`setDisplayPowerMode(mode=0)` 为 void 签名，“ok=true”只代表没抛异常，
  *   OPlus SurfaceFlinger 静默忽略（10s 后 mScreenState 仍 ON）。故 binder 调完后必须验效。
  * - 验效：经 [SurfaceControl.pollDisplayState] 轮询
- *   `DisplayManager.getDisplay(DEFAULT_DISPLAY).state`（熄屏验 STATE_OFF，点亮验 STATE_ON，
- *   最多约 2s，每次读回值均记日志）。特权进程无 Context 时回退 DisplayManagerGlobal 反射，
+ *   `DisplayManager.getDisplay(DEFAULT_DISPLAY).state`（熄屏验 STATE_OFF 严格判定，
+ *   点亮验 STATE_ON，最多约 2s，每次读回值均记日志；Priv-Bridge-8 保持不变，
+ *   物理断电就该是 OFF）。特权进程无 Context 时回退 DisplayManagerGlobal 反射，
  *   同样可验（见 SurfaceControl.readDisplayState）。
  * - 兜底：验效失败则在特权进程内经既有 [TouchInjector]/InputManagerWrapper 注入
  *   KEYCODE_SLEEP（熄屏，Down+Up，SOURCE_KEYBOARD）再验效；点亮侧依次试 KEYCODE_WAKEUP、
  *   无则 KEYCODE_POWER。AIDL 见 sleepByKey/wakeByKey（编号顺延，旧方法不动）。
+ * - Priv-Bridge-8（KEY_SLEEP injOk=true 后复验仍 ON→误判失败，但数分钟后 mScreenState
+ *   稳定在 DOZE_SUSPEND 且进程存活，入睡过渡要 1~3s）：熄屏按键后复验走
+ *   [SurfaceControl.pollDisplayStateOffOrDoze]，窗口约 6s（250ms 间隔不变，多轮），
+ *   成功集放宽为 STATE_OFF/DOZE/DOZE_SUSPEND 任一；成功后调用方照常启动
+ *   UserActivityKeeper（userActivity 不唤醒熟睡设备只延缓计时，doze 下稳定）。
+ *   点亮侧验效保持 STATE_ON 不动。
  * - 失败文案写清走到哪一步（binder已调无异常但验效失败→已试按键），进 lastError/Home 状态行/Toast，
  *   契约不变（仍经 recordPrivResult/lastPrivSummary）。
  *
@@ -135,6 +144,16 @@ object PowerController {
     /** 验效轮询间隔 250ms（8 次 ≈ 2s，每次读回均记日志）。 */
     private const val VERIFY_INTERVAL_MS = 250L
 
+    /**
+     * 按键兜底复验窗口约 6s（Priv-Bridge-8 · OPlus Android 15 真机实证：
+     * KEY_SLEEP 注入 injOk=true 后屏幕入睡过渡要 1~3s，2s 窗口误判失败，
+     * 数分钟后 mScreenState 稳定在 DOZE_SUSPEND 且进程存活。
+     * 250ms 间隔不变，约 24 轮，每次读回均记日志。
+     * 成功集放宽为 STATE_OFF/DOZE/DOZE_SUSPEND 任一；
+     * binder 主路验效保持 STATE_OFF 严格判定不变，点亮侧保持 STATE_ON 不变）。
+     */
+    private const val KEY_FALLBACK_VERIFY_TIMEOUT_MS = 6000L
+
     /** 验效用 Context（特权进程由 PrivilegedUserService 构造时 init；App 进程可不调，回退 Global 反射）。 */
     @Volatile
     private var appContextRef: WeakReference<Context>? = null
@@ -179,7 +198,8 @@ object PowerController {
     }
 
     /**
-     * 轮询验效（binder 调完后必须调；按键注入后复验同样调本方法）。
+     * 轮询验效（binder 调完后必须调；点亮侧与 binder 主路熄屏验效同样调本方法）。
+     * binder 主路熄屏验 STATE_OFF 严格判定（物理断电就该是 OFF），点亮验 STATE_ON，不动。
      *
      * @param expectOff true = 熄屏验 STATE_OFF，false = 点亮验 STATE_ON。
      * @return 超时前命中期望状态 true，否则 false（含读回不可用）。
@@ -189,6 +209,25 @@ object PowerController {
             SurfaceControl.pollDisplayState(appContext(), expectOff, VERIFY_TIMEOUT_MS, VERIFY_INTERVAL_MS)
         } catch (t: Throwable) {
             Log.e(TAG, "[PowerController] ${tid()} pollDisplayState threw expectOff=$expectOff", t)
+            false
+        }
+    }
+
+    /**
+     * 按键兜底复验（Priv-Bridge-8 · 仅熄屏按键后用）。
+     * 窗口约 6s（250ms 间隔不变，多轮），成功集放宽为
+     * STATE_OFF/DOZE/DOZE_SUSPEND 任一（Display 读回已映射好三值，每次读值均记日志）。
+     * 成功后调用方照常启动 UserActivityKeeper（userActivity 不唤醒熟睡设备，
+     * 只延缓无活动计时，doze 下稳定）。
+     *
+     * @return 超时前命中任一熄屏态 true，否则 false（含读回不可用）。
+     */
+    private fun pollDisplayStateOffOrDoze(): Boolean {
+        return try {
+            SurfaceControl.pollDisplayStateOffOrDoze(
+                appContext(), KEY_FALLBACK_VERIFY_TIMEOUT_MS, VERIFY_INTERVAL_MS)
+        } catch (t: Throwable) {
+            Log.e(TAG, "[PowerController] ${tid()} pollOffOrDoze threw", t)
             false
         }
     }
@@ -245,10 +284,16 @@ object PowerController {
      * Priv-Bridge-7 全链路（OPlus Android 15 真机实证：void 签名 ok=true 只代表无异常，
      * SurfaceFlinger 可静默忽略，故必须验效）：
      * 1. binder：既有混合路由调 setDisplayPowerMode（无异常记 binderOk）；
-     * 2. 验效：[pollDisplayState] 轮询 Display 状态（熄屏验 STATE_OFF，点亮验 STATE_ON，
-     *    约 2s，每次读回记日志）；
+     * 2. 验效：[pollDisplayState] 轮询 Display 状态（熄屏验 STATE_OFF 严格判定，
+     *    点亮验 STATE_ON，约 2s，每次读回记日志；Priv-Bridge-8 保持不变，
+     *    物理断电就该是 OFF）；
      * 3. 兜底：验效失败则在特权进程内经 [TouchInjector] 注入按键（熄屏 KEYCODE_SLEEP，
      *    点亮 KEYCODE_WAKEUP→KEYCODE_POWER，Down+Up，SOURCE_KEYBOARD）再验效。
+     *    熄屏按键后复验走 [pollDisplayStateOffOrDoze]（Priv-Bridge-8：窗口约 6s，
+     *    250ms 间隔不变，成功集放宽为 STATE_OFF/DOZE/DOZE_SUSPEND 任一，
+     *    按键实际生效只是入睡过渡要 1~3s；成功后调用方照常启动 UserActivityKeeper，
+     *    userActivity 不唤醒熟睡设备只延缓计时，doze 下稳定）。
+     *    点亮侧复验仍走严格 STATE_ON（约 2s），不动。
      * 仅验效通过才算成功并翻转 [isBlackedOut]；失败文案写清走到哪一步
      * （binder已调无异常但验效失败→已试按键），进 [lastError]/状态行/Toast，契约不变。
      *
@@ -343,21 +388,25 @@ object PowerController {
                 }
                 Log.d(TAG, "[PowerController] ${tid()} keyFallback SLEEP " +
                     "injOk=$injOk err=${injErr ?: "none"}")
-                val secondVerified = pollDisplayState(expectOff = true)
+                // Priv-Bridge-8：按键后复验窗口约 6s（250ms 间隔不变），成功集放宽为
+                // STATE_OFF/DOZE/DOZE_SUSPEND 任一（入睡过渡 1~3s，DOZE 即算成功；
+                // 成功后调用方照常启动 UserActivityKeeper，doze 下稳定）。
+                val secondVerified = pollDisplayStateOffOrDoze()
                 val secondRead = readDisplayForLog()
                 Log.d(TAG, "[PowerController] ${tid()} keyFallback SLEEP " +
-                    "secondVerified=$secondVerified read=$secondRead")
+                    "secondVerified=$secondVerified read=$secondRead expect=OFF/DOZE/DOZE_SUSPEND")
                 if (secondVerified) {
                     isBlackedOut = true
                     lastError = null
                     recordPrivResult(op, true, null)
                     Log.d(TAG, "[PowerController] ${tid()} setDisplayPower on=false ok=true " +
-                        "via=key(SLEEP) blackedOut=true")
+                        "via=key(SLEEP) expect=OFF/DOZE/DOZE_SUSPEND read=$secondRead " +
+                        "blackedOut=true keeper=callerStarts(userActivity doze-safe)")
                     return true
                 }
                 val keyDesc = "已试按键KEY_SLEEP注入(injOk=$injOk" +
                     (if (injErr != null) ",err=$injErr" else "") +
-                    ")后复验仍未STATE_OFF($secondRead)"
+                    ")后复验(约6s)仍未STATE_OFF/DOZE/DOZE_SUSPEND($secondRead)"
                 val msg = if (binderErr == null && binderOk) {
                     // OPlus 静默忽略主路径：文案必须点清“无异常但验效失败→已试按键”。
                     "binder已调无异常但验效失败（route=$route mode=$mode，轮询约2s仍未STATE_OFF，$firstRead）→$keyDesc；" +
@@ -496,7 +545,9 @@ object PowerController {
      * 按键熄屏直调（同步阻塞，禁止主线程直调；必须在提权进程内执行）。
      *
      * 经 [TouchInjector.injectKey] 注入 KEYCODE_SLEEP（Down+Up，SOURCE_KEYBOARD，
-     * 见 InputControlUtils.obtainKeyPress）后轮询验 STATE_OFF（约 2s，每次读回记日志）。
+     * 见 InputControlUtils.obtainKeyPress）后轮询验 STATE_OFF/DOZE/DOZE_SUSPEND 任一
+     * （Priv-Bridge-8：窗口约 6s，250ms 间隔不变，每次读回记日志；入睡过渡 1~3s，
+     * DOZE 即算成功，成功后调用方照常启动 UserActivityKeeper，doze 下稳定）。
      * 仅验效通过才算成功并翻转 [isBlackedOut]；供 AIDL sleepByKey 与 [setDisplayPower] 兜底复用。
      *
      * @return 验效通过 true，否则 false（明细进 [lastError]）。
@@ -517,17 +568,20 @@ object PowerController {
                 Log.e(TAG, "[PowerController] ${tid()} sleepByKey inject threw", t)
             }
             Log.d(TAG, "[PowerController] ${tid()} sleepByKey injOk=$injOk err=${injErr ?: "none"}")
-            val verified = pollDisplayState(expectOff = true)
+            val verified = pollDisplayStateOffOrDoze()
             val read = readDisplayForLog()
-            Log.d(TAG, "[PowerController] ${tid()} sleepByKey verified=$verified read=$read")
+            Log.d(TAG, "[PowerController] ${tid()} sleepByKey verified=$verified read=$read " +
+                "expect=OFF/DOZE/DOZE_SUSPEND")
             if (verified) {
                 isBlackedOut = true
                 lastError = null
                 recordPrivResult("blackout", true, null)
+                Log.d(TAG, "[PowerController] ${tid()} sleepByKey ok=true read=$read " +
+                    "keeper=callerStarts(userActivity doze-safe)")
             } else {
                 val msg = "按键熄屏失败：KEY_SLEEP注入(injOk=$injOk" +
                     (if (injErr != null) ",err=$injErr" else "") +
-                    ")后复验仍未STATE_OFF（轮询约2s，当前$read），" +
+                    ")后复验仍未STATE_OFF/DOZE/DOZE_SUSPEND（轮询约6s，当前$read），" +
                     "见特权进程logcat [SurfaceControl]/[PowerController]明细"
                 lastError = IllegalStateException(msg)
                 recordPrivResult("blackout", false, msg)

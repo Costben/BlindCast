@@ -556,6 +556,10 @@ public final class SurfaceControl {
     // DisplayManager.getDisplay(Display.DEFAULT_DISPLAY).getState() 轮询验效：
     // 熄屏验 STATE_OFF，点亮验 STATE_ON，最多约 2s，每次读回值均记日志。
     // 本组方法可在特权进程与普通进程调用（公开 API，无需提权；读不到只记日志不抛）。
+    // Priv-Bridge-8：按键兜底复验放宽——KEY_SLEEP 注入后屏幕入睡过渡要 1~3s，
+    // 复验窗口延长至约 6s（250ms 间隔不变），成功集放宽为
+    // STATE_OFF/DOZE/DOZE_SUSPEND 任一（见 pollDisplayStateOffOrDoze）；
+    // binder 主路验效保持 STATE_OFF 严格判定不变，点亮侧保持 STATE_ON 不变。
     // ------------------------------------------------------------------
 
     /** 验效默认超时约 2s（与 PowerController 侧一致，供调用方缺省用）。 */
@@ -565,10 +569,19 @@ public final class SurfaceControl {
     public static final long VERIFY_INTERVAL_MS = 250L;
 
     /**
-     * 显示状态名（尽力经 {@code Display.stateToString} 反射，失败回退 OFF/ON 手工映射）。
+     * 按键兜底复验超时约 6s（Priv-Bridge-8 · OPlus Android 15 真机实证：
+     * KEY_SLEEP 注入 injOk=true 后屏幕入睡过渡要 1~3s，2s 窗口误判失败。
+     * 250ms 间隔不变，约 24 轮，每次读回均记日志）。
+     */
+    public static final long KEY_FALLBACK_VERIFY_TIMEOUT_MS = 6000L;
+
+    /**
+     * 显示状态名（尽力经 {@code Display.stateToString} 反射，失败回退手工映射）。
+     * Priv-Bridge-8：手工映射补齐 OFF/DOZE/DOZE_SUSPEND（按键兜底成功集），
+     * 确保反射不可用时日志仍可读（state=1(OFF)/3(DOZE)/4(DOZE_SUSPEND)）。
      *
      * @param state {@link Display#getState()} 返回值
-     * @return 如 OFF / ON / ?(数字)
+     * @return 如 OFF / ON / DOZE / DOZE_SUSPEND / ?(数字)
      */
     public static String displayStateName(int state) {
         try {
@@ -578,13 +591,22 @@ public final class SurfaceControl {
                 return (String) s;
             }
         } catch (Throwable ignored) {
-            // 反射不可用时回退手工映射（仅 OFF/ON 精确，其余记数字）。
+            // 反射不可用时回退手工映射（OFF/ON/DOZE/DOZE_SUSPEND 精确，其余记数字）。
         }
         if (state == Display.STATE_OFF) {
             return "OFF";
         }
         if (state == Display.STATE_ON) {
             return "ON";
+        }
+        if (state == Display.STATE_DOZE) {
+            return "DOZE";
+        }
+        if (state == Display.STATE_DOZE_SUSPEND) {
+            return "DOZE_SUSPEND";
+        }
+        if (state == Display.STATE_UNKNOWN) {
+            return "UNKNOWN";
         }
         return "?(" + state + ")";
     }
@@ -692,7 +714,7 @@ public final class SurfaceControl {
      * 单次读回的日志串版（供 PowerController 组装失败文案与 Home 排障日志）。
      *
      * @param ctx 可 null（透传给 {@link #readDisplayState}）。
-     * @return 如“state=1(OFF)”/“state=2(ON)”/“unavailable”。
+     * @return 如“state=1(OFF)”/“state=2(ON)”/“state=3(DOZE)”/“state=4(DOZE_SUSPEND)”/“unavailable”。
      */
     public static String readDisplayStateForLog(Context ctx) {
         try {
@@ -764,6 +786,82 @@ public final class SurfaceControl {
         Log.e(TAG, "[SurfaceControl] " + tid()
                 + " pollDisplayState MISS expect=" + expect
                 + "(" + displayStateName(expect) + ")"
+                + " last=" + lastRead + " attempts=" + attempt);
+        return false;
+    }
+
+    /**
+     * 按键兜底复验：熄屏成功集放宽版（Priv-Bridge-8）。
+     * OPlus Android 15 真机实证：KEY_SLEEP 注入 injOk=true 后复验仍 ON→判失败，
+     * 但数分钟后 mScreenState 稳定在 DOZE_SUSPEND 且进程存活——按键实际生效，
+     * 只是屏幕入睡过渡要 1~3s。故本方法成功集放宽为
+     * STATE_OFF / DOZE / DOZE_SUSPEND 任一，窗口约 6s（250ms 间隔不变，多轮），
+     * 每次读回值均记日志。binder 主路验效仍走严格 {@link #pollDisplayState}，不动。
+     *
+     * @param ctx 可 null（透传给 {@link #readDisplayState}）。
+     * @param timeoutMs 最多等待时长（调用方传 {@link #KEY_FALLBACK_VERIFY_TIMEOUT_MS}）。
+     * @param intervalMs 轮询间隔（调用方传 {@link #VERIFY_INTERVAL_MS}）。
+     * @return 超时前命中 OFF/DOZE/DOZE_SUSPEND 任一 true，否则 false（含读回不可用）。
+     */
+    public static boolean isOffOrDoze(int state) {
+        return state == Display.STATE_OFF
+                || state == Display.STATE_DOZE
+                || state == Display.STATE_DOZE_SUSPEND;
+    }
+
+    /**
+     * 按键兜底复验轮询（成功集 OFF/DOZE/DOZE_SUSPEND，窗口约 6s）。
+     * 首次立即读，miss 则按间隔 sleep 重试至超时；每次读回值均记日志。
+     *
+     * @param ctx 可 null（透传给 {@link #readDisplayState}）。
+     * @param timeoutMs 最多等待时长（约 6s）。
+     * @param intervalMs 轮询间隔（250ms 不变）。
+     * @return 命中任一熄屏态 true，否则 false。
+     */
+    public static boolean pollDisplayStateOffOrDoze(Context ctx,
+                                                    long timeoutMs, long intervalMs) {
+        long deadline = SystemClock.uptimeMillis() + Math.max(0L, timeoutMs);
+        long interval = Math.max(50L, intervalMs);
+        int attempt = 0;
+        String lastRead = "n/a";
+        while (true) {
+            attempt++;
+            Integer st;
+            try {
+                st = readDisplayState(ctx);
+            } catch (Throwable t) {
+                Log.e(TAG, "[SurfaceControl] " + tid()
+                        + " pollOffOrDoze attempt=" + attempt + " read threw", t);
+                st = null;
+            }
+            lastRead = (st == null)
+                    ? "unavailable"
+                    : ("state=" + st + "(" + displayStateName(st) + ")");
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " pollOffOrDoze attempt=" + attempt
+                    + " expect=OFF/DOZE/DOZE_SUSPEND"
+                    + " read=" + lastRead);
+            if (st != null && isOffOrDoze(st.intValue())) {
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " pollOffOrDoze HIT attempt=" + attempt + " read=" + lastRead);
+                return true;
+            }
+            long now = SystemClock.uptimeMillis();
+            if (now >= deadline) {
+                break;
+            }
+            long sleep = Math.min(interval, deadline - now);
+            try {
+                Thread.sleep(sleep);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " pollOffOrDoze interrupted attempt=" + attempt);
+                break;
+            }
+        }
+        Log.e(TAG, "[SurfaceControl] " + tid()
+                + " pollOffOrDoze MISS expect=OFF/DOZE/DOZE_SUSPEND"
                 + " last=" + lastRead + " attempts=" + attempt);
         return false;
     }
