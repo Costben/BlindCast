@@ -246,6 +246,134 @@ object PowerController {
     }
 
     /**
+     * Root-Cut-1：binder 物理断电/点亮直试结果（仅数据，不改状态）。
+     *
+     * @property verified binder 无异常且返回 true 且严格验效通过（熄屏 STATE_OFF / 点亮 STATE_ON，约 2s）。
+     * @property route 本次混合路由（SurfaceControl / DisplayControl，与 [setDisplayPower] 同逻辑）。
+     * @property binderOk binder 调用返回值（异常时 false）。
+     * @property binderErrMsg binder 异常文案（无异常时 null）。
+     * @property read 验效后单次读回串（如 state=1(OFF)，供失败文案组装）。
+     * @property mode 本次透传 mode（熄屏 0 / 点亮 2）。
+     */
+    data class BinderFirstResult(
+        val verified: Boolean,
+        val route: String,
+        val binderOk: Boolean,
+        val binderErrMsg: String?,
+        val read: String,
+        val mode: Int,
+    )
+
+    /**
+     * Root-Cut-1：binder 物理断电/点亮直试（仅 binder + 严格验效约 2s，无按键兜底，不改状态）。
+     *
+     * 混合路由与日志与 [setDisplayPower] 的 binder 段同逻辑（SDK>=34 特征探测，
+     * DisplayControl 只取 token、设值一律 SurfaceControl；其余走 SurfaceControl；
+     * 每次读回均记日志），仅截取“调 binder→严格验效”两步：
+     * 熄屏验 STATE_OFF 严格判定（物理断电就该是 OFF），点亮验 STATE_ON，窗口约 2s。
+     * 成功（binder 无异常且 true 且验效通过）调用方直接返回 ok（无锁屏、无 AOD 真黑）；
+     * 失败调用方进 meow 锁屏链兜底（本方法不翻转 [isBlackedOut]、不写 [lastError]、
+     * 不调 [recordPrivResult]，最终成败由调用方一次记入，契约不变）。
+     *
+     * 必须在提权进程内执行（Root app_process / Shizuku UserService），普通 App 进程调必败。
+     *
+     * @param on true = 点亮（POWER_MODE_NORMAL），false = 物理熄屏（POWER_MODE_OFF）。
+     * @return binder 直试结果（含路由/读回，供调用方组装“binder-root 段”文案）。
+     */
+    @Synchronized
+    @WorkerThread
+    fun tryBinderDisplayPower(on: Boolean): BinderFirstResult {
+        val mode = if (on) POWER_MODE_NORMAL else POWER_MODE_OFF
+        val expectOff = !on
+        val expectName = if (expectOff) "STATE_OFF" else "STATE_ON"
+        Log.d(TAG, "[PowerController][BinderFirst] ${tid()} enter on=$on mode=$mode")
+        return try {
+            val sdk = Build.VERSION.SDK_INT
+            val hasIds = try {
+                SurfaceControl.hasGetPhysicalDisplayIds()
+            } catch (_: Throwable) {
+                false
+            }
+            val useDisplayControl = sdk >= 34 && !hasIds
+            val route = if (useDisplayControl) "DisplayControl" else "SurfaceControl"
+            Log.d(TAG, "[PowerController][BinderFirst] ${tid()} hybrid sdk=$sdk hasIds=$hasIds " +
+                "route=$route mode=$mode")
+            var binderOk = false
+            var binderErrMsg: String? = null
+            try {
+                binderOk = if (useDisplayControl) {
+                    val token = try {
+                        DisplayControl.getDefaultDisplayToken()
+                    } catch (t: Throwable) {
+                        throw IllegalStateException(
+                            "取 token 失败（route=DisplayControl mode=$mode）: ${t.message ?: t}", t)
+                    }
+                    try {
+                        SurfaceControl.setDisplayPowerMode(token, mode)
+                    } catch (t: Throwable) {
+                        throw IllegalStateException(
+                            "设值失败（route=DisplayControl取token+SurfaceControl设值 mode=$mode）: ${t.message ?: t}", t)
+                    }
+                } else {
+                    SurfaceControl.setDefaultDisplayPowerMode(mode)
+                }
+                Log.d(TAG, "[PowerController][BinderFirst] ${tid()} binder done on=$on mode=$mode " +
+                    "route=$route binderOk=$binderOk")
+            } catch (t: Throwable) {
+                binderErrMsg = t.message ?: t.toString()
+                binderOk = false
+                Log.e(TAG, "[PowerController][BinderFirst] ${tid()} binder threw on=$on mode=$mode route=$route", t)
+            }
+            val verifiedPoll = pollDisplayState(expectOff)
+            val read = readDisplayForLog()
+            Log.d(TAG, "[PowerController][BinderFirst] ${tid()} verify on=$on expect=$expectName " +
+                "binderOk=$binderOk binderErr=$binderErrMsg verified=$verifiedPoll read=$read")
+            val verified = binderErrMsg == null && binderOk && verifiedPoll
+            Log.d(TAG, "[PowerController][BinderFirst] ${tid()} exit on=$on verified=$verified read=$read")
+            BinderFirstResult(
+                verified = verified,
+                route = route,
+                binderOk = binderOk,
+                binderErrMsg = binderErrMsg,
+                read = read,
+                mode = mode,
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "[PowerController][BinderFirst] ${tid()} on=$on threw", t)
+            BinderFirstResult(
+                verified = false,
+                route = "unknown",
+                binderOk = false,
+                binderErrMsg = t.message ?: t.toString(),
+                read = readDisplayForLog(),
+                mode = mode,
+            )
+        }
+    }
+
+    /**
+     * Root-Cut-1：组装“binder-root 段”失败文案（供特权侧入口把 binder 段与 meow 段区分记入）。
+     *
+     * @param on true = 点亮，false = 熄屏（决定期望态措辞 STATE_ON / STATE_OFF）。
+     * @param r [tryBinderDisplayPower] 返回结果。
+     * @return 如“binder-root段：binder已调无异常但验效失败（route=… mode=0，轮询约2s仍未STATE_OFF，state=…）”。
+     */
+    fun binderFirstSegmentDesc(on: Boolean, r: BinderFirstResult): String {
+        val expectName = if (!on) "STATE_OFF" else "STATE_ON"
+        return when {
+            r.binderErrMsg != null ->
+                "binder-root段：设值异常（route=${r.route} mode=${r.mode}）：${r.binderErrMsg}；" +
+                    "验效约2s仍未$expectName（当前${r.read}）"
+            !r.binderOk ->
+                "binder-root段：设值失败：底层返回false（mode=${r.mode} route=${r.route}）；" +
+                    "验效约2s仍未$expectName（当前${r.read}）"
+            else ->
+                "binder-root段：binder已调无异常但验效失败（route=${r.route} mode=${r.mode}，" +
+                    "轮询约2s仍未$expectName，${r.read}）"
+        }
+    }
+
+    /**
      * 记录一次特权操作结果（直调与路由入口均调；成功记时间，失败记文案）。
      *
      * @param op blackout / restore。

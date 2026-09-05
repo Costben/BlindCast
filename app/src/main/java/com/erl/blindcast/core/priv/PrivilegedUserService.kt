@@ -70,16 +70,19 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
     /**
      * 设置主显示屏电源（跑在特权进程内，直调底层）。
      *
-     * Meow-Port-1 接线：改调移植后的 lockAndSleep/ensureScreenOff（熄屏）与
-     * ensureScreenOn（点亮），逻辑原样来自 MAA-Meow WakeUnlockController
-     *（BINDER→KEY_SLEEP→KEY_POWER + 验效，经 PowerManager binder + TouchInjector 按键；
-     * 熄屏先 lockNow 上锁再 goToSleep，未 OK 则 fallback ensureScreenOff 保证物理熄屏）。
+     * Root-Cut-1 顺序：先 [PowerController.tryBinderDisplayPower] binder 物理断电/点亮直试
+     * （混合路由+日志不动，仅 binder→STATE 严格验效约 2s：熄屏 STATE_OFF，点亮 STATE_ON），
+     * 成了直接返回 ok（无锁屏、无 AOD 真黑）；binder 验效失败才进 meow 锁屏链兜底
+     * （熄屏 lockAndSleep→ensureScreenOff，点亮 ensureScreenOn，既有不动），逻辑原样来自
+     * MAA-Meow WakeUnlockController（BINDER→KEY_SLEEP→KEY_POWER + 验效，
+     * 经 PowerManager binder + TouchInjector 按键；熄屏先 lockNow 上锁再 goToSleep，
+     * 未 OK 则 fallback ensureScreenOff 保证物理熄屏）。
      * 返回值即验效后最终结果；失败明细经 [PowerController.recordPrivResult] 记入
-     * lastPrivError，App 侧经 [getLastError] 同绑定内取回（用完即焚，跨绑定取不到），
-     * isBlackedOut/lastError/日志/Home状态行/Toast/路由契约全部不变（App 侧 routed 入口
-     * 据返回值 + 明细自行翻转）。
+     * lastPrivError（区分 binder-root 段/meow 段），App 侧经 [getLastError] 同绑定内取回
+     * （用完即焚，跨绑定取不到），isBlackedOut/lastError/日志/Home状态行/Toast/路由契约全部不变
+     * （App 侧 routed 入口据返回值 + 明细自行翻转）。
      *
-     * @param on true = 点亮（ensureScreenOn），false = 物理熄屏（lockAndSleep→ensureScreenOff）。
+     * @param on true = 点亮（binder NORMAL+验效→meow ensureScreenOn），false = 物理熄屏（binder OFF+验效→meow lockAndSleep→ensureScreenOff）。
      * @return 验效通过 true；失败返回 false（特权进程内失败多为 ROM 静默忽略，
      *   明细见 [getLastError]，调用方以返回值 + [getLastError] 为准）。
      */
@@ -87,7 +90,7 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
         val tid = "t=${Thread.currentThread().id}(${Thread.currentThread().name})"
         val pid = try { Process.myPid() } catch (_: Throwable) { -1 }
         val uid = try { Process.myUid() } catch (_: Throwable) { -1 }
-        Log.d(TAG, "[PrivilegedUserService] $tid setDisplayPower enter on=$on pid=$pid uid=$uid (meow)")
+        Log.d(TAG, "[PrivilegedUserService] $tid setDisplayPower enter on=$on pid=$pid uid=$uid (binder-first+meow)")
         return try {
             val ok = meowSetDisplayPower(on)
             Log.d(TAG, "[PrivilegedUserService] $tid setDisplayPower exit on=$on ok=$ok " +
@@ -100,25 +103,44 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
     }
 
     /**
-     * Meow-Port-1 特权熄屏/点亮（Shizuku UserService 进程内直调，同步阻塞）。
-     * 熄屏：先 lockAndSleep，未 OK（含 NO_KEYGUARD 无锁屏早返）则 fallback ensureScreenOff；
-     * 点亮：wakeScreen（即 ensureScreenOn）。成功/失败均记 recordPrivResult（供 getLastError 回读）。
+     * Root-Cut-1 特权熄屏/点亮（Shizuku UserService 进程内直调，同步阻塞）。
+     * 先 binder 物理直试（[PowerController.tryBinderDisplayPower]，严格验效约 2s），
+     * 成了直接返回 ok（无锁屏真黑）；失败才进 meow 锁屏链兜底（既有不动）：
+     * 熄屏先 lockAndSleep，未 OK（含 NO_KEYGUARD 无锁屏早返）则 fallback ensureScreenOff；
+     * 点亮：wakeScreen（即 ensureScreenOn）。成功/失败均记 recordPrivResult
+     * （失败文案区分 binder-root 段/meow 段，供 getLastError 回读）。
      */
     private fun meowSetDisplayPower(on: Boolean): Boolean {
         val op = if (on) "restore" else "blackout"
+        // 先 binder 物理直试（root 真身下 OPlus 很可能放行，成了就不用锁屏链）。
+        val binderDesc: String? = try {
+            val r = PowerController.tryBinderDisplayPower(on)
+            if (r.verified) {
+                Log.d(TAG, "[PrivilegedUserService] binder-first hit on=$on route=${r.route} read=${r.read}")
+                PowerController.recordPrivResult(op, true, null)
+                return true
+            }
+            val d = PowerController.binderFirstSegmentDesc(on, r)
+            Log.d(TAG, "[PrivilegedUserService] binder-first miss on=$on $d, fallback meow")
+            d
+        } catch (t: Throwable) {
+            val d = "binder-root段异常：${t.message ?: t}"
+            Log.e(TAG, "[PrivilegedUserService] binder-first threw on=$on $d", t)
+            d
+        }
         return try {
             if (on) {
                 val ok = try {
                     MeowWakeUnlockController.wakeScreen()
                 } catch (t: Throwable) {
                     Log.e(TAG, "[PrivilegedUserService] meow ensureScreenOn threw", t)
-                    PowerController.recordPrivResult(op, false, "点亮异常：${t.message ?: t}")
+                    PowerController.recordPrivResult(op, false, "点亮失败：${binderDesc}→meow段点亮异常：${t.message ?: t}")
                     return false
                 }
                 if (ok) {
                     PowerController.recordPrivResult(op, true, null)
                 } else {
-                    val msg = "点亮失败：ensureScreenOn验效未通过（BINDER→WAKEUP→POWER三段均miss，见特权进程logcat [MeowWakeUnlock]明细）"
+                    val msg = "点亮失败：${binderDesc}→meow段ensureScreenOn验效未通过（BINDER→WAKEUP→POWER三段均miss，见特权进程logcat [MeowWakeUnlock]明细）"
                     PowerController.recordPrivResult(op, false, msg)
                 }
                 ok
@@ -143,7 +165,7 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
                 if (offOk) {
                     PowerController.recordPrivResult(op, true, null)
                 } else {
-                    val msg = "熄屏失败：lockAndSleep=$lockCode→ensureScreenOff验效未通过（BINDER→SLEEP→POWER三段均miss，见特权进程logcat明细）"
+                    val msg = "熄屏失败：${binderDesc}→meow段lockAndSleep=$lockCode→ensureScreenOff验效未通过（BINDER→SLEEP→POWER三段均miss，见特权进程logcat明细）"
                     PowerController.recordPrivResult(op, false, msg)
                 }
                 offOk
