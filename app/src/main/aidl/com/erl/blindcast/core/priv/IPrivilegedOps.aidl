@@ -13,18 +13,24 @@ interface IPrivilegedOps {
 
     // 设置主显示屏电源：true = 点亮（POWER_MODE_NORMAL），false = 物理熄屏（POWER_MODE_OFF）。
     // Priv-Bridge-7 起服务端内含验效轮询 + 按键兜底（binder 无异常但验效失败 → KEY_SLEEP/WAKEUP/POWER），
+    // Priv-Bridge-9 起熄屏为 binder→SLEEP→POWER 三段（SLEEP 仍 miss 则试 POWER，同通道复验约 6s），
     // 返回值已是验效后最终结果（true = Display 状态已达目标）。
     boolean setDisplayPower(boolean on) = 1;
 
     // Priv-Bridge-7：按键兜底直调（特权进程内经 TouchInjector/InputManagerWrapper 注入 + 验效）。
-    // 熄屏注入 KEYCODE_SLEEP（Down+Up，SOURCE_KEYBOARD）后验 STATE_OFF；点亮依次试
-    // KEYCODE_WAKEUP、无则 KEYCODE_POWER 后验 STATE_ON。编号顺延，旧方法不动。
+    // 熄屏注入 KEYCODE_SLEEP（Down+Up，SOURCE_KEYBOARD）后验 STATE_OFF/DOZE/DOZE_SUSPEND；
+    // 点亮依次试 KEYCODE_WAKEUP、无则 KEYCODE_POWER 后验 STATE_ON。编号顺延，旧方法不动。
+    // Priv-Bridge-9：新增 powerByKey（POWER 单键，熄屏最终兜底，对齐 MAA-Meow 三段链终段思想；
+    // OPlus Android 15 真机 SLEEP 被 ROM 忽略，POWER 走物理按键通路，同通道 Down+Up 注入后验
+    // OFF/DOZE/DOZE_SUSPEND 约 6s）。sleepByKey 保持 SLEEP 单键语义不动。
     boolean sleepByKey() = 2;
     boolean wakeByKey() = 3;
+    boolean powerByKey() = 5;
 
     // Priv-Bridge-7：取特权进程侧最近一次失败明细（PowerController.lastError.message，
     // 成功时 null；App 侧 routed 失败时同 binder 内取回，用于 Home 状态行/Toast，契约不变）。
-    // 与 setDisplayPower 同一次绑定内调用才有意义（UserService 用完即焚，跨绑定静态量清零）。
+    // 与 setDisplayPower/sleepByKey/powerByKey/wakeByKey 同一次绑定内调用才有意义
+    // （UserService 用完即焚，跨绑定静态量清零）。
     String getLastError() = 4;
 
     // TODO(priv-bridge-next): 抓屏复用预留 —— 如 ParcelFileDescriptor captureFrame(...) = 5;

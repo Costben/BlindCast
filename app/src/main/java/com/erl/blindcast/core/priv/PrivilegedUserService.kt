@@ -8,7 +8,7 @@ import com.erl.blindcast.core.blackout.PowerController
 
 /**
  * Shizuku UserService 通道服务端（Priv-Bridge-1 通道，Priv-Bridge-2 改道 SurfaceControl，
- * Priv-Bridge-7 加验效轮询 + 按键兜底）。
+ * Priv-Bridge-7 加验效轮询 + 按键兜底；Priv-Bridge-9 熄屏加 KEY_POWER 最终兜底）。
  *
  * 运行身份：本类实例由 Shizuku server（或 Sui）在独立 `app_process` 中实例化，
  * 以 root（UID 0）或 shell（UID 2000，adb 启动的 Shizuku）身份运行，因此可直接调用
@@ -17,7 +17,9 @@ import com.erl.blindcast.core.blackout.PowerController
  * getPhysicalDisplayToken/setDisplayPowerMode，全部 android.view.SurfaceControl 反射，
  * JNI 在 libandroid_runtime，shell 身份可调；DisplayControl 为 14+ fallback。
  * Priv-Bridge-7 起直调版内含 DisplayManager 验效轮询（STATE_OFF/ON，约 2s）+
- * 按键兜底（熄屏 KEYCODE_SLEEP，点亮 KEYCODE_WAKEUP→KEYCODE_POWER，经 TouchInjector）。
+ * 按键兜底（熄屏 KEYCODE_SLEEP，点亮 KEYCODE_WAKEUP→KEYCODE_POWER，经 TouchInjector）；
+ * Priv-Bridge-9 起熄屏为 binder→SLEEP→POWER 三段（SLEEP 被 OPlus ROM 忽略时终段 POWER
+ * 经同通道 TouchInjector 注入，物理按键通路 ROM 拦不住，复验 OFF/DOZE/DOZE_SUSPEND 约 6s）。
  * 普通 App 进程调同样代码必吃 SecurityException，见实证诊断。
  *
  * 范式说明（遵循 Shizuku-API demo）：
@@ -66,7 +68,9 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
      * 设置主显示屏电源（跑在特权进程内，直调底层）。
      *
      * Priv-Bridge-7：[PowerController.setDisplayPower] 内已含 binder→验效轮询
-     * （DisplayManager STATE_OFF/ON，约 2s）→按键兜底（SLEEP/WAKEUP/POWER）全链路，
+     * （DisplayManager STATE_OFF/ON，约 2s）→按键兜底（SLEEP/WAKEUP/POWER）全链路；
+     * Priv-Bridge-9 起熄屏为 binder→SLEEP→POWER 三段（SLEEP 仍 miss 则终段 POWER，
+     * 同通道 TouchInjector 注入 + OFF/DOZE/DOZE_SUSPEND 复验约 6s），
      * 返回值即验效后最终结果；失败明细见 [PowerController.lastError]，App 侧经
      * [getLastError] 同绑定内取回（用完即焚，跨绑定取不到）。
      *
@@ -91,9 +95,11 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
     }
 
     /**
-     * 按键兜底直调：熄屏（跑在特权进程内）。
+     * 按键兜底直调：熄屏·SLEEP 单键（跑在特权进程内）。
      * 经 [PowerController.sleepByKey] 注入 KEYCODE_SLEEP（Down+Up，SOURCE_KEYBOARD）
-     * 后验 STATE_OFF。供 App 侧单发按键路径或排障用；常规熄屏请走 [setDisplayPower] 全链路。
+     * 后验 STATE_OFF/DOZE/DOZE_SUSPEND（约 6s）。供 App 侧单发按键排障用，保持 SLEEP
+     * 单键语义不动；常规熄屏请走 [setDisplayPower] 全链路（binder→SLEEP→POWER 三段），
+     * POWER 单键请走 [powerByKey]。
      *
      * @return 验效通过 true，否则 false（明细见 [getLastError]）。
      */
@@ -112,8 +118,32 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
     }
 
     /**
+     * 按键兜底直调：熄屏·POWER 单键（跑在特权进程内）。
+     * Priv-Bridge-9 最终兜底单键版：经 [PowerController.powerByKey] 注入 KEYCODE_POWER
+     * （Down+Up，SOURCE_KEYBOARD，与 SLEEP 同通道 TouchInjector，物理按键通路 ROM 拦不住）
+     * 后验 STATE_OFF/DOZE/DOZE_SUSPEND（约 6s）。供 App 侧单发排障用
+     * （SLEEP 被 OPlus ROM 忽略时验证 POWER 通道）；常规熄屏请走 [setDisplayPower] 全链路。
+     *
+     * @return 验效通过 true，否则 false（明细见 [getLastError]）。
+     */
+    override fun powerByKey(): Boolean {
+        val tid = "t=${Thread.currentThread().id}(${Thread.currentThread().name})"
+        Log.d(TAG, "[PrivilegedUserService] $tid powerByKey enter")
+        return try {
+            val ok = PowerController.powerByKey()
+            Log.d(TAG, "[PrivilegedUserService] $tid powerByKey exit ok=$ok " +
+                "err=${PowerController.lastError?.toString()}")
+            ok
+        } catch (t: Throwable) {
+            Log.e(TAG, "[PrivilegedUserService] $tid powerByKey failed", t)
+            throw t
+        }
+    }
+
+    /**
      * 按键兜底直调：点亮（跑在特权进程内）。
      * 经 [PowerController.wakeByKey] 依次试 KEYCODE_WAKEUP、无则 KEYCODE_POWER 后验 STATE_ON。
+     * Priv-Bridge-9 点亮侧不动。
      *
      * @return 验效通过 true，否则 false（明细见 [getLastError]）。
      */
@@ -133,9 +163,10 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
 
     /**
      * 取特权进程侧最近一次失败明细（[PowerController.lastError.message]，成功时 null）。
-     * 必须与 [setDisplayPower]/[sleepByKey]/[wakeByKey] 同一次绑定内调用（用完即焚）。
+     * 必须与 [setDisplayPower]/[sleepByKey]/[powerByKey]/[wakeByKey] 同一次绑定内调用（用完即焚）。
      *
-     * @return 失败文案（含走到哪一步：binder→验效→已试按键），成功/无记录时 null。
+     * @return 失败文案（含走到哪一步：熄屏 binder→SLEEP→POWER 三段各记，点亮 binder→WAKEUP→POWER），
+     * 成功/无记录时 null。
      */
     override fun getLastError(): String? {
         return try {
