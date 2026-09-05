@@ -1,6 +1,9 @@
 package com.erl.blindcast.core.scrcpy
 
+import android.content.Context
 import android.graphics.Rect
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaCodec
@@ -10,6 +13,7 @@ import android.media.MediaFormat
 import android.media.MediaRecorder
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import android.os.Handler
 import android.os.IBinder
 import android.util.Log
 import android.view.Surface
@@ -19,18 +23,34 @@ import java.util.concurrent.atomic.AtomicBoolean
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 /**
- * 特权采集引擎（Stream-Priv-1 · scrcpy 同构：特权采集 + socket 回传）。
+ * 特权采集引擎（Stream-Priv-1 · scrcpy 同构：特权采集 + socket 回传；
+ * Stream-Priv-3 起建 Display 改道 DisplayManager 隐藏 overload 为主）。
  *
  * 运行身份：必须跑在特权进程内（Shizuku UserService / Root `app_process` 常驻），
- * 以系统身份调用 `SurfaceControl` 隐藏 API 直建 Display + `REMOTE_SUBMIX` 内录。
+ * 以系统身份建 VirtualDisplay 直连屏幕镜像 + `REMOTE_SUBMIX` 内录。
  * 普通 App 进程调同样代码必吃 SecurityException（见实证诊断），本对象捕获后记
  * [lastError] 并返回 false，永不崩溃。
  *
- * ## scrcpy 路线（不用 DisplayManager.createVirtualDisplay）
- * - `SurfaceControl.createDisplay(name, secure=false)` 建虚拟屏；
- * - `setDisplaySurface(displayToken, encoderSurface)` 挂编码 Surface；
- * - `setDisplayLayerStack(displayToken, 0)` 镜像主屏图层栈；
- * - `setDisplayProjection(displayToken, 0, layerRect, displayRect)` 全屏投影；
+ * ## Display 路线（Stream-Priv-3 · root 免权限镜像）
+ * 主路 `DisplayManager.createVirtualDisplay` 无 projection 隐藏重载（要
+ * `CAPTURE_VIDEO_OUTPUT` 签名级权限，root uid=0 直接放行）：
+ * - flags `VIRTUAL_DISPLAY_FLAG_PUBLIC + AUTO_MIRROR`，encode Surface 直连；
+ * - 无 Context 裸进程经 `ActivityThread.currentApplication/getSystemContext`
+ *   反射取 Context → `getSystemService(DisplayManager)`，逐个记日志；
+ * - 参数签名逐个反射尝试（本 ROM 常见重载全列）：
+ *   `(name,w,h,dpi,surface,flags)` /
+ *   `(name,w,h,dpi,surface,flags,callback,handler)` /
+ *   `(name,w,h,dpi,surface,flags,callback,handler,uniqueId:String)` /
+ *   `(name,w,h,dpi,surface,flags,callback,handler,displayId:int)`，
+ *   命中即用（callback/handler 传 null，uniqueId 传 null，displayId 传 0）；
+ * - 全部 miss/抛错则降级备用路（日志写清）。
+ * 备用 `SurfaceControl.createDisplay` scrcpy 路线（保留既有）：
+ * - 同样逐个试已知重载 `(String,boolean)` 主 + `(String,boolean,String)` /
+ *   `(String,int)` 备选，逐个记日志；
+ * - 建屏后 `setDisplaySurface/setDisplayLayerStack/setDisplayProjection` 挂编码面。
+ * OPlus Android 15 真机实证：`SurfaceControl.createDisplay(String,boolean)`
+ * 根本不存在（NoSuchMethodException），故主路必须走 DisplayManager。
+ *
  * - `MediaCodec` H264 Baseline realtime + VBR + 1s I 帧，drain 线出 Annex-B NALU；
  * - 音频 `REMOTE_SUBMIX` PCM 直抓 → AAC-LC（48k 立体声 128k 默认），同 socket 复用。
  *
@@ -44,6 +64,7 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass
  * ## 无 Android 组件依赖
  * 纯静态函数，无 Context/Service/Activity 依赖（仅用 MediaCodec/AudioRecord/
  * LocalSocket/反射），可在 `app_process` 裸进程内运行（含 [RootCaptureMain] 常驻）。
+ * DisplayManager 实例同样经反射自取（无需调用方传 Context）。
  *
  * ## 线程模型
  * - [start] 幂等可重配：运行中再次调用先静默 [stop] 再按新参数启动；
@@ -138,6 +159,9 @@ object PrivilegedCapture {
     private var videoCodec: MediaCodec? = null
     private var videoSurface: Surface? = null
     private var displayToken: IBinder? = null
+    private var virtualDisplay: VirtualDisplay? = null
+    /** 本次建屏路由：DisplayManager / SurfaceControl（日志 + 释放分支用）。 */
+    @Volatile private var displayRoute: String? = null
     private var videoDrain: Thread? = null
 
     private var audioCodec: MediaCodec? = null
@@ -327,7 +351,7 @@ object PrivilegedCapture {
     }
 
     // ------------------------------------------------------------------
-    // 视频：SurfaceControl 直建 Display + AVC 编码
+    // 视频：DisplayManager 主路 + SurfaceControl 备用 + AVC 编码
     // ------------------------------------------------------------------
 
     private fun startVideoEncoderLocked(width: Int, height: Int, bitrate: Int, fps: Int) {
@@ -340,16 +364,39 @@ object PrivilegedCapture {
         }
         val surface = encoder.createInputSurface()
         videoSurface = surface
+        // 主路优先：DisplayManager 隐藏无 projection 重载（root 免 CAPTURE_VIDEO_OUTPUT）。
+        // 备用：SurfaceControl.createDisplay scrcpy 路线（OPlus 上主签名已无，需逐个试）。
+        var vd: VirtualDisplay? = null
         var token: IBinder? = null
+        var route: String? = null
+        var dmErr: Throwable? = null
         try {
-            token = createPrivilegedDisplay(surface, width, height)
+            vd = createVirtualDisplayViaDisplayManager(surface, width, height)
+            route = "DisplayManager"
         } catch (t: Throwable) {
-            runCatching { surface.release() }
-            videoSurface = null
-            runCatching { encoder.release() }
-            throw t
+            dmErr = t
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager route miss, fallback SurfaceControl", t)
         }
-        displayToken = token
+        if (vd != null) {
+            virtualDisplay = vd
+            displayRoute = route
+            Log.i(TAG, "[PrivilegedCapture] display route=DisplayManager ok ${width}x${height} vd=${vd.display?.displayId}")
+        } else {
+            try {
+                token = createPrivilegedDisplay(surface, width, height)
+                route = "SurfaceControl"
+            } catch (t: Throwable) {
+                runCatching { surface.release() }
+                videoSurface = null
+                runCatching { encoder.release() }
+                // 主备双路全灭：把两路异常串起来，方便 getCaptureError 一眼定位。
+                val dmMsg = dmErr?.let { "DM:${it.javaClass.simpleName}:${it.message}" } ?: "DM:unknown"
+                throw IllegalStateException("Display both routes failed [$dmMsg] [SC:${t.javaClass.simpleName}:${t.message}]", t)
+            }
+            displayToken = token
+            displayRoute = route
+            Log.i(TAG, "[PrivilegedCapture] display route=SurfaceControl ok ${width}x${height}")
+        }
         videoCodec = encoder
         try {
             encoder.start()
@@ -369,9 +416,16 @@ object PrivilegedCapture {
 
     private fun releaseVideoLocked() {
         videoRunning = false
+        val vd = virtualDisplay
+        virtualDisplay = null
+        if (vd != null) {
+            runCatching { vd.release() }
+            Log.d(TAG, "[PrivilegedCapture] virtualDisplay.release ok route=$displayRoute")
+        }
         val token = displayToken
         displayToken = null
         if (token != null) runCatching { destroyPrivilegedDisplay(token) }
+        displayRoute = null
         runCatching { videoSurface?.release() }
         videoSurface = null
         runCatching {
@@ -620,11 +674,19 @@ object PrivilegedCapture {
     }
 
     // ------------------------------------------------------------------
-    // SurfaceControl scrcpy 路线（反射，隐藏 API 豁免）
+    // Display 路线：DisplayManager 主路（反射隐藏 overload）+ SurfaceControl 备用
     // ------------------------------------------------------------------
 
     private fun ensureExempted() {
         runCatching { HiddenApiBypass.addHiddenApiExemptions("Landroid/view/SurfaceControl") }
+        runCatching {
+            HiddenApiBypass.addHiddenApiExemptions(
+                "Landroid/hardware/display/DisplayManager",
+                "Landroid/hardware/display/DisplayManagerGlobal",
+                "Landroid/hardware/display/VirtualDisplay",
+                "Landroid/view/Display",
+            )
+        }
     }
 
     private fun surfaceControlClass(): Class<*> {
@@ -632,22 +694,381 @@ object PrivilegedCapture {
         return Class.forName("android.view.SurfaceControl")
     }
 
+    /** 裸特权进程取 Context（DisplayManager 来源）：逐个反射尝试并记日志。 */
+    private fun tryObtainContext(): Context? {
+        // 1) ActivityThread.currentApplication()
+        try {
+            val at = Class.forName("android.app.ActivityThread")
+            val m = at.getDeclaredMethod("currentApplication")
+            m.isAccessible = true
+            val app = m.invoke(null) as? Context
+            if (app != null) {
+                Log.d(TAG, "[PrivilegedCapture] ctx via currentApplication ok ${app.javaClass.name}")
+                return app
+            }
+            Log.d(TAG, "[PrivilegedCapture] ctx via currentApplication=null")
+        } catch (t: Throwable) {
+            Log.d(TAG, "[PrivilegedCapture] ctx via currentApplication failed ${t.javaClass.simpleName}:${t.message}")
+        }
+        // 2) currentActivityThread().getApplication() / getSystemContext()
+        try {
+            val at = Class.forName("android.app.ActivityThread")
+            val curThreadM = at.getDeclaredMethod("currentActivityThread")
+            curThreadM.isAccessible = true
+            val curThread = curThreadM.invoke(null)
+            if (curThread != null) {
+                try {
+                    val getApp = curThread.javaClass.getDeclaredMethod("getApplication")
+                    getApp.isAccessible = true
+                    val app = getApp.invoke(curThread) as? Context
+                    if (app != null) {
+                        Log.d(TAG, "[PrivilegedCapture] ctx via getApplication ok ${app.javaClass.name}")
+                        return app
+                    }
+                    Log.d(TAG, "[PrivilegedCapture] ctx via getApplication=null")
+                } catch (t: Throwable) {
+                    Log.d(TAG, "[PrivilegedCapture] ctx via getApplication failed ${t.javaClass.simpleName}:${t.message}")
+                }
+                try {
+                    val getSys = curThread.javaClass.getDeclaredMethod("getSystemContext")
+                    getSys.isAccessible = true
+                    val sys = getSys.invoke(curThread) as? Context
+                    if (sys != null) {
+                        Log.d(TAG, "[PrivilegedCapture] ctx via getSystemContext ok ${sys.javaClass.name}")
+                        return sys
+                    }
+                    Log.d(TAG, "[PrivilegedCapture] ctx via getSystemContext=null")
+                } catch (t: Throwable) {
+                    Log.d(TAG, "[PrivilegedCapture] ctx via getSystemContext failed ${t.javaClass.simpleName}:${t.message}")
+                }
+            } else {
+                Log.d(TAG, "[PrivilegedCapture] ctx currentActivityThread=null")
+            }
+        } catch (t: Throwable) {
+            Log.d(TAG, "[PrivilegedCapture] ctx via currentActivityThread failed ${t.javaClass.simpleName}:${t.message}")
+        }
+        // 3) AppGlobals.getInitialApplication()
+        try {
+            val ag = Class.forName("android.app.AppGlobals")
+            val getInit = ag.getDeclaredMethod("getInitialApplication")
+            getInit.isAccessible = true
+            val app = getInit.invoke(null) as? Context
+            if (app != null) {
+                Log.d(TAG, "[PrivilegedCapture] ctx via AppGlobals ok ${app.javaClass.name}")
+                return app
+            }
+            Log.d(TAG, "[PrivilegedCapture] ctx via AppGlobals=null")
+        } catch (t: Throwable) {
+            Log.d(TAG, "[PrivilegedCapture] ctx via AppGlobals failed ${t.javaClass.simpleName}:${t.message}")
+        }
+        Log.w(TAG, "[PrivilegedCapture] ctx all means miss (bare app_process?)")
+        return null
+    }
+
+    private fun obtainDisplayManager(context: Context?): DisplayManager? {
+        val ctx = context ?: tryObtainContext()
+        if (ctx == null) {
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.obtain ctx=null skip")
+            return null
+        }
+        return try {
+            var dm: DisplayManager? = null
+            try {
+                dm = ctx.getSystemService(DisplayManager::class.java)
+            } catch (t: Throwable) {
+                Log.d(TAG, "[PrivilegedCapture] DisplayManager.obtain via class failed ${t.javaClass.simpleName}:${t.message}")
+            }
+            if (dm == null) {
+                @Suppress("DEPRECATION")
+                dm = runCatching { ctx.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager }.getOrNull()
+            }
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.obtain dmNull=${dm == null} ctx=${ctx.javaClass.name}")
+            dm
+        } catch (t: Throwable) {
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.obtain threw ${t.javaClass.simpleName}:${t.message}")
+            null
+        }
+    }
+
+    private fun getDensityDpi(context: Context?): Int {
+        if (context != null) {
+            try {
+                val dpi = context.resources.displayMetrics.densityDpi
+                if (dpi > 0) {
+                    Log.d(TAG, "[PrivilegedCapture] dpi via Context=$dpi")
+                    return dpi
+                }
+                Log.d(TAG, "[PrivilegedCapture] dpi via Context invalid=$dpi")
+            } catch (t: Throwable) {
+                Log.d(TAG, "[PrivilegedCapture] dpi via Context failed ${t.javaClass.simpleName}:${t.message}")
+            }
+        } else {
+            Log.d(TAG, "[PrivilegedCapture] dpi ctx=null skip Context")
+        }
+        // 回退：DisplayManagerGlobal.getDisplayInfo(0).logicalDensityDpi/densityDpi
+        try {
+            ensureExempted()
+            val dmgClass = Class.forName("android.hardware.display.DisplayManagerGlobal")
+            val getInstance = dmgClass.getDeclaredMethod("getInstance")
+            getInstance.isAccessible = true
+            val dmg = getInstance.invoke(null)
+            if (dmg != null) {
+                try {
+                    val getInfo = dmgClass.getDeclaredMethod("getDisplayInfo", Int::class.javaPrimitiveType)
+                    getInfo.isAccessible = true
+                    val info = getInfo.invoke(dmg, 0)
+                    if (info != null) {
+                        for (fieldName in listOf("logicalDensityDpi", "densityDpi")) {
+                            try {
+                                val f = info.javaClass.getDeclaredField(fieldName)
+                                f.isAccessible = true
+                                val v = f.getInt(info)
+                                if (v > 0) {
+                                    Log.d(TAG, "[PrivilegedCapture] dpi via Global.$fieldName=$v")
+                                    return v
+                                }
+                            } catch (_: Throwable) {
+                                Log.d(TAG, "[PrivilegedCapture] dpi via Global.$fieldName miss")
+                            }
+                        }
+                    } else {
+                        Log.d(TAG, "[PrivilegedCapture] dpi via Global info=null")
+                    }
+                } catch (t: Throwable) {
+                    Log.d(TAG, "[PrivilegedCapture] dpi via Global failed ${t.javaClass.simpleName}:${t.message}")
+                }
+            } else {
+                Log.d(TAG, "[PrivilegedCapture] dpi via Global instance=null")
+            }
+        } catch (t: Throwable) {
+            Log.d(TAG, "[PrivilegedCapture] dpi via Global threw ${t.javaClass.simpleName}:${t.message}")
+        }
+        Log.d(TAG, "[PrivilegedCapture] dpi fallback 320")
+        return 320
+    }
+
+    /**
+     * 主路：DisplayManager 隐藏无 projection 重载建镜像 VirtualDisplay。
+     * 逐个反射尝试本 ROM 常见重载（命中即返，逐个记 BlindCast 日志）。
+     */
+    private fun createVirtualDisplayViaDisplayManager(surface: Surface, width: Int, height: Int): VirtualDisplay {
+        ensureExempted()
+        val ctx = tryObtainContext()
+        val dm = obtainDisplayManager(ctx)
+            ?: throw IllegalStateException("DisplayManager unavailable (no Context in priv process)")
+        val dpi = getDensityDpi(ctx)
+        val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR
+        Log.d(TAG, "[PrivilegedCapture] DisplayManager.createVirtualDisplay enter ${width}x${height} dpi=$dpi flags=$flags")
+        try {
+            val sigs = dm.javaClass.declaredMethods
+                .filter { it.name == "createVirtualDisplay" }
+                .map { m -> m.parameterTypes.joinToString(",", "(", ")") { it.simpleName } }
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager overloads=$sigs")
+        } catch (t: Throwable) {
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager list overloads failed ${t.message}")
+        }
+        var lastErr: Throwable? = null
+        // ① (name,w,h,dpi,surface,flags)
+        try {
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.try (String,int,int,int,Surface,int)")
+            val m = dm.javaClass.getDeclaredMethod(
+                "createVirtualDisplay",
+                String::class.java,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                Surface::class.java, Int::class.javaPrimitiveType,
+            )
+            m.isAccessible = true
+            val vd = m.invoke(dm, DISPLAY_NAME, width, height, dpi, surface, flags) as? VirtualDisplay
+            if (vd != null) {
+                Log.i(TAG, "[PrivilegedCapture] DisplayManager.hit 6-arg (name,w,h,dpi,surface,flags)")
+                return vd
+            }
+            lastErr = IllegalStateException("6-arg returned null")
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.miss 6-arg returned null")
+        } catch (t: NoSuchMethodException) {
+            lastErr = t
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.miss 6-arg noMethod")
+        } catch (t: Throwable) {
+            lastErr = t
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.fail 6-arg ${t.javaClass.simpleName}:${t.message}")
+        }
+        // ② (name,w,h,dpi,surface,flags,callback,handler)
+        try {
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.try (String,int,int,int,Surface,int,Callback,Handler)")
+            val m = dm.javaClass.getDeclaredMethod(
+                "createVirtualDisplay",
+                String::class.java,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                Surface::class.java, Int::class.javaPrimitiveType,
+                VirtualDisplay.Callback::class.java, Handler::class.java,
+            )
+            m.isAccessible = true
+            val vd = m.invoke(dm, DISPLAY_NAME, width, height, dpi, surface, flags, null, null) as? VirtualDisplay
+            if (vd != null) {
+                Log.i(TAG, "[PrivilegedCapture] DisplayManager.hit 8-arg (name,w,h,dpi,surface,flags,callback,handler)")
+                return vd
+            }
+            lastErr = IllegalStateException("8-arg returned null")
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.miss 8-arg returned null")
+        } catch (t: NoSuchMethodException) {
+            lastErr = t
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.miss 8-arg noMethod")
+        } catch (t: Throwable) {
+            lastErr = t
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.fail 8-arg ${t.javaClass.simpleName}:${t.message}")
+        }
+        // ③ (name,w,h,dpi,surface,flags,callback,handler,uniqueId:String)
+        try {
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.try (String,int,int,int,Surface,int,Callback,Handler,String)")
+            val m = dm.javaClass.getDeclaredMethod(
+                "createVirtualDisplay",
+                String::class.java,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                Surface::class.java, Int::class.javaPrimitiveType,
+                VirtualDisplay.Callback::class.java, Handler::class.java, String::class.java,
+            )
+            m.isAccessible = true
+            val vd = m.invoke(dm, DISPLAY_NAME, width, height, dpi, surface, flags, null, null, null) as? VirtualDisplay
+            if (vd != null) {
+                Log.i(TAG, "[PrivilegedCapture] DisplayManager.hit 9-arg uniqueId (...,callback,handler,uniqueId)")
+                return vd
+            }
+            lastErr = IllegalStateException("9-arg uniqueId returned null")
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.miss 9-arg uniqueId returned null")
+        } catch (t: NoSuchMethodException) {
+            lastErr = t
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.miss 9-arg uniqueId noMethod")
+        } catch (t: Throwable) {
+            lastErr = t
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.fail 9-arg uniqueId ${t.javaClass.simpleName}:${t.message}")
+        }
+        // ④ (name,w,h,dpi,surface,flags,callback,handler,displayId:int)
+        try {
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.try (String,int,int,int,Surface,int,Callback,Handler,int)")
+            val m = dm.javaClass.getDeclaredMethod(
+                "createVirtualDisplay",
+                String::class.java,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                Surface::class.java, Int::class.javaPrimitiveType,
+                VirtualDisplay.Callback::class.java, Handler::class.java, Int::class.javaPrimitiveType,
+            )
+            m.isAccessible = true
+            val vd = m.invoke(dm, DISPLAY_NAME, width, height, dpi, surface, flags, null, null, 0) as? VirtualDisplay
+            if (vd != null) {
+                Log.i(TAG, "[PrivilegedCapture] DisplayManager.hit 9-arg displayId (...,callback,handler,displayId=0)")
+                return vd
+            }
+            lastErr = IllegalStateException("9-arg displayId returned null")
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.miss 9-arg displayId returned null")
+        } catch (t: NoSuchMethodException) {
+            lastErr = t
+            Log.d(TAG, "[PrivilegedCapture] DisplayManager.miss 9-arg displayId noMethod")
+        } catch (t: Throwable) {
+            lastErr = t
+            Log.w(TAG, "[PrivilegedCapture] DisplayManager.fail 9-arg displayId ${t.javaClass.simpleName}:${t.message}")
+        }
+        throw IllegalStateException("DisplayManager all overloads miss ${width}x${height}", lastErr)
+    }
+
+    /**
+     * 备用：SurfaceControl scrcpy 路线（保留既有，逐个试已知重载签名并记日志）。
+     * OPlus Android 15 真机实证主签名 `(String,boolean)` 已无（NoSuchMethodException），
+     * 故此处同样逐个 try：`(String,boolean)` 主 + `(String,boolean,String)` /
+     * `(String,int)` / `(String,boolean,long)` 备选。
+     */
     private fun createPrivilegedDisplay(surface: Surface, width: Int, height: Int): IBinder {
         ensureExempted()
         val sc = surfaceControlClass()
-        // createDisplay(String, boolean) -> IBinder（各版本一致为主，失败即抛记 lastError）。
-        val create = sc.getDeclaredMethod("createDisplay", String::class.java, Boolean::class.javaPrimitiveType)
-        create.isAccessible = true
-        val token = create.invoke(null, DISPLAY_NAME, false) as? IBinder
-            ?: throw IllegalStateException("SurfaceControl.createDisplay returned null")
-        Log.d(TAG, "[PrivilegedCapture] createDisplay ok tokenNull=false ${width}x${height}")
+        try {
+            val sigs = sc.declaredMethods
+                .filter { it.name == "createDisplay" }
+                .map { m -> m.parameterTypes.joinToString(",", "(", ")") { it.simpleName } }
+            Log.d(TAG, "[PrivilegedCapture] SurfaceControl.createDisplay overloads=$sigs")
+        } catch (t: Throwable) {
+            Log.d(TAG, "[PrivilegedCapture] SurfaceControl list overloads failed ${t.message}")
+        }
+        var token: IBinder? = null
+        var hitSig: String? = null
+        var lastErr: Throwable? = null
+        // ① 主：(String, boolean)
+        try {
+            Log.d(TAG, "[PrivilegedCapture] SurfaceControl.try createDisplay(String,boolean)")
+            val create = sc.getDeclaredMethod("createDisplay", String::class.java, Boolean::class.javaPrimitiveType)
+            create.isAccessible = true
+            token = create.invoke(null, DISPLAY_NAME, false) as? IBinder
+            if (token != null) hitSig = "(String,boolean)"
+            else Log.w(TAG, "[PrivilegedCapture] SurfaceControl.miss (String,boolean) returned null")
+        } catch (t: NoSuchMethodException) {
+            lastErr = t
+            Log.d(TAG, "[PrivilegedCapture] SurfaceControl.miss (String,boolean) noMethod")
+        } catch (t: Throwable) {
+            lastErr = t
+            Log.w(TAG, "[PrivilegedCapture] SurfaceControl.fail (String,boolean) ${t.javaClass.simpleName}:${t.message}")
+        }
+        // ② 备选：(String, boolean, String uniqueId)
+        if (token == null) {
+            try {
+                Log.d(TAG, "[PrivilegedCapture] SurfaceControl.try createDisplay(String,boolean,String)")
+                val create = sc.getDeclaredMethod(
+                    "createDisplay", String::class.java, Boolean::class.javaPrimitiveType, String::class.java,
+                )
+                create.isAccessible = true
+                token = create.invoke(null, DISPLAY_NAME, false, DISPLAY_NAME) as? IBinder
+                if (token != null) hitSig = "(String,boolean,String)"
+                else Log.w(TAG, "[PrivilegedCapture] SurfaceControl.miss (String,boolean,String) returned null")
+            } catch (t: NoSuchMethodException) {
+                lastErr = t
+                Log.d(TAG, "[PrivilegedCapture] SurfaceControl.miss (String,boolean,String) noMethod")
+            } catch (t: Throwable) {
+                lastErr = t
+                Log.w(TAG, "[PrivilegedCapture] SurfaceControl.fail (String,boolean,String) ${t.javaClass.simpleName}:${t.message}")
+            }
+        }
+        // ③ 备选：(String, int secureInt)
+        if (token == null) {
+            try {
+                Log.d(TAG, "[PrivilegedCapture] SurfaceControl.try createDisplay(String,int)")
+                val create = sc.getDeclaredMethod("createDisplay", String::class.java, Int::class.javaPrimitiveType)
+                create.isAccessible = true
+                token = create.invoke(null, DISPLAY_NAME, 0) as? IBinder
+                if (token != null) hitSig = "(String,int)"
+                else Log.w(TAG, "[PrivilegedCapture] SurfaceControl.miss (String,int) returned null")
+            } catch (t: NoSuchMethodException) {
+                lastErr = t
+                Log.d(TAG, "[PrivilegedCapture] SurfaceControl.miss (String,int) noMethod")
+            } catch (t: Throwable) {
+                lastErr = t
+                Log.w(TAG, "[PrivilegedCapture] SurfaceControl.fail (String,int) ${t.javaClass.simpleName}:${t.message}")
+            }
+        }
+        // ④ 备选：(String, boolean, long displayId)
+        if (token == null) {
+            try {
+                Log.d(TAG, "[PrivilegedCapture] SurfaceControl.try createDisplay(String,boolean,long)")
+                val create = sc.getDeclaredMethod(
+                    "createDisplay", String::class.java, Boolean::class.javaPrimitiveType, Long::class.javaPrimitiveType,
+                )
+                create.isAccessible = true
+                token = create.invoke(null, DISPLAY_NAME, false, 0L) as? IBinder
+                if (token != null) hitSig = "(String,boolean,long)"
+                else Log.w(TAG, "[PrivilegedCapture] SurfaceControl.miss (String,boolean,long) returned null")
+            } catch (t: NoSuchMethodException) {
+                lastErr = t
+                Log.d(TAG, "[PrivilegedCapture] SurfaceControl.miss (String,boolean,long) noMethod")
+            } catch (t: Throwable) {
+                lastErr = t
+                Log.w(TAG, "[PrivilegedCapture] SurfaceControl.fail (String,boolean,long) ${t.javaClass.simpleName}:${t.message}")
+            }
+        }
+        val finalToken = token ?: throw IllegalStateException("SurfaceControl all createDisplay overloads miss", lastErr)
+        Log.d(TAG, "[PrivilegedCapture] SurfaceControl.hit $hitSig tokenNull=false ${width}x${height}")
         try {
             val setSurface = sc.getDeclaredMethod("setDisplaySurface", IBinder::class.java, Surface::class.java)
             setSurface.isAccessible = true
-            setSurface.invoke(null, token, surface)
+            setSurface.invoke(null, finalToken, surface)
             val setStack = sc.getDeclaredMethod("setDisplayLayerStack", IBinder::class.java, Int::class.javaPrimitiveType)
             setStack.isAccessible = true
-            setStack.invoke(null, token, 0)
+            setStack.invoke(null, finalToken, 0)
             // setDisplayProjection(IBinder, int, Rect, Rect)：orientation=0 全屏投影。
             val layerRect = Rect(0, 0, width, height)
             val displayRect = Rect(0, 0, width, height)
@@ -658,16 +1079,16 @@ object PrivilegedCapture {
             }
             if (setProj != null) {
                 setProj.isAccessible = true
-                setProj.invoke(null, token, 0, layerRect, displayRect)
+                setProj.invoke(null, finalToken, 0, layerRect, displayRect)
             } else {
                 Log.w(TAG, "[PrivilegedCapture] setDisplayProjection missing, display may stay blank")
             }
-            Log.d(TAG, "[PrivilegedCapture] setDisplaySurface/LayerStack/Projection ok")
+            Log.d(TAG, "[PrivilegedCapture] setDisplaySurface/LayerStack/Projection ok via $hitSig")
         } catch (t: Throwable) {
-            runCatching { destroyPrivilegedDisplay(token) }
+            runCatching { destroyPrivilegedDisplay(finalToken) }
             throw t
         }
-        return token
+        return finalToken
     }
 
     private fun destroyPrivilegedDisplay(token: IBinder) {
