@@ -4,6 +4,9 @@ import android.os.Process
 import android.util.Log
 import androidx.annotation.Keep
 import com.erl.blindcast.core.blackout.PowerController
+import com.erl.blindcast.core.blackout.meow.ServiceManager as MeowServiceManager
+import com.erl.blindcast.core.blackout.meow.WakeUnlockController as MeowWakeUnlockController
+import com.erl.blindcast.core.blackout.meow.WakeUnlockResult as MeowWakeUnlockResult
 import java.io.File
 
 /**
@@ -75,9 +78,14 @@ object RootMain {
                 return
             }
             resultFile = File(resultPath)
+            // Meow-Port-1 接线：特权侧改调移植后的 lockAndSleep/ensureScreenOff（熄屏）与
+            // ensureScreenOn（点亮），逻辑原样来自 MAA-Meow WakeUnlockController
+            //（BINDER→KEY_SLEEP→KEY_POWER + 验效，经 PowerManager binder + TouchInjector 按键）。
+            // isBlackedOut/lastError/日志/Home状态行/Toast/路由契约不变：App 侧 routed 入口
+            // 仍据返回值 + 结果文件 ok/err 自行翻转，本进程经 recordPrivResult 记状态行。
             // 直调非 routed 版（必须在提权进程内：此处即 root app_process 本身）。
             val callOk: Boolean = runCatching {
-                PowerController.setDisplayPower(on)
+                meowSetDisplayPower(on)
             }.getOrElse { t ->
                 val msg = t.message ?: t.toString()
                 errMsg = "setDisplayPower抛异常：$msg"
@@ -135,6 +143,66 @@ object RootMain {
                     // 退出都失败则自然返回（app_process 会自行结束）。
                 }
             }
+        }
+    }
+
+    /**
+     * Meow-Port-1 特权熄屏/点亮（root app_process 内直调，同步阻塞）。
+     * 熄屏：先 [MeowWakeUnlockController.lockAndSleep]（lockNow+goToSleep+轮询），
+     * 未 OK（含 NO_KEYGUARD 无锁屏早返未息屏）则 fallback
+     * [MeowWakeUnlockController.ensureScreenOff] 保证物理熄屏；
+     * 点亮：[MeowWakeUnlockController.wakeScreen]（即 ensureScreenOn）。
+     * 成功/失败均经 [PowerController.recordPrivResult] 记状态行（供结果文件 err 回读），
+     * 返回值即验效后最终结果（App 侧据此翻转 isBlackedOut/lastError，契约不变）。
+     */
+    private fun meowSetDisplayPower(on: Boolean): Boolean {
+        val op = if (on) "restore" else "blackout"
+        return try {
+            if (on) {
+                val ok = try {
+                    MeowWakeUnlockController.wakeScreen()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "[RootMain] meow ensureScreenOn threw", t)
+                    PowerController.recordPrivResult(op, false, "点亮异常：${t.message ?: t}")
+                    return false
+                }
+                if (ok) {
+                    PowerController.recordPrivResult(op, true, null)
+                } else {
+                    val msg = "点亮失败：ensureScreenOn验效未通过（BINDER→WAKEUP→POWER三段均miss，见root进程logcat [MeowWakeUnlock]明细）"
+                    PowerController.recordPrivResult(op, false, msg)
+                }
+                ok
+            } else {
+                val lockCode = try {
+                    MeowWakeUnlockController.lockAndSleep()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "[RootMain] meow lockAndSleep threw", t)
+                    MeowWakeUnlockResult.UNSUPPORTED
+                }
+                if (lockCode == MeowWakeUnlockResult.OK) {
+                    PowerController.recordPrivResult(op, true, null)
+                    return true
+                }
+                val offOk = try {
+                    val pm = MeowServiceManager.getPowerManager()
+                    MeowWakeUnlockController.ensureScreenOff(pm)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "[RootMain] meow ensureScreenOff threw", t)
+                    false
+                }
+                if (offOk) {
+                    PowerController.recordPrivResult(op, true, null)
+                } else {
+                    val msg = "熄屏失败：lockAndSleep=$lockCode→ensureScreenOff验效未通过（BINDER→SLEEP→POWER三段均miss，见root进程logcat明细）"
+                    PowerController.recordPrivResult(op, false, msg)
+                }
+                offOk
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "[RootMain] meowSetDisplayPower threw", t)
+            PowerController.recordPrivResult(op, false, t.message ?: t.toString())
+            false
         }
     }
 }
