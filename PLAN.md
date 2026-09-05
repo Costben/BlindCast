@@ -221,3 +221,4 @@ updated: 2026-09-05
 - 2026-09-05: sidepanel-hub-1 收官：侧边栏彻底剥离一切视频/音频串流与画布，回归纯中控台；卡片式管理多设备集群，支持查看电量/熄屏状态与直接一键远程开关屏；点击“打开投屏”弹出/聚焦独立大标签页；扫描结果点击自动联动填入“+”左侧输入框并支持一键添加入库。
 - 2026-09-05: TouchOffset-Fix-1 收官：根治触控横向偏移与黑边失真；新增 VideoResolution 动态等比算法，竖屏设备按物理比自适应（1080x2376 下 720P 自动对齐为 720x1584，彻底消灭 1280x720 左右黑边）；SurfaceFlinger 1:1 无黑边镜像，normX/Y 与真机物理像素严格等比重合，点击首列精准命中。
 - 2026-09-05: clean-ha-license-1 收官：主界面暂时隐藏 Home Assistant，底部导航收敛为 2 Tab（主页 + 设置），HA 代码与逻辑完好保留；开源许可证全局对齐为 GNU AGPL-3.0（与 MAA / MAA-Meow 一致）；.gitignore 清理临时产物，仓库恢复干净纯粹。
+- 2026-09-05: 开源远程仓库初始化上线：已在 Costben 账号下创建公开仓库 https://github.com/Costben/BlindCast ，默认主分支 main，并同步 feat/blindcast-mvp 分支。
