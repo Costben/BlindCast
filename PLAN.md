@@ -214,3 +214,4 @@ updated: 2026-09-05
 - 2026-09-05: stream-priv-3/4 收官（bea3c91 DM主路+SC备用；worker-4已归档撤回，主控亲修 588f1c7：stopped 初始true致drain出生即退+首帧门闩静默丢帧，改早清旗+SPS缺失告警）；真机首帧到达、动屏21fps/626KB，静态限流属编码器省流；`su+am` 可代拨开关（service非exported，run-as跨user无权限）。
 - 2026-09-05: 浏览器端到端打通（Chrome命令行treat-as-secure治http局域网非安全源；adb reverse在该PC绑不上监听已放弃）：WebCodecs live出图，延迟62ms，动屏FPS正常，静屏限流符合预期；待验=熄屏+串流同活。
 - 2026-09-05: power-fix-2 收官（e9282e7）：binder OFF 早断电但 DM STATE_ON 恒 ON 致假失败，改 SF 级 dumpsys 验效（SF-Off||DM-OFF）；AOD 真因=上一棒实验包 power-sleep 段送 DOZE_SUSPEND（keeper 停跑假说证伪）；实验场转 .216（Pixel 无锁屏密码，Magisk 放行，.165 封存）；web+App off 均 ok:true，on 秒回，tap 在 .216 缺 Shizuku 系环境门控。
+- 2026-09-05: smooth-1 收官（99011a0）：常驻 Root 输入 daemon（tap ack 1.7s→20-33ms，drag 实时跟手）+ DisplayGlobal 免 Context 路打通 Root-H264 泵（JPEG 2.4→9.5fps，首帧 0.39s；附带修 isKey 扫描与 stop 孤儿泄漏）；主控亲验 .216：H264 107帧/12s、裸页首帧 645ms/延迟 45ms、按键 ack true。
