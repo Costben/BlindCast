@@ -218,3 +218,4 @@ updated: 2026-09-05
 - 2026-09-05: cua-1 真机验证（codex+muse-spark，19 张截图 outputs/cua-shots/）：JPEG 在裸页出图清晰（主控亲见 Syncthing 竖屏）；但安全源下 H264 黑屏 0 帧（此前用户 PC 21fps，回归待查，疑 smooth-1 动过 SPS/编码参数）；tap 致手机切屏 MD5 变（控制可达）；本机 Chrome 被组织策略管住装不上插件，用户需在自己 PC 加载。
 - 2026-09-05: h264black-1 收官：黑屏根因=DisplayGlobal 建屏缺请求刷新率致静态零 IDR（新客卡 IDR 门闩 38s），补 setRequestedRefreshRate；安全源 H264 复活（首帧 46ms、动屏 FPS 15~29，主控亲见硬解截图 FPS 17/延迟 11ms）；JPEG 回归正常。
 - 2026-09-05: sidepanel-1 收官：Chrome 原生侧边栏（ChatGPT 同款）多设备中控台交付；manifest 启用 sidePanel API，点击扩展图标直开右侧栏；集成设备下拉切换、局域网并发扫描、竖屏 9:20 吃满可视高度、WebCodecs 硬件解码全通；修复进入页面时的假遮罩残留。
+- 2026-09-05: sidepanel-hub-1 收官：侧边栏彻底剥离一切视频/音频串流与画布，回归纯中控台；卡片式管理多设备集群，支持查看电量/熄屏状态与直接一键远程开关屏；点击“打开投屏”弹出/聚焦独立大标签页；扫描结果点击自动联动填入“+”左侧输入框并支持一键添加入库。

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>BlindCast · 侧栏中控台</title>
+<title>BlindCast · 集群中控</title>
 <style>
 :root{
   --bg:#0b0d12; --panel:rgba(255,255,255,.06); --line:rgba(255,255,255,.12);
@@ -18,182 +18,152 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.5;
   background:radial-gradient(600px 300px at 15% -5%,rgba(52,211,153,.12),transparent 60%),
              radial-gradient(700px 320px at 90% 0%,rgba(125,211,252,.10),transparent 60%)}
 /* ---- 顶栏 ---- */
-header{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);
-  background:rgba(10,12,17,.72);backdrop-filter:blur(12px);z-index:5}
-.logo{font-weight:800;letter-spacing:.5px;font-size:14px;white-space:nowrap}
+.topbar{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);
+  background:rgba(10,12,17,.78);backdrop-filter:blur(12px);z-index:5}
+.logo{font-weight:800;letter-spacing:.5px;font-size:15px;white-space:nowrap}
 .logo b{color:var(--neon)}
-.logo span.sub{color:var(--dim);font-weight:400;font-size:11px}
-#btnPopout{margin-left:auto;flex:0 0 auto;border:1px solid var(--line);background:rgba(255,255,255,.07);
-  color:var(--fg);border-radius:9px;min-width:34px;height:30px;font-size:14px;cursor:pointer;padding:0 8px}
-#btnPopout:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
-/* ---- 设备栏 ---- */
-#deviceBar{display:flex;gap:6px;padding:8px 10px 4px;align-items:center}
-#deviceSelect{flex:1;min-width:0;padding:7px 8px;font-size:13px;color:var(--fg);
-  background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:10px;outline:none;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#deviceSelect:focus{border-color:var(--neon)}
-#deviceSelect option{background:#141821;color:var(--fg)}
-#btnScan{flex:0 0 auto;border:1px solid rgba(52,211,153,.5);background:rgba(52,211,153,.16);
-  color:var(--neon);border-radius:10px;height:32px;font-size:12px;font-weight:700;cursor:pointer;padding:0 10px;white-space:nowrap}
-#btnScan:hover{background:rgba(52,211,153,.28)}
-#btnScan:disabled{opacity:.45;cursor:default}
-#addRow{display:flex;gap:6px;padding:4px 10px 0;align-items:center}
-#manualIp{flex:1;min-width:0;padding:7px 10px;font-size:12px;color:var(--fg);
-  background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:10px;outline:none;font-family:var(--mono)}
+.logo span.sub{color:var(--dim);font-weight:400;font-size:11px;margin-left:6px}
+#devCount{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--line);
+  background:var(--panel);border-radius:999px;padding:3px 10px;white-space:nowrap}
+#btnRefresh{margin-left:auto;flex:0 0 auto;border:1px solid var(--line);background:rgba(255,255,255,.07);
+  color:var(--fg);border-radius:10px;min-width:36px;height:32px;font-size:14px;cursor:pointer;padding:0 10px}
+#btnRefresh:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
+#btnRefresh:disabled{opacity:.45;cursor:default}
+/* ---- 工具区 ---- */
+.toolbar{padding:12px 14px 0;display:flex;flex-direction:column;gap:8px;flex:0 0 auto}
+.row{display:flex;gap:8px;align-items:center}
+#manualIp{flex:1;min-width:0;padding:10px 12px;font-size:13px;color:var(--fg);
+  background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:12px;outline:none;font-family:var(--mono)}
 #manualIp:focus{border-color:var(--neon)}
-#btnAdd{flex:0 0 auto;border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--fg);
-  border-radius:10px;height:32px;font-size:14px;cursor:pointer;padding:0 12px}
-#btnAdd:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
-/* ---- 扫描行 ---- */
-#scanRow{display:flex;gap:6px;padding:6px 10px 0;align-items:center}
-#scanPrefix{flex:1;min-width:0;padding:6px 10px;font-size:12px;color:var(--fg);
-  background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:10px;outline:none;font-family:var(--mono)}
+#manualIp.filled{border-color:rgba(52,211,153,.6);box-shadow:0 0 0 1px rgba(52,211,153,.35)}
+#btnAdd{flex:0 0 auto;border:1px solid rgba(52,211,153,.5);background:rgba(52,211,153,.16);color:var(--neon);
+  border-radius:12px;height:38px;font-size:16px;font-weight:800;cursor:pointer;padding:0 16px}
+#btnAdd:hover{background:rgba(52,211,153,.28)}
+#scanPrefix{flex:1;min-width:0;padding:9px 12px;font-size:12px;color:var(--fg);
+  background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:12px;outline:none;font-family:var(--mono)}
 #scanPrefix:focus{border-color:var(--neon)}
-#scanMeta{flex:0 0 auto;font-family:var(--mono);font-size:10px;color:var(--dim);white-space:nowrap;max-width:45%;
-  overflow:hidden;text-overflow:ellipsis}
-.prog{height:5px;border-radius:3px;background:rgba(255,255,255,.08);margin:6px 10px 0;overflow:hidden;flex:0 0 auto}
+#btnScan{flex:0 0 auto;border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--fg);
+  border-radius:12px;height:36px;font-size:12px;font-weight:700;cursor:pointer;padding:0 12px;white-space:nowrap}
+#btnScan:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
+#btnScan:disabled{opacity:.45;cursor:default}
+.prog{height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden}
 .prog i{display:block;height:100%;width:0;background:var(--neon);border-radius:3px;transition:width .15s}
-#scanMsg{font-size:11px;color:var(--dim);line-height:1.5;margin:4px 10px 0;min-height:0}
-#scanMsg:empty{display:none}
-/* ---- 状态 pills ---- */
-.pills{display:flex;gap:6px;padding:8px 10px;flex-wrap:wrap}
-.pill{font-family:var(--mono);font-size:11px;padding:4px 10px;border-radius:999px;
-  border:1px solid var(--line);background:var(--panel);color:var(--dim);white-space:nowrap}
-.pill.ok{color:var(--neon);border-color:rgba(52,211,153,.4)}
-.pill.bad{color:var(--danger);border-color:rgba(248,113,113,.4)}
-/* ---- 舞台：画面撑满侧栏可视高度，垂直居中 ---- */
-#stage{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;
-  padding:8px;margin:0 10px 8px;border-radius:12px;
-  background:#05060a repeating-conic-gradient(rgba(255,255,255,.014) 0% 25%,transparent 0% 50%) 0 0/28px 28px;
-  border:1px solid rgba(255,255,255,.06)}
-#canvas{background:#000;border-radius:8px;box-shadow:0 0 0 1px var(--line),0 12px 48px rgba(0,0,0,.6);
-  touch-action:none;cursor:crosshair;outline:none;max-width:100%;max-height:100%}
-#canvas:focus{box-shadow:0 0 0 1px rgba(52,211,153,.55),0 12px 48px rgba(0,0,0,.6)}
-.hint{position:absolute;left:10px;bottom:8px;font-family:var(--mono);font-size:10px;color:var(--dim);
-  background:rgba(0,0,0,.45);padding:3px 8px;border-radius:8px;pointer-events:none;max-width:70%;
+.scan-meta-row{display:flex;gap:8px;align-items:baseline}
+#scanMeta{flex:0 0 auto;font-family:var(--mono);font-size:10px;color:var(--dim);white-space:nowrap}
+#scanMsg{flex:1;min-width:0;font-size:11px;color:var(--dim);line-height:1.5;margin:0;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-/* ---- 悬浮控制栏：轻量 dock，紧凑不遮挡 ---- */
-#dock{position:absolute;right:8px;top:50%;transform:translateY(-50%);z-index:6;
-  display:flex;flex-direction:column;gap:5px;align-items:stretch;padding:8px 6px;border-radius:14px;
-  max-height:96%;overflow-y:auto;overflow-x:hidden;
-  background:rgba(16,19,26,.62);border:1px solid var(--line);backdrop-filter:blur(14px);
-  box-shadow:0 8px 32px rgba(0,0,0,.5)}
-#dock button{flex:0 0 auto;border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--fg);
-  border-radius:9px;min-width:36px;height:34px;font-size:14px;cursor:pointer;padding:0 8px}
-#dock button:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
-#dock button.on{background:rgba(52,211,153,.22);border-color:var(--neon);color:var(--neon)}
-#dock button.warn-on{background:rgba(251,191,36,.18);border-color:var(--warn);color:var(--warn)}
-#dock .sep{flex:0 0 auto;width:22px;height:1px;margin:2px auto;background:var(--line)}
-#dock .lbl{font-size:10px;color:var(--dim);font-family:var(--mono)}
-/* ---- 遮罩 / 弹窗 ---- */
-.overlay{position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;
-  background:rgba(5,6,10,.66);backdrop-filter:blur(6px);border-radius:12px}
-.overlay.hide{display:none}
-.card{background:rgba(20,24,33,.92);border:1px solid var(--line);border-radius:16px;
-  padding:22px 20px;max-width:340px;width:92%;text-align:center;backdrop-filter:blur(18px);
-  box-shadow:0 20px 60px rgba(0,0,0,.6)}
-.card h1{margin:0 0 6px;font-size:18px}
-.card h1 b{color:var(--neon)}
-.card p{color:var(--dim);font-size:12px;line-height:1.8;margin:8px 0}
-.card input{width:100%;margin-top:10px;padding:11px 13px;font-size:14px;color:var(--fg);
-  background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:12px;outline:none}
-.card input:focus{border-color:var(--neon)}
-.card .row{display:flex;gap:10px;margin-top:14px}
-.btn{flex:1;padding:10px 0;border-radius:12px;border:1px solid rgba(52,211,153,.5);cursor:pointer;
-  background:rgba(52,211,153,.16);color:var(--neon);font-size:14px;font-weight:700}
-.btn:hover{background:rgba(52,211,153,.28)}
-.btn.ghost{border-color:var(--line);background:rgba(255,255,255,.05);color:var(--dim)}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--neon);margin-right:6px;
-  box-shadow:0 0 8px var(--neon);animation:blink 1.6s infinite}
-@keyframes blink{50%{opacity:.35}}
-.shake{animation:shake .3s}
-@keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+/* ---- 发现区（扫描候选：点填入 / + 一键入库） ---- */
+#foundWrap{display:flex;flex-direction:column;gap:8px;margin-top:2px}
+#foundWrap.hide{display:none}
+.sec-title{font-size:12px;font-weight:700;color:var(--fg);display:flex;align-items:center;gap:8px}
+#foundCount{font-family:var(--mono);font-size:11px;color:var(--neon);font-weight:400}
+.sec-hint{font-size:10px;color:var(--dim);font-weight:400}
+#scanList{display:flex;flex-direction:column;gap:6px;max-height:172px;overflow-y:auto}
+.scan-item{display:flex;align-items:center;gap:10px;padding:9px 10px 9px 12px;border-radius:12px;cursor:pointer;
+  background:rgba(52,211,153,.07);border:1px solid rgba(52,211,153,.28)}
+.scan-item:hover{background:rgba(52,211,153,.14);border-color:rgba(52,211,153,.5)}
+.scan-item.saved{opacity:.65;background:rgba(255,255,255,.04);border-color:var(--line);cursor:default}
+.scan-item .ip{flex:1;min-width:0;font-family:var(--mono);font-size:13px;font-weight:700;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scan-item .tag{flex:0 0 auto;font-family:var(--mono);font-size:10px;color:var(--dim);
+  border:1px solid var(--line);border-radius:999px;padding:2px 8px;white-space:nowrap}
+.scan-item .tag.free{color:var(--neon);border-color:rgba(52,211,153,.4)}
+.scan-item .tag.lock{color:var(--warn);border-color:rgba(251,191,36,.4)}
+.scan-item .tag.done{color:var(--dim)}
+.btn-mini-add{flex:0 0 auto;border:1px solid rgba(52,211,153,.5);background:rgba(52,211,153,.16);color:var(--neon);
+  border-radius:10px;height:30px;font-size:12px;font-weight:700;cursor:pointer;padding:0 12px;white-space:nowrap}
+.btn-mini-add:hover{background:rgba(52,211,153,.3)}
+.btn-mini-add:disabled{opacity:.45;cursor:default;border-color:var(--line);background:rgba(255,255,255,.05);color:var(--dim)}
+/* ---- 设备卡片列表 ---- */
+.list-label{padding:12px 14px 0;font-size:12px;font-weight:700;color:var(--dim);flex:0 0 auto}
+#deviceList{flex:1;min-height:0;overflow-y:auto;padding:10px 14px 14px;display:flex;flex-direction:column;gap:14px}
+#emptyState{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  padding:30px 24px;text-align:center;color:var(--dim);font-size:12px;line-height:2}
+#emptyState.hide{display:none}
+#emptyState .big{font-size:15px;color:var(--fg);font-weight:700}
+.dev-card{background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.03));
+  border:1px solid var(--line);border-radius:18px;padding:16px;display:flex;flex-direction:column;gap:12px;
+  box-shadow:0 12px 32px rgba(0,0,0,.45)}
+.dev-head{display:flex;align-items:center;gap:9px}
+.dot{flex:0 0 auto;width:9px;height:9px;border-radius:50%;background:rgba(232,234,240,.3)}
+.dot.on{background:var(--neon);box-shadow:0 0 10px var(--neon)}
+.dot.off{background:rgba(232,234,240,.3)}
+.dot.auth{background:var(--warn);box-shadow:0 0 10px var(--warn)}
+.dot.check{background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
+.dev-title{flex:1;min-width:0;font-family:var(--mono);font-size:14px;font-weight:800;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dev-conn{flex:0 0 auto;font-family:var(--mono);font-size:11px;color:var(--dim);white-space:nowrap}
+.dev-conn.on{color:var(--neon)}
+.capsules{display:flex;gap:8px;flex-wrap:wrap}
+.capsule{font-family:var(--mono);font-size:11px;padding:5px 11px;border-radius:999px;
+  border:1px solid var(--line);background:rgba(0,0,0,.25);color:var(--dim);white-space:nowrap}
+.capsule.ok{color:var(--neon);border-color:rgba(52,211,153,.4)}
+.capsule.warn{color:var(--warn);border-color:rgba(251,191,36,.4)}
+.capsule.bad{color:var(--danger);border-color:rgba(248,113,113,.4)}
+.dev-sub{font-family:var(--mono);font-size:10px;color:rgba(232,234,240,.38);line-height:1.6}
+.token-row{display:flex;gap:8px;align-items:center}
+.token-row.hide{display:none}
+.token-row input{flex:1;min-width:0;padding:9px 12px;font-size:12px;color:var(--fg);
+  background:rgba(255,255,255,.07);border:1px solid rgba(251,191,36,.45);border-radius:11px;outline:none}
+.token-row input:focus{border-color:var(--warn)}
+.token-row button{flex:0 0 auto;border:1px solid rgba(251,191,36,.5);background:rgba(251,191,36,.14);color:var(--warn);
+  border-radius:11px;height:36px;font-size:12px;font-weight:700;cursor:pointer;padding:0 14px;white-space:nowrap}
+.token-row button:hover{background:rgba(251,191,36,.24)}
+.btn-open{width:100%;padding:13px 0;border-radius:13px;border:1px solid rgba(52,211,153,.55);cursor:pointer;
+  background:rgba(52,211,153,.16);color:var(--neon);font-size:14px;font-weight:800}
+.btn-open:hover{background:rgba(52,211,153,.28)}
+.btn-open:disabled{opacity:.5;cursor:default}
+.row-2{display:flex;gap:8px}
+.btn-sec{flex:1;padding:10px 0;border-radius:11px;border:1px solid var(--line);cursor:pointer;
+  background:rgba(255,255,255,.06);color:var(--fg);font-size:13px}
+.btn-sec:hover{background:rgba(52,211,153,.14);border-color:rgba(52,211,153,.4)}
+.btn-sec:disabled{opacity:.5;cursor:default}
+.btn-danger{flex:1;padding:10px 0;border-radius:11px;border:1px solid var(--line);cursor:pointer;
+  background:rgba(255,255,255,.04);color:var(--dim);font-size:13px}
+.btn-danger:hover{background:rgba(248,113,113,.14);border-color:rgba(248,113,113,.45);color:var(--danger)}
+footer{padding:7px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,234,240,.32);
+  display:flex;gap:10px;border-top:1px solid rgba(255,255,255,.06);flex:0 0 auto}
+footer span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #toast{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:50;display:flex;
   flex-direction:column;gap:6px;align-items:center;pointer-events:none;max-width:92%}
-.toast-msg{font-family:var(--mono);font-size:11px;background:rgba(16,19,26,.92);border:1px solid var(--line);
-  padding:7px 14px;border-radius:10px;animation:fadein .2s;max-width:100%;
+.toast-msg{font-family:var(--mono);font-size:11px;background:rgba(16,19,26,.94);border:1px solid var(--line);
+  padding:7px 14px;border-radius:10px;max-width:100%;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-@keyframes fadein{from{opacity:0;transform:translateY(-6px)}}
-footer{padding:4px 12px;font-family:var(--mono);font-size:10px;color:rgba(232,234,240,.32);
-  display:flex;gap:10px;border-top:1px solid rgba(255,255,255,.06);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-footer span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-footer #footStat{flex:0 1 auto;min-width:0}
-footer #footFrame{flex:0 0 auto;margin-left:auto}
-@media (max-height:560px){ .hint{display:none} }
 </style>
 </head>
 <body>
-<header>
-  <div class="logo"><b>▚ BlindCast</b> <span class="sub">侧栏中控台</span></div>
-  <button id="btnPopout" title="弹出独立大标签页">⛶</button>
+<header class="topbar">
+  <div class="logo"><b>▚ BlindCast</b><span class="sub">集群中控</span></div>
+  <span id="devCount">0 台</span>
+  <button id="btnRefresh" title="刷新全部设备状态">⟳</button>
 </header>
 
-<div id="deviceBar">
-  <select id="deviceSelect" title="切换设备"></select>
-  <button id="btnScan" title="扫描局域网设备">🔍 扫描</button>
-</div>
-<div id="addRow">
-  <input id="manualIp" placeholder="手动加 IP，如 192.168.31.216" autocomplete="off" spellcheck="false">
-  <button id="btnAdd" title="添加设备">＋</button>
-</div>
-<div id="scanRow">
-  <input id="scanPrefix" value="192.168.31." autocomplete="off" spellcheck="false" title="网段前缀">
-  <span id="scanMeta">就绪</span>
-</div>
-<div class="prog"><i id="scanBar"></i></div>
-<p id="scanMsg"></p>
-
-<div class="pills">
-  <span class="pill" id="pillConn">○ 未连接</span>
-  <span class="pill" id="pillFps">FPS --</span>
-  <span class="pill" id="pillLat">延迟 --</span>
-  <span class="pill" id="pillBat">电量 --</span>
-</div>
-
-<div id="stage">
-  <canvas id="canvas" tabindex="0" width="720" height="1600"></canvas>
-  <div class="hint">左键拖拽=触控 · 右键=返回 · 中键=Home · 滚轮=滑动</div>
-
-  <div id="dock">
-    <button id="btnBack" title="返回 (Back)">◀</button>
-    <button id="btnHome" title="桌面 (Home)">●</button>
-    <button id="btnRecents" title="最近任务 (Recents)">■</button>
-    <span class="sep"></span>
-    <button id="btnVolDown" title="音量 -">🔉</button>
-    <button id="btnVolUp" title="音量 +">🔊</button>
-    <button id="btnMute" title="音频传输开关">🎵</button>
-    <span class="sep"></span>
-    <button id="btnPower" title="息屏 / 亮屏">⏻</button>
-    <button id="btnFull" title="全屏">⛶</button>
-    <button id="btnKeys" title="聚焦键盘输入">⌨</button>
-    <button id="btnJpeg" title="切换 JPEG/H264">🎞</button>
-    <button id="btnReconnect" title="重连">⟳</button>
+<div class="toolbar">
+  <div class="row">
+    <input id="manualIp" placeholder="+ 手动添加：输入 IP，如 192.168.31.216" autocomplete="off" spellcheck="false">
+    <button id="btnAdd" title="保存到设备库">＋</button>
   </div>
-
-  <div class="overlay hide" id="authOverlay">
-    <div class="card" id="authCard">
-      <h1><b>▚ BlindCast</b> · 隐播</h1>
-      <p><span class="dot"></span>串流服务要求访问密码<br>输入 App 设置页配置的 Token</p>
-      <input id="tokenInput" type="password" placeholder="输入访问 Token" autocomplete="off">
-      <div class="row">
-        <button class="btn" id="btnAuth">进入控制台</button>
-      </div>
-      <p id="authErr" style="color:var(--danger);min-height:20px;margin-bottom:0"></p>
-    </div>
+  <div class="row">
+    <input id="scanPrefix" value="192.168.31." autocomplete="off" spellcheck="false" title="网段前缀">
+    <button id="btnScan" title="扫描局域网设备">🔍 扫描局域网</button>
   </div>
+  <div class="prog"><i id="scanBar"></i></div>
+  <div class="scan-meta-row"><span id="scanMeta">就绪</span><span id="scanMsg"></span></div>
 
-  <div class="overlay hide" id="bootOverlay">
-    <div class="card">
-      <h1><b>▚ BlindCast</b> · 隐播</h1>
-      <p id="bootMsg"><span class="dot"></span>选择设备后自动连接…</p>
-      <div class="row"><button class="btn" id="btnEnter">进入控制台</button></div>
-      <p style="font-size:11px">WebCodecs 硬解 · 侧栏安全源 · JPEG 降级保底</p>
-    </div>
-  </div>
+  <section id="foundWrap" class="hide">
+    <div class="sec-title">🔍 发现设备 <span id="foundCount"></span><span class="sec-hint">点条目填入输入框 · 右侧＋一键入库</span></div>
+    <div id="scanList"></div>
+  </section>
 </div>
 
-<footer><span id="footStat">BlindCast SidePanel · extension build</span><span id="footFrame">frame --</span></footer>
+<div class="list-label">📺 已保存设备</div>
+<main id="deviceList"></main>
+<div id="emptyState" class="hide">
+  <div class="big">还没有保存任何设备</div>
+  <div>点顶部 🔍 扫描局域网，从发现列表一键入库；<br>或在输入框手动输入 IP 后点 ＋ 保存。</div>
+</div>
+
+<footer><span id="footStat">BlindCast Hub · 纯中控（不占流）</span></footer>
 <div id="toast"></div>
 
 <script src="sidepanel.js"></script>
