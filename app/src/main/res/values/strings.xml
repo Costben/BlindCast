@@ -43,6 +43,8 @@
     <string name="blindcast_home_running_title" translatable="false">挂机服务运行中</string>
     <string name="blindcast_home_stopped_title" translatable="false">服务已停止</string>
     <string name="blindcast_home_stopped_subtitle" translatable="false">点击下方开关启动挂机服务</string>
+    <string name="blindcast_home_need_permission_title" translatable="false">缺少必要授权</string>
+    <string name="blindcast_home_need_permission_subtitle" translatable="false">点击前往授权，完成授权后即可启动挂机服务</string>
     <string name="blindcast_home_stats" translatable="false">帧率 %1$d FPS | 码率 %2$.1f Mbps | 在线 %3$d 人 | Token保护：%4$s</string>
     <string name="blindcast_home_stats_idle" translatable="false">帧率 — | 码率 — | 在线 %1$d 人 | Token保护：%2$s</string>
     <string name="blindcast_home_token_on" translatable="false">开启</string>

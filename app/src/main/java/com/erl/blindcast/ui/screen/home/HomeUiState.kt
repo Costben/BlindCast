@@ -13,6 +13,9 @@ data class HomeUiState(
     val service: ServiceCardState = ServiceCardState(),
     val lan: LanState = LanState(),
     val hw: HwState = HwState(),
+    // Fix-Home-1：Hero 三态判定收敛（permissionGranted + service.isRunning 双字段）。
+    // permissionGranted 对应 PermissionState.requiredGranted，由 HomeScreen 同步进 ViewModel。
+    val permissionGranted: Boolean = false,
 )
 
 /** Hero 大卡片：串流总服务实时快照。 */

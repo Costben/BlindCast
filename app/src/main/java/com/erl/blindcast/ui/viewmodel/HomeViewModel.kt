@@ -60,13 +60,25 @@ class HomeViewModel : ViewModel() {
 
     fun refresh() {
         viewModelScope.launch {
+            val preservedPermission = _uiState.value.permissionGranted
             val baseState = withContext(Dispatchers.IO) { buildState() }
-            _uiState.update { baseState }
+            _uiState.update { baseState.copy(permissionGranted = preservedPermission) }
             updateFromSnapshot()
             if (baseState.checkUpdateEnabled) {
                 val latestVersionInfo = withContext(Dispatchers.IO) { checkNewVersion() }
                 _uiState.update { it.copy(latestVersionInfo = latestVersionInfo) }
             }
+        }
+    }
+
+    /**
+     * Fix-Home-1：Hero 三态判定收敛入口。
+     * 由 HomeScreen 把 PermissionState.requiredGranted 同步进来，
+     * UI 层只读 [HomeUiState.permissionGranted] + service.isRunning，不再直读 PermissionState。
+     */
+    fun setPermissionGranted(granted: Boolean) {
+        _uiState.update { current ->
+            if (current.permissionGranted == granted) current else current.copy(permissionGranted = granted)
         }
     }
 

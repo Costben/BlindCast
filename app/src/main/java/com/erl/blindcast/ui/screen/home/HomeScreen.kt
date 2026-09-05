@@ -48,6 +48,10 @@ fun HomePager(
         permissionManager.refresh()
         onPauseOrDispose { }
     }
+    // Fix-Home-1：权限判定收敛进 HomeViewModel，UI 只读 HomeUiState.permissionGranted。
+    LaunchedEffect(permissionState.requiredGranted) {
+        viewModel.setPermissionGranted(permissionState.requiredGranted)
+    }
 
     val actions = HomeActions(
         onPermissionsClick = { navigator.push(Route.Permissions) },
@@ -70,14 +74,12 @@ fun HomePager(
     when (LocalUiMode.current) {
         UiMode.Miuix -> HomePagerMiuix(
             state = uiState,
-            permissionState = permissionState,
             actions = actions,
             bottomInnerPadding = bottomInnerPadding,
         )
 
         UiMode.Material -> HomePagerMaterial(
             state = uiState,
-            permissionState = permissionState,
             actions = actions,
             bottomInnerPadding = bottomInnerPadding,
         )

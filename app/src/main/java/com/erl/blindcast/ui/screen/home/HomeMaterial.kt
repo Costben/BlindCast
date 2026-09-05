@@ -13,15 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -37,17 +29,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.erl.blindcast.R
-import com.erl.blindcast.permission.PermissionState
 import com.erl.blindcast.ui.component.material.TonalCard
 
 @Composable
 fun HomePagerMaterial(
     state: HomeUiState,
-    permissionState: PermissionState,
     actions: HomeActions,
     bottomInnerPadding: Dp,
 ) {
@@ -65,8 +54,12 @@ fun HomePagerMaterial(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Slice 6.1: Hero 运行双态 + 快捷操作 + 局域网二维码 + 硬件监控（全部绑定真实状态）。
-            HeroCard(service = state.service)
+            // Fix-Home-1：Home 只保留 4 卡（Hero 三态 / 快捷操作 / 局域网二维码 / 硬件监控）。
+            HeroCard(
+                service = state.service,
+                permissionGranted = state.permissionGranted,
+                onPermissionsClick = actions.onPermissionsClick,
+            )
             ActionsCard(
                 service = state.service,
                 onBlackout = actions.onBlackout,
@@ -79,30 +72,39 @@ fun HomePagerMaterial(
                 onOpenUrl = actions.onOpenUrl,
             )
             HwCard(hw = state.hw)
-            // Keep the theme settings preview in sync whenever this home layout changes.
-            WarningCard(stringResource(R.string.home_sample_notification))
-            PermissionCard(permissionState, actions.onPermissionsClick)
-            InfoCard(systemInfo = state.systemInfo)
-            ExampleLinkCard(onOpenUrl = actions.onOpenUrl)
             Spacer(Modifier.height(bottomInnerPadding))
         }
     }
 }
 
 @Composable
-private fun HeroCard(service: ServiceCardState) {
+private fun HeroCard(
+    service: ServiceCardState,
+    permissionGranted: Boolean,
+    onPermissionsClick: () -> Unit,
+) {
+    // Fix-Home-1 三态：未授权=红（可点跳授权）/ 已授权未运行=灰 / 运行中=绿。
     val running = service.isRunning
-    val container = if (running) Color(0xFFDFFAE4) else MaterialTheme.colorScheme.surfaceVariant
-    val onContainer = if (running) Color(0xFF111111) else MaterialTheme.colorScheme.onSurfaceVariant
-    val title = if (running) {
-        stringResource(R.string.blindcast_home_running_title)
-    } else {
-        stringResource(R.string.blindcast_home_stopped_title)
+    val needPermission = !permissionGranted
+    val container = when {
+        needPermission -> MaterialTheme.colorScheme.errorContainer
+        running -> Color(0xFFDFFAE4)
+        else -> MaterialTheme.colorScheme.surfaceVariant
     }
-    val subtitle = if (running && service.lanIp.isNotBlank()) {
-        "http://${service.lanIp}:${service.port}"
-    } else {
-        stringResource(R.string.blindcast_home_stopped_subtitle)
+    val onContainer = when {
+        needPermission -> MaterialTheme.colorScheme.onErrorContainer
+        running -> Color(0xFF111111)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val title = when {
+        needPermission -> stringResource(R.string.blindcast_home_need_permission_title)
+        running -> stringResource(R.string.blindcast_home_running_title)
+        else -> stringResource(R.string.blindcast_home_stopped_title)
+    }
+    val subtitle = when {
+        needPermission -> stringResource(R.string.blindcast_home_need_permission_subtitle)
+        running && service.lanIp.isNotBlank() -> "http://${service.lanIp}:${service.port}"
+        else -> stringResource(R.string.blindcast_home_stopped_subtitle)
     }
     val tokenStr = stringResource(
         if (service.tokenProtected) R.string.blindcast_home_token_on
@@ -119,7 +121,7 @@ private fun HeroCard(service: ServiceCardState) {
     } else {
         stringResource(R.string.blindcast_home_stats_idle, service.clients, tokenStr)
     }
-    TonalCard(containerColor = container) {
+    val heroContent: @Composable () -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -131,6 +133,11 @@ private fun HeroCard(service: ServiceCardState) {
             Spacer(Modifier.height(4.dp))
             Text(text = stats, style = MaterialTheme.typography.bodySmall, color = onContainer)
         }
+    }
+    if (needPermission) {
+        TonalCard(containerColor = container, onClick = onPermissionsClick, content = heroContent)
+    } else {
+        TonalCard(containerColor = container, content = heroContent)
     }
 }
 
@@ -316,151 +323,4 @@ private fun TopBar(
     )
 }
 
-@Composable
-private fun PermissionCard(
-    state: PermissionState,
-    onClick: () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = onClick,
-        colors = CardDefaults.cardColors(
-            containerColor =
-                if (state.requiredGranted) MaterialTheme.colorScheme.secondaryContainer
-                else MaterialTheme.colorScheme.errorContainer,
-            contentColor =
-                if (state.requiredGranted) MaterialTheme.colorScheme.onSecondaryContainer
-                else MaterialTheme.colorScheme.onErrorContainer,
-        ),
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.permission_section),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text =
-                            if (state.requiredGranted) {
-                                stringResource(R.string.permission_ready)
-                            } else {
-                                stringResource(R.string.permission_missing)
-                            },
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                AssistChip(
-                    onClick = { },
-                    colors = AssistChipDefaults.assistChipColors(
-                        labelColor =
-                            if (state.requiredGranted) {
-                                MaterialTheme.colorScheme.onSecondaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onErrorContainer
-                            },
-                        leadingIconContentColor =
-                            if (state.requiredGranted) {
-                                MaterialTheme.colorScheme.onSecondaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onErrorContainer
-                            },
-                    ),
-                    label = {
-                        Text(
-                            if (state.requiredGranted) {
-                                stringResource(R.string.permission_granted)
-                            } else {
-                                stringResource(R.string.permission_action_required)
-                            }
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector =
-                                if (state.requiredGranted) Icons.Default.CheckCircle
-                                else Icons.Default.ErrorOutline,
-                            contentDescription = null,
-                        )
-                    },
-                )
-            }
-        }
-    }
-}
 
-@Composable
-private fun WarningCard(
-    message: String,
-    color: Color = MaterialTheme.colorScheme.error,
-    onClick: (() -> Unit)? = null
-) {
-    val content = @Composable {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(24.dp)
-        ) {
-            Text(text = message, style = MaterialTheme.typography.bodyMedium)
-        }
-    }
-    if (onClick != null) {
-        TonalCard(containerColor = color, onClick = onClick, content = content)
-    } else {
-        TonalCard(containerColor = color, content = content)
-    }
-}
-
-@Composable
-private fun ExampleLinkCard(onOpenUrl: (String) -> Unit) {
-    val url = stringResource(R.string.home_example_link_url)
-    TonalCard(onClick = { onOpenUrl(url) }) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(24.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(text = stringResource(R.string.home_example_link_title), style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = stringResource(R.string.home_example_link_subtitle),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.outline
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun InfoCard(systemInfo: SystemInfo) {
-    TonalCard {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
-        ) {
-            @Composable
-            fun InfoCardItem(label: String, content: String) {
-                Text(text = label, style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    text = content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.outline
-                )
-            }
-
-            InfoCardItem(stringResource(R.string.home_app_version), systemInfo.appVersion)
-        }
-    }
-}

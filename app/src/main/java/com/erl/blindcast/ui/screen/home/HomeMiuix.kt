@@ -32,8 +32,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.erl.blindcast.R
-import com.erl.blindcast.permission.PermissionState
-import com.erl.blindcast.ui.component.miuix.WarningCard
 import com.erl.blindcast.ui.theme.LocalEnableBlur
 import com.erl.blindcast.ui.util.BlurredBar
 import com.erl.blindcast.ui.util.rememberBlurBackdrop
@@ -48,10 +46,7 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.blur.LayerBackdrop
 import top.yukonga.miuix.kmp.blur.layerBackdrop
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Link
 import top.yukonga.miuix.kmp.preference.SwitchPreference
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
@@ -59,7 +54,6 @@ import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 @Composable
 fun HomePagerMiuix(
     state: HomeUiState,
-    permissionState: PermissionState,
     actions: HomeActions,
     bottomInnerPadding: Dp,
 ) {
@@ -96,8 +90,12 @@ fun HomePagerMiuix(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        // Slice 6.1: Hero 运行双态 + 快捷操作 + 局域网二维码 + 硬件监控（全部绑定真实状态）。
-                        BlindCastHeroCard(service = state.service)
+                        // Fix-Home-1：Home 只保留 4 卡（Hero 三态 / 快捷操作 / 局域网二维码 / 硬件监控）。
+                        BlindCastHeroCard(
+                            service = state.service,
+                            permissionGranted = state.permissionGranted,
+                            onPermissionsClick = actions.onPermissionsClick,
+                        )
                         BlindCastActionsCard(
                             service = state.service,
                             onBlackout = actions.onBlackout,
@@ -110,11 +108,6 @@ fun HomePagerMiuix(
                             onOpenUrl = actions.onOpenUrl,
                         )
                         BlindCastHwCard(hw = state.hw)
-                        // Keep the theme settings preview in sync whenever this home layout changes.
-                        WarningCard(stringResource(R.string.home_sample_notification))
-                        PermissionCardMiuix(permissionState, actions.onPermissionsClick)
-                        InfoCard(systemInfo = state.systemInfo)
-                        ExampleLinkCard(onOpenUrl = actions.onOpenUrl)
                     }
                     Spacer(Modifier.height(bottomInnerPadding))
                 }
@@ -124,20 +117,34 @@ fun HomePagerMiuix(
 }
 
 @Composable
-private fun BlindCastHeroCard(service: ServiceCardState) {
+private fun BlindCastHeroCard(
+    service: ServiceCardState,
+    permissionGranted: Boolean,
+    onPermissionsClick: () -> Unit,
+) {
+    // Fix-Home-1 三态：未授权=红（可点跳授权）/ 已授权未运行=灰 / 运行中=绿。
     val running = service.isRunning
-    val containerColor = if (running) Color(0xFFDFFAE4) else Color(0xFFE8E8E8)
-    val textColor = Color(0xFF111111)
-    val iconColor = if (running) Color(0xFF36D167) else Color(0xFF9E9E9E)
-    val title = if (running) {
-        stringResource(R.string.blindcast_home_running_title)
-    } else {
-        stringResource(R.string.blindcast_home_stopped_title)
+    val needPermission = !permissionGranted
+    val containerColor = when {
+        needPermission -> Color(0xFFF8E2E2)
+        running -> Color(0xFFDFFAE4)
+        else -> Color(0xFFE8E8E8)
     }
-    val subtitle = if (running && service.lanIp.isNotBlank()) {
-        "http://${service.lanIp}:${service.port}"
-    } else {
-        stringResource(R.string.blindcast_home_stopped_subtitle)
+    val textColor = Color(0xFF111111)
+    val iconColor = when {
+        needPermission -> Color(0xFFF72727)
+        running -> Color(0xFF36D167)
+        else -> Color(0xFF9E9E9E)
+    }
+    val title = when {
+        needPermission -> stringResource(R.string.blindcast_home_need_permission_title)
+        running -> stringResource(R.string.blindcast_home_running_title)
+        else -> stringResource(R.string.blindcast_home_stopped_title)
+    }
+    val subtitle = when {
+        needPermission -> stringResource(R.string.blindcast_home_need_permission_subtitle)
+        running && service.lanIp.isNotBlank() -> "http://${service.lanIp}:${service.port}"
+        else -> stringResource(R.string.blindcast_home_stopped_subtitle)
     }
     val tokenStr = stringResource(
         if (service.tokenProtected) R.string.blindcast_home_token_on
@@ -154,10 +161,7 @@ private fun BlindCastHeroCard(service: ServiceCardState) {
     } else {
         stringResource(R.string.blindcast_home_stats_idle, service.clients, tokenStr)
     }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.defaultColors(color = containerColor),
-    ) {
+    val heroContent: @Composable () -> Unit = {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -172,7 +176,7 @@ private fun BlindCastHeroCard(service: ServiceCardState) {
                 Icon(
                     modifier = Modifier.size(182.dp),
                     imageVector =
-                        if (running) Icons.Rounded.CheckCircleOutline else Icons.Rounded.Cancel,
+                        if (running && !needPermission) Icons.Rounded.CheckCircleOutline else Icons.Rounded.Cancel,
                     tint = iconColor,
                     contentDescription = null,
                 )
@@ -204,6 +208,23 @@ private fun BlindCastHeroCard(service: ServiceCardState) {
                     color = textColor.copy(alpha = 0.78f),
                 )
             }
+        }
+    }
+    if (needPermission) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.defaultColors(color = containerColor),
+            onClick = onPermissionsClick,
+            showIndication = true,
+        ) {
+            heroContent()
+        }
+    } else {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.defaultColors(color = containerColor),
+        ) {
+            heroContent()
         }
     }
 }
@@ -353,88 +374,6 @@ private fun BlindCastHwCard(hw: HwState) {
 }
 
 @Composable
-private fun PermissionCardMiuix(
-    state: PermissionState,
-    onClick: () -> Unit,
-) {
-    val requiredGranted = state.requiredGranted
-    val iconColor = if (requiredGranted) Color(0xFF36D167) else Color(0xFFF72727)
-    val containerColor = if (requiredGranted) Color(0xFFDFFAE4) else Color(0xFFF8E2E2)
-    val textColor = Color(0xFF111111)
-    val summary =
-        if (requiredGranted) {
-            stringResource(R.string.permission_ready)
-        } else {
-            stringResource(R.string.permission_missing)
-        }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.defaultColors(color = containerColor),
-        onClick = onClick,
-        showIndication = true,
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(164.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .offset(x = 70.dp, y = 44.dp),
-                contentAlignment = Alignment.BottomEnd,
-            ) {
-                Icon(
-                    modifier = Modifier.size(182.dp),
-                    imageVector =
-                        if (requiredGranted) Icons.Rounded.CheckCircleOutline else Icons.Rounded.Cancel,
-                    tint = iconColor,
-                    contentDescription = null,
-                )
-            }
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(start = 24.dp, top = 28.dp, end = 148.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text =
-                            if (requiredGranted) {
-                                stringResource(R.string.permission_status_ready_title)
-                            } else {
-                                stringResource(R.string.permission_status_missing_title)
-                            },
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = textColor,
-                    )
-                    Text(
-                        text = summary,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = textColor.copy(alpha = 0.72f),
-                    )
-                }
-                Text(
-                    text =
-                        if (requiredGranted) {
-                            stringResource(R.string.permission_granted)
-                        } else {
-                            stringResource(R.string.permission_action_required)
-                        },
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = textColor.copy(alpha = 0.78f),
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun TopBar(
     scrollBehavior: ScrollBehavior,
     backdrop: LayerBackdrop?,
@@ -449,60 +388,4 @@ private fun TopBar(
     }
 }
 
-@Composable
-private fun ExampleLinkCard(
-    onOpenUrl: (String) -> Unit,
-) {
-    val url = stringResource(R.string.home_example_link_url)
-    Card(modifier = Modifier.fillMaxWidth()) {
-        BasicComponent(
-            title = stringResource(R.string.home_example_link_title),
-            summary = stringResource(R.string.home_example_link_subtitle),
-            endActions = {
-                Icon(
-                    imageVector = MiuixIcons.Link,
-                    tint = colorScheme.onSurface,
-                    contentDescription = null
-                )
-            },
-            onClick = { onOpenUrl(url) }
-        )
-    }
-}
 
-@Composable
-private fun InfoCard(systemInfo: SystemInfo) {
-    @Composable
-    fun InfoText(
-        title: String,
-        content: String,
-        bottomPadding: Dp = 24.dp
-    ) {
-        Text(
-            text = title,
-            fontSize = MiuixTheme.textStyles.headline1.fontSize,
-            fontWeight = FontWeight.Medium,
-            color = colorScheme.onSurface
-        )
-        Text(
-            text = content,
-            fontSize = MiuixTheme.textStyles.body2.fontSize,
-            color = colorScheme.onSurfaceVariantSummary,
-            modifier = Modifier.padding(top = 2.dp, bottom = bottomPadding)
-        )
-    }
-
-    Card {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            InfoText(
-                title = stringResource(R.string.home_app_version),
-                content = systemInfo.appVersion,
-                bottomPadding = 0.dp
-            )
-        }
-    }
-}
