@@ -1,5 +1,6 @@
 package com.erl.blindcast.core.blackout;
 
+import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
 
@@ -15,13 +16,17 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
 /**
  * {@code android.view.SurfaceControl} 隐藏 API 反射封装（Priv-Bridge-2 · 唯一物理熄屏底层；
- * Priv-Bridge-3 加全链路日志 + 调用实效核验）。
+ * Priv-Bridge-3 加全链路日志 + 调用实效核验；Priv-Bridge-4 加 token 多候选发现）。
  *
- * <p>二分支算法（MVP.md 四(二)(1) · Priv-Bridge-2 修订：14+ 熄屏改走 SurfaceControl）：
+ * <p>三候选发现算法（MVP.md 四(二)(1) · Priv-Bridge-4 修订：OPlus Android 15 真机实证
+ * {@code getPhysicalDisplayIds} 无此方法、{@code getBuiltInDisplay} 在 10+ 已删除，
+ * 两条老路全断，故新增第一优先级）：
  * <ul>
- *   <li>Android 9（SDK 28）：{@code SurfaceControl.getBuiltInDisplay()} 直接取内置屏 token；</li>
- *   <li>Android 10+（SDK 29+，含 14 / 15）：{@code getPhysicalDisplayIds()} 枚举物理屏 ID，
- *       再经 {@code getPhysicalDisplayToken(long)} 取主屏（index 0）token。</li>
+ *   <li>① {@code getInternalDisplayToken()} 无参 hidden static，经典内置屏 token，
+ *       各 ROM 存活率最高，第一优先级逐个 try；</li>
+ *   <li>② {@code getPhysicalDisplayIds()} 枚举物理屏 ID，再经
+ *       {@code getPhysicalDisplayToken(long)} 取 token（AOSP 10~14 路径，保留）；</li>
+ *   <li>③ {@code getBuiltInDisplay()} 仅 SDK&lt;=28 遗留，29+ 跳过不试（删掉错误回退）。</li>
  * </ul>
  *
  * <p>取到 token 后统一经 {@code setDisplayPowerMode(IBinder, int)} 物理切断 / 恢复屏幕电源。
@@ -67,6 +72,7 @@ public final class SurfaceControl {
     public static final int POWER_MODE_NORMAL = 2;
 
     private static final String SURFACE_CONTROL_CLASS_NAME = "android.view.SurfaceControl";
+    private static final String METHOD_GET_INTERNAL_DISPLAY_TOKEN = "getInternalDisplayToken";
     private static final String METHOD_GET_BUILT_IN_DISPLAY = "getBuiltInDisplay";
     private static final String METHOD_GET_PHYSICAL_DISPLAY_IDS = "getPhysicalDisplayIds";
     private static final String METHOD_GET_PHYSICAL_DISPLAY_TOKEN = "getPhysicalDisplayToken";
@@ -176,7 +182,30 @@ public final class SurfaceControl {
     }
 
     /**
-     * Android 9 分支：取内置显示屏 token。
+     * 第一优先级：取内置屏 token（无参 hidden static，经典内置屏 token，各 ROM 存活率最高）。
+     * OPlus Android 15 真机 {@code getPhysicalDisplayIds} 无此方法时，本路为唯一希望。
+     *
+     * @return 显示屏 Binder token（非 null）
+     * @throws Exception 反射失败（含方法不存在、隐藏 API 拦截、无提权）时抛出
+     */
+    public static IBinder getInternalDisplayToken() throws Exception {
+        Log.d(TAG, "[SurfaceControl] " + tid() + " getInternalDisplayToken enter");
+        try {
+            Object token = hiddenStaticMethod(METHOD_GET_INTERNAL_DISPLAY_TOKEN).invoke(null);
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " getInternalDisplayToken tokenNull=" + (token == null));
+            if (token == null) {
+                throw new IllegalStateException("SurfaceControl.getInternalDisplayToken() returned null");
+            }
+            return (IBinder) token;
+        } catch (Exception e) {
+            Log.e(TAG, "[SurfaceControl] " + tid() + " getInternalDisplayToken failed", e);
+            throw e;
+        }
+    }
+
+    /**
+     * Android 9 遗留分支（仅 SDK&lt;=28 调用；29+ 发现流程跳过不试）：取内置显示屏 token。
      *
      * @return 显示屏 Binder token（非 null）
      * @throws Exception 反射失败（含方法不存在、隐藏 API 拦截、无提权）时抛出
@@ -252,75 +281,118 @@ public final class SurfaceControl {
     }
 
     /**
-     * 取默认（主）显示屏 token：优先 Android 10+ 物理屏路径（含 14 / 15），
-     * 方法不存在时回退到 Android 9 内置屏路径。
+     * 取默认（主）显示屏 token：三候选按序逐个 try（Priv-Bridge-4）。
+     * 逻辑集中：直接复用 {@link #getAllDisplayTokens()} 的发现顺序，取首个有效 token。
      *
      * @return 主屏 Binder token（非 null）
-     * @throws Exception 两条路径均失败时抛出
+     * @throws Exception 全部候选均失败时抛出（附带已试候选清单）
      */
     public static IBinder getDefaultDisplayToken() throws Exception {
         Log.d(TAG, "[SurfaceControl] " + tid() + " getDefaultDisplayToken enter");
-        try {
-            long[] ids = getPhysicalDisplayIds();
-            if (ids.length > 0) {
-                Log.d(TAG, "[SurfaceControl] " + tid()
-                        + " getDefaultDisplayToken pick ids[0]=" + ids[0]);
-                return getPhysicalDisplayToken(ids[0]);
-            }
-            Log.e(TAG, "[SurfaceControl] " + tid()
-                    + " getPhysicalDisplayIds empty, fallback getBuiltInDisplay");
-        } catch (NoSuchMethodException fallThrough) {
-            // Android 9 设备无 getPhysicalDisplayIds，回退到 getBuiltInDisplay
-            Log.d(TAG, "[SurfaceControl] " + tid()
-                    + " no getPhysicalDisplayIds (SDK28?), fallback getBuiltInDisplay");
-        }
-        IBinder token = getBuiltInDisplay();
+        List<IBinder> all = getAllDisplayTokens();
+        IBinder first = all.get(0);
         Log.d(TAG, "[SurfaceControl] " + tid()
-                + " getDefaultDisplayToken fallback tokenNull=" + (token == null));
-        return token;
+                + " getDefaultDisplayToken pick[0] tokenNull=" + (first == null)
+                + " total=" + all.size());
+        return first;
     }
 
     /**
-     * 取全部物理屏 token（Priv-Bridge-3：逐屏设模式，防主屏索引漂移）。
-     * 10+ 路径无方法时回退单内置屏；空数组记错抛异常（上游记 false）。
+     * 取全部显示屏 token（Priv-Bridge-3：逐屏设模式，防主屏索引漂移；
+     * Priv-Bridge-4：三候选按序逐个 try，任一有效即收，全灭才抛附带已试候选清单）。
+     * 顺序：① getInternalDisplayToken（第一优先级）→ ② getPhysicalDisplayIds +
+     * getPhysicalDisplayToken（逐 id）→ ③ getBuiltInDisplay（仅 SDK&lt;=28，29+ 跳过不试）。
      *
-     * @return 非空 token 列表（顺序与 displayIds 一致）
-     * @throws Exception 全部失败时抛出
+     * @return 非空 token 列表（顺序即发现顺序：内置 → 物理屏 ids 顺序 → 遗留内置）
+     * @throws Exception 全部失败时抛出（message 含 tried=[...] 已试候选清单，上游记 false）
      */
     static List<IBinder> getAllDisplayTokens() throws Exception {
         Log.d(TAG, "[SurfaceControl] " + tid() + " getAllDisplayTokens enter");
+        List<IBinder> out = new ArrayList<>();
+        List<String> tried = new ArrayList<>();
+
+        // ① 第一优先级：getInternalDisplayToken（无参 hidden static，各 ROM 存活率最高）。
+        try {
+            IBinder internal = getInternalDisplayToken();
+            out.add(internal);
+            tried.add("getInternalDisplayToken:ok");
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " getAllDisplayTokens candidate[internal] ok count=1");
+        } catch (NoSuchMethodException noMethod) {
+            tried.add("getInternalDisplayToken:noMethod");
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " getAllDisplayTokens candidate[internal] no method, continue");
+        } catch (Exception e) {
+            tried.add("getInternalDisplayToken:fail:" + e.getClass().getSimpleName());
+            Log.e(TAG, "[SurfaceControl] " + tid()
+                    + " getAllDisplayTokens candidate[internal] failed", e);
+        }
+
+        // ② AOSP 10~14 路径（保留）：getPhysicalDisplayIds + 逐 id getPhysicalDisplayToken。
         try {
             long[] ids = getPhysicalDisplayIds();
             if (ids.length == 0) {
+                tried.add("getPhysicalDisplayIds:empty");
                 Log.e(TAG, "[SurfaceControl] " + tid()
                         + " getAllDisplayTokens ids empty");
-                throw new IllegalStateException(
-                        "SurfaceControl.getPhysicalDisplayIds() is empty");
-            }
-            List<IBinder> out = new ArrayList<>(ids.length);
-            for (long id : ids) {
-                try {
-                    out.add(getPhysicalDisplayToken(id));
-                } catch (Exception perDisplay) {
-                    // 单屏 token 失败只记错，继续其余屏（至少一屏成功即有意义）。
-                    Log.e(TAG, "[SurfaceControl] " + tid()
-                            + " getAllDisplayTokens id=" + id + " token failed", perDisplay);
+            } else {
+                tried.add("getPhysicalDisplayIds:len=" + ids.length);
+                for (long id : ids) {
+                    try {
+                        out.add(getPhysicalDisplayToken(id));
+                        tried.add("getPhysicalDisplayToken(" + id + "):ok");
+                    } catch (Exception perDisplay) {
+                        // 单屏 token 失败只记错，继续其余屏（至少一屏成功即有意义）。
+                        tried.add("getPhysicalDisplayToken(" + id + "):fail:"
+                                + perDisplay.getClass().getSimpleName());
+                        Log.e(TAG, "[SurfaceControl] " + tid()
+                                + " getAllDisplayTokens id=" + id + " token failed", perDisplay);
+                    }
                 }
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " getAllDisplayTokens ids=" + Arrays.toString(ids)
+                        + " okCount=" + out.size());
             }
+        } catch (NoSuchMethodException noIds) {
+            tried.add("getPhysicalDisplayIds:noMethod");
             Log.d(TAG, "[SurfaceControl] " + tid()
-                    + " getAllDisplayTokens ids=" + Arrays.toString(ids)
-                    + " okCount=" + out.size());
-            if (out.isEmpty()) {
-                throw new IllegalStateException("all display tokens null/failed");
-            }
-            return out;
-        } catch (NoSuchMethodException fallThrough) {
-            Log.d(TAG, "[SurfaceControl] " + tid()
-                    + " getAllDisplayTokens no ids method, fallback built-in");
-            List<IBinder> single = new ArrayList<>(1);
-            single.add(getBuiltInDisplay());
-            return single;
+                    + " getAllDisplayTokens no ids method, continue");
+        } catch (Exception e) {
+            tried.add("getPhysicalDisplayIds:fail:" + e.getClass().getSimpleName());
+            Log.e(TAG, "[SurfaceControl] " + tid()
+                    + " getAllDisplayTokens getPhysicalDisplayIds failed", e);
         }
+
+        // ③ 遗留：getBuiltInDisplay 仅 SDK<=28，29+ 跳过不试（删掉错误回退）。
+        if (Build.VERSION.SDK_INT <= 28) {
+            try {
+                out.add(getBuiltInDisplay());
+                tried.add("getBuiltInDisplay:ok");
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " getAllDisplayTokens candidate[built-in] ok");
+            } catch (NoSuchMethodException noBuiltIn) {
+                tried.add("getBuiltInDisplay:noMethod");
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " getAllDisplayTokens candidate[built-in] no method");
+            } catch (Exception e) {
+                tried.add("getBuiltInDisplay:fail:" + e.getClass().getSimpleName());
+                Log.e(TAG, "[SurfaceControl] " + tid()
+                        + " getAllDisplayTokens candidate[built-in] failed", e);
+            }
+        } else {
+            tried.add("getBuiltInDisplay:skipped(SDK=" + Build.VERSION.SDK_INT + ")");
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " getAllDisplayTokens skip built-in on SDK=" + Build.VERSION.SDK_INT
+                    + " (29+ not tried)");
+        }
+
+        Log.d(TAG, "[SurfaceControl] " + tid()
+                + " getAllDisplayTokens tried=" + tried
+                + " okCount=" + out.size());
+        if (out.isEmpty()) {
+            throw new IllegalStateException("all display tokens failed, tried=" + tried);
+        }
+        return out;
     }
 
     /**
@@ -402,13 +474,14 @@ public final class SurfaceControl {
     }
 
     /**
-     * 对主显示屏设置电源模式（取 token + 设模式一次完成，Priv-Bridge-3 实效核验版）。
+     * 对主显示屏设置电源模式（取 token + 设模式一次完成，Priv-Bridge-3 实效核验版，
+     * Priv-Bridge-4 三候选发现版）。
      *
      * <p>流程：
      * 1. 反射核验 {@code POWER_MODE_OFF}/{@code POWER_MODE_NORMAL} 真实值
      *    （OPlus 变体一致性；不一致记错并采用真实值）；
-     * 2. 枚举全部物理屏 token，逐屏设模式并记每屏 mode/ok/异常全文
-     *    （不只 index 0；单屏失败继续其余屏）；
+     * 2. 经 {@link #getAllDisplayTokens} 取三候选全部有效 token（内置 → 物理屏 → 遗留），
+     *    逐 token 设主模式并记每屏 mode/ok/异常全文（任一有效即调，单屏失败继续其余屏）；
      * 3. 每屏调用后尽力读回显示状态（能读则读）；
      * 4. 若主模式全屏失败（返回 false 全灭），依次尝试经
      *    {@link #readRealPowerModeConstants} 取到的真实备用模式值——
@@ -417,8 +490,8 @@ public final class SurfaceControl {
      *    备用值全部来自反射，禁止硬编码拍脑袋。
      *
      * @param mode {@link #POWER_MODE_OFF} 熄屏 / {@link #POWER_MODE_NORMAL} 点亮
-     * @return 任意一屏成功即 true；全失败返回 false
-     * @throws Exception 取 token 全失败等致命异常时抛出（上游返 false）
+     * @return 任意一 token 成功即 true；全部 token 全灭才返回 false
+     * @throws Exception 取 token 全失败等致命异常时抛出（message 含 tried 已试候选清单，上游返 false）
      */
     public static boolean setDefaultDisplayPowerMode(int mode) throws Exception {
         Log.d(TAG, "[SurfaceControl] " + tid()
@@ -512,7 +585,8 @@ public final class SurfaceControl {
             }
         }
         Log.e(TAG, "[SurfaceControl] " + tid()
-                + " setDefaultDisplayPowerMode all modes failed primary=" + effectiveMode);
+                + " setDefaultDisplayPowerMode all modes failed primary=" + effectiveMode
+                + " triedTokens=" + tokens.size());
         return false;
     }
 }
