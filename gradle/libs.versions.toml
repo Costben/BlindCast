@@ -18,6 +18,7 @@ hiddenapibypass = "6.1"
 paho = "1.2.5"
 zxing = "3.5.3"
 shizuku = "13.1.5"
+libsu = "6.0.0"
 
 [plugins]
 agp-app = { id = "com.android.application", version.ref = "agp" }
@@ -75,5 +76,8 @@ zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 # Priv-Bridge-1：Shizuku 提权桥（api = Binder/鉴权/UserService 绑定；provider = Shizuku Binder 下发通道）。
 shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
 shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
+
+# Root-Backend-1：Root 真身后端（topjohnwu libsu，仅 core 同步 Shell.cmd，经 JitPack 下发）。
+libsu-core = { module = "com.github.topjohnwu.libsu:core", version.ref = "libsu" }
 
 material-kolor = { group = "com.materialkolor", name = "material-kolor", version.ref = "materialKolor" }

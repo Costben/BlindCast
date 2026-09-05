@@ -155,6 +155,9 @@ dependencies {
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
 
+    // Root-Backend-1 Root 真身后端：只用 libsu core 同步 Shell.cmd（单次 app_process，不搭常驻 daemon）。
+    implementation(libs.libsu.core)
+
     implementation(libs.material.kolor)
 
 }

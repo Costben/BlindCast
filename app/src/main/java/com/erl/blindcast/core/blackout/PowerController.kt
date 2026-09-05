@@ -6,6 +6,7 @@ import android.util.Log
 import android.view.KeyEvent
 import androidx.annotation.WorkerThread
 import com.erl.blindcast.core.priv.PrivilegedBridge
+import com.erl.blindcast.core.priv.RootExecutor
 import com.erl.blindcast.core.scrcpy.TouchInjector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -66,18 +67,22 @@ import java.util.Locale
  * 熄屏语义：`POWER_MODE_OFF` 物理切断屏幕电源（OLED / 背光断电、触控停止上报），
  * 渲染管线与 CPU 保持满血前台运行；点亮语义：`POWER_MODE_NORMAL` 恢复屏幕电源。
  *
- * ## 提权三路径（Priv-Bridge-1 · 调用方必读）
- * - **Shizuku 已授权（主路径）**：App 进程调用 [setDisplayPowerRouted] /
- *   [blackoutRouted] / [restoreRouted]，经 [PrivilegedBridge.withPrivileged] 把调用
- *   送进 [com.erl.blindcast.core.priv.PrivilegedUserService]（特权身份）执行，
+ * ## 提权三路径（Priv-Bridge-1 · 调用方必读；Root-Backend-1 修订为 Root→Shizuku→按键三段路由）
+ * - **Root 可用（首选）**：App 进程调用 [setDisplayPowerRouted] /
+ *   [blackoutRouted] / [restoreRouted] 时先经 [RootExecutor.isRootAvailable] 判定，
+ *   可用则经 [RootExecutor.runAsRootDisplayPower] 以 uid 0 真 root 身份单次 `app_process`
+ *   拉起 [com.erl.blindcast.core.priv.RootMain] 直调 [setDisplayPower]（非 routed 版），
+ *   成功后翻转 [isBlackedOut] 并清零 [lastError]，不再走 Shizuku。
+ * - **Shizuku 已授权（次选，既有不动）**：Root 不可用/失败时回退既有通道，
+ *   经 [PrivilegedBridge.withPrivileged] 把调用送进
+ *   [com.erl.blindcast.core.priv.PrivilegedUserService]（特权身份）执行，
  *   成功后翻转 [isBlackedOut] 并清零 [lastError]。
- * - **未授权（报错引导）**：Shizuku 未运行 / 未授权时 routed 入口不抛异常，而是把引导文案
+ * - **未授权（报错引导）**：Root 不可用且 Shizuku 未运行 / 未授权时 routed 入口不抛异常，
+ *   而是把 Root 段（无 su / 未授权引导去 KernelSU 点允许）+ Shizuku 引导文案
  *   （[PrivilegedBridge.REQUIRE_SHIZUKU_MESSAGE] / `SHIZUKU_NOT_RUNNING_MESSAGE`）
  *   记入 [lastError] 并返回 false，调用方（如 `HomeViewModel.blackoutNow`）据此弹 Toast。
- * - **Root 直跑（后续 Slice，注释预留）**：直接以 root 身份执行时调直调版 [setDisplayPower] /
- *   [blackout] / [restore] 即可；routed 版在 Root 宿主内同样可用（Shizuku/Sui 的 binder
- *   在 Root 宿主下亦存活），互不冲突。
- *   // TODO(priv-bridge-next): Root 宿主直跑入口（su 下 app_process 拉起同一 UserService 类）。
+ * - **按键兜底（既有不动）**：特权进程内 [setDisplayPower] 的 binder→验效→按键兜底全链路
+ *   （熄屏 binder→SLEEP→POWER 三段，点亮 WAKEUP→POWER）保持不变。
  *
  * ## 直调 vs 路由
  * - 直调版（[setDisplayPower] / [blackout] / [restore] / suspend 版）**必须在提权进程内执行**：
@@ -85,7 +90,9 @@ import java.util.Locale
  *   普通 App 进程直接调用将失败并返回 `false`（异常记录在 [lastError]）。
  *   特权进程侧（[com.erl.blindcast.core.priv.PrivilegedUserService]）调的正是直调版。
  * - App 进程（含 UI / Service / EmergencyRecovery 所在进程）一律走 routed 版。
- * - blackoutRouted/restoreRouted 逻辑不变（仍经 UserService），PrivilegedUserService 内直调改道后的 SurfaceControl 版。
+ * - blackoutRouted/restoreRouted 三段路由（Root-Backend-1）：Root 可用→RootExecutor 单次
+ *   app_process；否则 Shizuku 既有 UserService 通道；按键兜底在特权进程内既有不动。
+ *   PrivilegedUserService 内直调改道后的 SurfaceControl 版。
  *
  * ## 范围声明
  * - 仅做底层能力封装：不接 UI、不启动任何线程（4s 喂狗与崩溃熔断在 Slice 2.2
@@ -793,33 +800,147 @@ object PowerController {
     // 未授权 → 记 lastError 并返回 false，不抛异常，调用方据此弹 Toast）。
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // Root-Backend-1：Root→Shizuku→按键三段路由支撑（Shizuku/按键段既有不动，仅前置 Root 段）。
+    // ------------------------------------------------------------------
+
+    /**
+     * 解析调用方 APK 路径（拼 `CLASSPATH=` 用，勿硬编码）。
+     *
+     * 优先级：[appContextRef]（特权进程 init 存的；App 进程若调过 init 同样可用）→
+     * `ActivityThread.currentApplication()` 反射（App 进程免 init 即可取，不新增权限）→ null（取不到则跳过 Root 段）。
+     *
+     * @param packageName 调用方包名（`context.packageName`，防 applicationIdSuffix 变体时回退自身）。
+     * @return `applicationInfo.sourceDir`，取不到返回 null。
+     */
+    private fun resolveApkPath(packageName: String): String? {
+        runCatching {
+            appContextRef?.get()?.let { ctx ->
+                runCatching {
+                    ctx.packageManager.getApplicationInfo(packageName, 0).sourceDir
+                }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+                runCatching { ctx.applicationInfo.sourceDir }
+                    .getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+            }
+        }
+        return runCatching {
+            val at = Class.forName("android.app.ActivityThread")
+            val app = at.getMethod("currentApplication").invoke(null) as? Context
+                ?: return null
+            runCatching {
+                app.packageManager.getApplicationInfo(packageName, 0).sourceDir
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+                ?: runCatching { app.applicationInfo.sourceDir }
+                    .getOrNull()?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
+
+    /**
+     * 试 Root 段（单次 `app_process`，失败不抛，只记文案供最终失败组合）。
+     *
+     * @return first = Root 段是否成功（true 则调用方直接成功返回）；second = Root 段文案
+     *  （成功时 null；跳过/失败时为追加进最终失败文案的 Root 段，如无 su/未授权引导去 KernelSU）。
+     */
+    private suspend fun tryRootSegment(packageName: String, on: Boolean): Pair<Boolean, String?> {
+        val rootAvailable: Boolean = try {
+            RootExecutor.isRootAvailable()
+        } catch (_: Throwable) {
+            false
+        }
+        Log.d(TAG, "[PowerController] ${tid()} tryRootSegment on=$on available=$rootAvailable")
+        if (!rootAvailable) {
+            return false to "Root段不可用（无su/未授权，去KernelSU管理器点允许BlindCast）"
+        }
+        val apkPath = try {
+            resolveApkPath(packageName)
+        } catch (_: Throwable) {
+            null
+        }
+        if (apkPath.isNullOrBlank()) {
+            Log.d(TAG, "[PowerController] ${tid()} tryRootSegment skip no apkPath pkg=$packageName")
+            return false to "Root段跳过（取APK路径失败）"
+        }
+        val rootOk: Boolean = try {
+            RootExecutor.runAsRootDisplayPower(packageName, apkPath, on)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            Log.e(TAG, "[PowerController] ${tid()} tryRootSegment run threw", t)
+            false
+        }
+        Log.d(TAG, "[PowerController] ${tid()} tryRootSegment done on=$on ok=$rootOk")
+        return if (rootOk) {
+            true to null
+        } else {
+            false to "Root段已试失败（见logcat [RootExecutor]/[RootMain]明细）"
+        }
+    }
+
+    /** 组合最终失败文案（Root 段 + Shizuku/特权段，任一为空则取另一段）。 */
+    private fun combineRootError(rootNote: String?, shizukuPart: String?): String {
+        val root = rootNote?.takeIf { it.isNotBlank() }
+        val shizuku = shizukuPart?.takeIf { it.isNotBlank() }
+        return when {
+            root != null && shizuku != null -> "$root；$shizuku"
+            root != null -> root
+            shizuku != null -> shizuku
+            else -> "特权执行失败（未知原因）"
+        }
+    }
+
     /**
      * 设置主显示屏电源（App 进程入口，协程，可在任意调度器上调用）。
      *
-     * 路由逻辑：[PrivilegedBridge.isPrivilegedGranted] 为 true → 经 UserService
-     * 通道在特权进程内执行（含 binder→验效→按键兜底全链路，熄屏为 binder→SLEEP→POWER 三段）；
-     * 否则把引导文案记入 [lastError] 并返回 false。
-     * Priv-Bridge-7：失败明细经 [PrivilegedBridge.setDisplayPowerDetailed] 同绑定内取回
-     * （含 binder→验效→已试按键步骤，Priv-Bridge-9 起熄屏为 binder→SLEEP→POWER 三段各记），
-     * 进 [lastError]/状态行/Toast，契约不变。
+     * 路由逻辑（Root-Backend-1 三段：Root→Shizuku→按键）：
+     * 1. Root 可用→[RootExecutor.runAsRootDisplayPower] 单次 `app_process` 直调
+     *    [setDisplayPower]（uid 0 真 root，成功直接返回）；
+     * 2. 否则 [PrivilegedBridge.isPrivilegedGranted] 为 true → 经 UserService
+     *    通道在特权进程内执行（含 binder→验效→按键兜底全链路，熄屏为 binder→SLEEP→POWER 三段）；
+     * 3. 按键兜底在特权进程内既有不动（见 [setDisplayPower]）。
+     * 失败文案追加 Root 段（无 su / 未授权引导去 KernelSU 点允许），进
+     * [lastError]/状态行/Toast，契约不变。
+     * Priv-Bridge-7：Shizuku 段失败明细经 [PrivilegedBridge.setDisplayPowerDetailed] 同绑定内取回
+     * （含 binder→验效→已试按键步骤，Priv-Bridge-9 起熄屏为 binder→SLEEP→POWER 三段各记）。
      *
-     * @param packageName 调用方包名（`context.packageName`，用于定位 UserService 组件）。
+     * @param packageName 调用方包名（`context.packageName`，用于定位 UserService 组件与解析 APK 路径）。
      * @param on true = 点亮，false = 物理熄屏。
-     * @return 特权执行验效通过 true；未授权 / 绑定失败 / 验效失败时 false。
+     * @return 特权执行验效通过 true；Root/Shizuku 均失败 / 未授权 / 绑定失败 / 验效失败时 false。
      */
     suspend fun setDisplayPowerRouted(packageName: String, on: Boolean): Boolean =
         withContext(Dispatchers.IO) {
+            // Root 段（首选；跳过/失败则记文案并回退 Shizuku，既有 Shizuku 逻辑不动）。
+            val rootRes: Pair<Boolean, String?> = try {
+                tryRootSegment(packageName, on)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                Log.e(TAG, "[PowerController] ${tid()} setDisplayPowerRouted root segment threw", t)
+                false to "Root段异常（${t.message ?: t}）"
+            }
+            if (rootRes.first) {
+                isBlackedOut = !on
+                lastError = null
+                recordPrivResult(if (on) "restore" else "blackout", true, null)
+                Log.d(TAG, "[PowerController] ${tid()} setDisplayPowerRouted on=$on ok=true via=root")
+                return@withContext true
+            }
+            val rootNote = rootRes.second
             val running = PrivilegedBridge.isShizukuRunning()
             val granted = PrivilegedBridge.isPrivilegedGranted()
             Log.d(TAG, "[PowerController] ${tid()} setDisplayPowerRouted enter on=$on " +
-                "running=$running granted=$granted")
+                "rootNote=$rootNote running=$running granted=$granted")
             if (!granted) {
-                lastError = if (running) {
-                    SecurityException(PrivilegedBridge.REQUIRE_SHIZUKU_MESSAGE)
+                val shizukuMsg = if (running) {
+                    PrivilegedBridge.REQUIRE_SHIZUKU_MESSAGE
                 } else {
-                    IllegalStateException(PrivilegedBridge.SHIZUKU_NOT_RUNNING_MESSAGE)
+                    PrivilegedBridge.SHIZUKU_NOT_RUNNING_MESSAGE
                 }
-                val msg = lastError?.message
+                val msg = combineRootError(rootNote, shizukuMsg)
+                lastError = if (running) {
+                    SecurityException(msg)
+                } else {
+                    IllegalStateException(msg)
+                }
                 recordPrivResult(if (on) "restore" else "blackout", false, msg)
                 Log.d(TAG, "[PowerController] ${tid()} setDisplayPowerRouted auth denied " +
                     "on=$on running=$running granted=$granted err=$msg")
@@ -830,8 +951,10 @@ object PowerController {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                lastError = t
-                recordPrivResult(if (on) "restore" else "blackout", false, t.message ?: t.toString())
+                val base = t.message ?: t.toString()
+                val msg = combineRootError(rootNote, "Shizuku段绑定失败：$base")
+                lastError = IllegalStateException(msg, t)
+                recordPrivResult(if (on) "restore" else "blackout", false, msg)
                 Log.e(TAG, "[PowerController] ${tid()} setDisplayPowerRouted on=$on bridge failed", t)
                 return@withContext false
             }
@@ -842,18 +965,19 @@ object PowerController {
                 recordPrivResult(if (on) "restore" else "blackout", true, null)
             } else {
                 val privErr = detailed.second?.takeIf { it.isNotBlank() }
-                val msg = privErr
                     ?: "特权进程执行失败（返回 false），请查看特权进程 logcat [SurfaceControl] 逐屏明细"
+                val msg = combineRootError(rootNote, "Shizuku段失败：$privErr")
                 lastError = IllegalStateException(msg)
                 recordPrivResult(if (on) "restore" else "blackout", false, msg)
             }
             Log.d(TAG, "[PowerController] ${tid()} setDisplayPowerRouted on=$on ok=$ok " +
-                "blackedOut=$isBlackedOut err=${lastError?.message}")
+                "via=shizuku blackedOut=$isBlackedOut err=${lastError?.message}")
             ok
         }
 
     /**
-     * 物理熄屏（App 进程入口，[setDisplayPowerRouted] 特化，`on = false`）。
+     * 物理熄屏（App 进程入口，[setDisplayPowerRouted] 特化，`on = false`；
+     * Root-Backend-1 三段路由 Root→Shizuku→按键，Root 可用先走 Root 单次 app_process）。
      *
      * @param packageName 调用方包名。
      * @return 同 [setDisplayPowerRouted]。
@@ -867,7 +991,8 @@ object PowerController {
     }
 
     /**
-     * 点亮屏幕（App 进程入口，[setDisplayPowerRouted] 特化，`on = true`）。
+     * 点亮屏幕（App 进程入口，[setDisplayPowerRouted] 特化，`on = true`；
+     * Root-Backend-1 三段路由 Root→Shizuku→按键，Root 可用先走 Root 单次 app_process）。
      *
      * @param packageName 调用方包名。
      * @return 同 [setDisplayPowerRouted]。
