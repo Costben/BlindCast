@@ -1,8 +1,12 @@
 package com.erl.blindcast.core.blackout;
 
+import android.content.Context;
+import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.util.Log;
+import android.view.Display;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -543,6 +547,225 @@ public final class SurfaceControl {
         }
         Log.d(TAG, "[SurfaceControl] " + tid() + " readBack unavailable");
         return null;
+    }
+
+    // ------------------------------------------------------------------
+    // Priv-Bridge-7：DisplayManager 验效读回（binder 无异常但屏不黑 → 必须 poll）。
+    // 真机实证（OPlus Android 15）：setDisplayPowerMode 为 void 签名，“ok=true”
+    // 只代表没抛异常，SurfaceFlinger 可静默忽略。故调完后必须经公开
+    // DisplayManager.getDisplay(Display.DEFAULT_DISPLAY).getState() 轮询验效：
+    // 熄屏验 STATE_OFF，点亮验 STATE_ON，最多约 2s，每次读回值均记日志。
+    // 本组方法可在特权进程与普通进程调用（公开 API，无需提权；读不到只记日志不抛）。
+    // ------------------------------------------------------------------
+
+    /** 验效默认超时约 2s（与 PowerController 侧一致，供调用方缺省用）。 */
+    public static final long VERIFY_TIMEOUT_MS = 2000L;
+
+    /** 验效轮询间隔 250ms（8 次 ≈ 2s，每次读回均记日志）。 */
+    public static final long VERIFY_INTERVAL_MS = 250L;
+
+    /**
+     * 显示状态名（尽力经 {@code Display.stateToString} 反射，失败回退 OFF/ON 手工映射）。
+     *
+     * @param state {@link Display#getState()} 返回值
+     * @return 如 OFF / ON / ?(数字)
+     */
+    public static String displayStateName(int state) {
+        try {
+            Method m = Display.class.getMethod("stateToString", int.class);
+            Object s = m.invoke(null, state);
+            if (s instanceof String) {
+                return (String) s;
+            }
+        } catch (Throwable ignored) {
+            // 反射不可用时回退手工映射（仅 OFF/ON 精确，其余记数字）。
+        }
+        if (state == Display.STATE_OFF) {
+            return "OFF";
+        }
+        if (state == Display.STATE_ON) {
+            return "ON";
+        }
+        return "?(" + state + ")";
+    }
+
+    private static void ensureDisplayHiddenApiExempted() {
+        try {
+            HiddenApiBypass.addHiddenApiExemptions(
+                    "Landroid/hardware/display/DisplayManagerGlobal",
+                    "Landroid/view/Display");
+        } catch (Throwable ignored) {
+            // 豁免失败不掩盖主异常。
+        }
+        ensureHiddenApiExempted();
+    }
+
+    /**
+     * 经 DisplayManager 读回主屏显示状态（单次，验效轮询的基本单元）。
+     *
+     * <p>路径 1（首选，需 Context）：{@code context.getSystemService(DisplayManager.class)
+     * .getDisplay(DEFAULT_DISPLAY).getState()}（公开 API，无需提权）。
+     * 路径 2（回退，无需 Context，供特权进程无 Context 时用）：
+     * 反射 {@code DisplayManagerGlobal.getInstance().getDisplayInfo(0).state}。
+     * 两路全灭返回 null（只记日志不抛，调用方按“不可用”计，poll 即判 miss）。
+     *
+     * @param ctx 可 null（null 时直接走路径 2；特权进程建议经 PowerController.init 传入）。
+     * @return Display.state（如 STATE_OFF=1 / STATE_ON=2），不可用时 null。
+     */
+    public static Integer readDisplayState(Context ctx) {
+        // 路径 1：公开 DisplayManager（需 Context）。
+        if (ctx != null) {
+            try {
+                DisplayManager dm = ctx.getSystemService(DisplayManager.class);
+                if (dm == null) {
+                    Log.d(TAG, "[SurfaceControl] " + tid()
+                            + " readDisplayState via DisplayManager dm=null");
+                } else {
+                    Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
+                    if (d == null) {
+                        Log.d(TAG, "[SurfaceControl] " + tid()
+                                + " readDisplayState via DisplayManager display=null");
+                    } else {
+                        int st = d.getState();
+                        Log.d(TAG, "[SurfaceControl] " + tid()
+                                + " readDisplayState via DisplayManager state=" + st
+                                + "(" + displayStateName(st) + ")");
+                        return st;
+                    }
+                }
+            } catch (Throwable t) {
+                Log.e(TAG, "[SurfaceControl] " + tid()
+                        + " readDisplayState via DisplayManager failed", t);
+            }
+        } else {
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " readDisplayState ctx=null, try DisplayManagerGlobal");
+        }
+        // 路径 2：DisplayManagerGlobal 反射（无需 Context）。
+        try {
+            ensureDisplayHiddenApiExempted();
+            Class<?> dmgClass = Class.forName("android.hardware.display.DisplayManagerGlobal");
+            Method getInstance = dmgClass.getDeclaredMethod("getInstance");
+            getInstance.setAccessible(true);
+            Object dmg = getInstance.invoke(null);
+            if (dmg == null) {
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " readDisplayState via Global instance=null");
+                return null;
+            }
+            Method getDisplayInfo;
+            try {
+                getDisplayInfo = dmgClass.getDeclaredMethod("getDisplayInfo", int.class);
+            } catch (NoSuchMethodException noMethod) {
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " readDisplayState via Global no getDisplayInfo");
+                return null;
+            }
+            getDisplayInfo.setAccessible(true);
+            Object info = getDisplayInfo.invoke(dmg, Display.DEFAULT_DISPLAY);
+            if (info == null) {
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " readDisplayState via Global info=null");
+                return null;
+            }
+            try {
+                Field sf = info.getClass().getDeclaredField("state");
+                sf.setAccessible(true);
+                int st = sf.getInt(info);
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " readDisplayState via DisplayManagerGlobal state=" + st
+                        + "(" + displayStateName(st) + ")");
+                return st;
+            } catch (NoSuchFieldException noField) {
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " readDisplayState via Global no state field");
+                return null;
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "[SurfaceControl] " + tid()
+                    + " readDisplayState via DisplayManagerGlobal failed", t);
+            return null;
+        }
+    }
+
+    /**
+     * 单次读回的日志串版（供 PowerController 组装失败文案与 Home 排障日志）。
+     *
+     * @param ctx 可 null（透传给 {@link #readDisplayState}）。
+     * @return 如“state=1(OFF)”/“state=2(ON)”/“unavailable”。
+     */
+    public static String readDisplayStateForLog(Context ctx) {
+        try {
+            Integer st = readDisplayState(ctx);
+            if (st == null) {
+                return "unavailable";
+            }
+            return "state=" + st + "(" + displayStateName(st) + ")";
+        } catch (Throwable t) {
+            Log.e(TAG, "[SurfaceControl] " + tid()
+                    + " readDisplayStateForLog failed", t);
+            return "readFailed:" + t.getMessage();
+        }
+    }
+
+    /**
+     * 轮询验效（Priv-Bridge-7 核心：binder 调完后必须调本方法）。
+     * 首次立即读，miss 则按间隔 sleep 重试至超时；每次读回值均记日志。
+     *
+     * @param ctx 可 null（透传给 {@link #readDisplayState}）。
+     * @param expectOff true = 熄屏验 STATE_OFF，false = 点亮验 STATE_ON。
+     * @param timeoutMs 最多等待时长（约 2s，调用方传 {@link #VERIFY_TIMEOUT_MS}）。
+     * @param intervalMs 轮询间隔（调用方传 {@link #VERIFY_INTERVAL_MS}）。
+     * @return 超时前命中期望状态 true，否则 false（含读回不可用）。
+     */
+    public static boolean pollDisplayState(Context ctx, boolean expectOff,
+                                           long timeoutMs, long intervalMs) {
+        int expect = expectOff ? Display.STATE_OFF : Display.STATE_ON;
+        long deadline = SystemClock.uptimeMillis() + Math.max(0L, timeoutMs);
+        long interval = Math.max(50L, intervalMs);
+        int attempt = 0;
+        String lastRead = "n/a";
+        while (true) {
+            attempt++;
+            Integer st;
+            try {
+                st = readDisplayState(ctx);
+            } catch (Throwable t) {
+                Log.e(TAG, "[SurfaceControl] " + tid()
+                        + " pollDisplayState attempt=" + attempt + " read threw", t);
+                st = null;
+            }
+            lastRead = (st == null)
+                    ? "unavailable"
+                    : ("state=" + st + "(" + displayStateName(st) + ")");
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " pollDisplayState attempt=" + attempt
+                    + " expect=" + expect + "(" + displayStateName(expect) + ")"
+                    + " read=" + lastRead);
+            if (st != null && st.intValue() == expect) {
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " pollDisplayState HIT attempt=" + attempt + " read=" + lastRead);
+                return true;
+            }
+            long now = SystemClock.uptimeMillis();
+            if (now >= deadline) {
+                break;
+            }
+            long sleep = Math.min(interval, deadline - now);
+            try {
+                Thread.sleep(sleep);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " pollDisplayState interrupted attempt=" + attempt);
+                break;
+            }
+        }
+        Log.e(TAG, "[SurfaceControl] " + tid()
+                + " pollDisplayState MISS expect=" + expect
+                + "(" + displayStateName(expect) + ")"
+                + " last=" + lastRead + " attempts=" + attempt);
+        return false;
     }
 
     /**

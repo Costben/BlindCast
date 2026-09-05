@@ -243,13 +243,76 @@ object PrivilegedBridge {
     /**
      * 特权熄屏/点亮快捷入口（[withPrivileged] 特化，包名由调用方传入）。
      *
-     * @return 特权进程内底层调用结果。
+     * Priv-Bridge-7：服务端已含验效 + 按键兜底，返回值即验效后最终结果。
+     *
+     * @return 特权进程内验效后最终结果。
      */
     suspend fun setDisplayPower(packageName: String, on: Boolean): Boolean {
         Log.d(TAG, "[PrivilegedBridge] ${tid()} setDisplayPower enter on=$on")
         val ok = withPrivileged(packageName) { ops -> ops.setDisplayPower(on) }
         Log.d(TAG, "[PrivilegedBridge] ${tid()} setDisplayPower exit on=$on ok=$ok")
         return ok
+    }
+
+    /**
+     * 特权熄屏/点亮详细入口（Priv-Bridge-7 · 单次绑定内取回失败明细）。
+     *
+     * 用完即焚：[withPrivileged] 每次新建特权进程，静态 lastError 跨绑定清零，
+     * 故必须同一次 [withPrivileged] 内先调 [IPrivilegedOps.setDisplayPower]、
+     * 失败再调 [IPrivilegedOps.getLastError]，否则明细丢失。
+     * [PowerController.setDisplayPowerRouted][com.erl.blindcast.core.blackout.PowerController]
+     * 走本入口，失败文案（含 binder→验效→已试按键步骤）进 lastError/状态行/Toast，契约不变。
+     *
+     * @return first = 验效后最终结果；second = 失败明细（成功时 null）。
+     */
+    suspend fun setDisplayPowerDetailed(packageName: String, on: Boolean): Pair<Boolean, String?> {
+        Log.d(TAG, "[PrivilegedBridge] ${tid()} setDisplayPowerDetailed enter on=$on")
+        val result = withPrivileged(packageName) { ops ->
+            val ok = ops.setDisplayPower(on)
+            var err: String? = null
+            if (!ok) {
+                err = runCatching { ops.lastError }.getOrNull()
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} setDisplayPowerDetailed " +
+                    "ok=false privErr=${err?.take(200)}")
+            }
+            ok to err
+        }
+        Log.d(TAG, "[PrivilegedBridge] ${tid()} setDisplayPowerDetailed exit on=$on " +
+            "ok=${result.first} hasErr=${result.second != null}")
+        return result
+    }
+
+    /**
+     * 按键兜底直调：熄屏（Priv-Bridge-7 · 特权进程内 KEYCODE_SLEEP + 验 STATE_OFF）。
+     *
+     * @return 验效通过 true，否则 false。
+     */
+    suspend fun sleepByKey(packageName: String): Boolean {
+        Log.d(TAG, "[PrivilegedBridge] ${tid()} sleepByKey enter")
+        val ok = withPrivileged(packageName) { ops -> ops.sleepByKey() }
+        Log.d(TAG, "[PrivilegedBridge] ${tid()} sleepByKey exit ok=$ok")
+        return ok
+    }
+
+    /**
+     * 按键兜底直调：点亮（Priv-Bridge-7 · 特权进程内 KEYCODE_WAKEUP→KEYCODE_POWER + 验 STATE_ON）。
+     *
+     * @return 验效通过 true，否则 false。
+     */
+    suspend fun wakeByKey(packageName: String): Boolean {
+        Log.d(TAG, "[PrivilegedBridge] ${tid()} wakeByKey enter")
+        val ok = withPrivileged(packageName) { ops -> ops.wakeByKey() }
+        Log.d(TAG, "[PrivilegedBridge] ${tid()} wakeByKey exit ok=$ok")
+        return ok
+    }
+
+    /**
+     * 取特权进程侧最近一次失败明细（须同绑定内调用， standalone 排障用）。
+     *
+     * @return 失败文案，成功/无记录时 null。
+     */
+    suspend fun lastPrivError(packageName: String): String? {
+        return withPrivileged(packageName) { ops -> runCatching { ops.lastError }.getOrNull() }
     }
 
     // ------------------------------------------------------------------

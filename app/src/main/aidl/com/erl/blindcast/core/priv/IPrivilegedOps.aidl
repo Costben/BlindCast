@@ -12,8 +12,20 @@ interface IPrivilegedOps {
     void destroy() = 16777114; // Destroy method defined by Shizuku server.
 
     // 设置主显示屏电源：true = 点亮（POWER_MODE_NORMAL），false = 物理熄屏（POWER_MODE_OFF）。
+    // Priv-Bridge-7 起服务端内含验效轮询 + 按键兜底（binder 无异常但验效失败 → KEY_SLEEP/WAKEUP/POWER），
+    // 返回值已是验效后最终结果（true = Display 状态已达目标）。
     boolean setDisplayPower(boolean on) = 1;
 
-    // TODO(priv-bridge-next): 抓屏复用预留 —— 如 ParcelFileDescriptor captureFrame(...) = 2;
-    // TODO(priv-bridge-next): 注入复用预留 —— 如 boolean injectInput(...) = 3;
+    // Priv-Bridge-7：按键兜底直调（特权进程内经 TouchInjector/InputManagerWrapper 注入 + 验效）。
+    // 熄屏注入 KEYCODE_SLEEP（Down+Up，SOURCE_KEYBOARD）后验 STATE_OFF；点亮依次试
+    // KEYCODE_WAKEUP、无则 KEYCODE_POWER 后验 STATE_ON。编号顺延，旧方法不动。
+    boolean sleepByKey() = 2;
+    boolean wakeByKey() = 3;
+
+    // Priv-Bridge-7：取特权进程侧最近一次失败明细（PowerController.lastError.message，
+    // 成功时 null；App 侧 routed 失败时同 binder 内取回，用于 Home 状态行/Toast，契约不变）。
+    // 与 setDisplayPower 同一次绑定内调用才有意义（UserService 用完即焚，跨绑定静态量清零）。
+    String getLastError() = 4;
+
+    // TODO(priv-bridge-next): 抓屏复用预留 —— 如 ParcelFileDescriptor captureFrame(...) = 5;
 }
