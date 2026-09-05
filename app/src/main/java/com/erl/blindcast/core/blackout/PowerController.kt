@@ -38,14 +38,16 @@ import java.util.Locale
  *   POWER_MODE_OFF=0 / NORMAL=2 两条路线一致。
  *
  * ## 验效轮询（Priv-Bridge-7 · OPlus Android 15 真机实证；
- * ## No-Lock-1 熄屏永久下线锁屏链：只许 binder 物理断电 + STATE_OFF 严格验效）
+ * ## No-Lock-1 熄屏永久下线锁屏链：只许 binder 物理断电 + SF 级严格验效）
  * - 真机 trace：`setDisplayPowerMode(mode=0)` 为 void 签名，“ok=true”只代表没抛异常，
  *   OPlus SurfaceFlinger 静默忽略（10s 后 mScreenState 仍 ON）。故 binder 调完后必须验效。
- * - 验效：经 [SurfaceControl.pollDisplayState] 轮询
- *   `DisplayManager.getDisplay(DEFAULT_DISPLAY).state`（熄屏验 STATE_OFF 严格判定，
- *   点亮验 STATE_ON，最多约 2s，每次读回值均记日志；物理断电就该是 OFF）。
- *   特权进程无 Context 时回退 DisplayManagerGlobal 反射，
- *   同样可验（见 SurfaceControl.readDisplayState）。
+ * - 验效（Power-Fix-2 修订 · Pixel SDK 36 真机实证）：binder OFF 到达 SF 即断电
+ *   （`dumpsys SurfaceFlinger` 示 powerMode=Off/isPoweredOn=0，scrcpy 同构），
+ *   但 DisplayManager 侧恒报 ON（DPC 未跟进，screencap 取帧缓冲亦恒亮）。
+ *   故熄屏验 SF 级 powerMode=Off **或** DM 级 STATE_OFF（或即真黑，约 2s，
+ *   每次双路读回均记日志；物理断电就该 SF-Off），点亮验 DM STATE_ON 不变。
+ *   特权进程无 Context 时 DM 路回退 DisplayManagerGlobal 反射，
+ *   SF 路经 dumpsys 直读（uid 0 / shell 可 dump），同样可验。
  * - 熄屏无兜底（No-Lock-1 铁令）：binder 验效失败直接返 false，不注入
  *   KEYCODE_SLEEP/KEYCODE_POWER，不调 lockNow/lockAndSleep/ensureScreenOff，
  *   失败文案含“物理断电未生效（本机忽略），未执行锁屏兜底”，进
@@ -221,6 +223,73 @@ object PowerController {
     }
 
     /**
+     * 熄屏验效（Power-Fix-2 · binder OFF 调完后必须调本方法，点亮侧不动）。
+     * SDK 34+ 真机实证：SF 级断电不向 DisplayManager 传播（DM 恒报 ON，
+     * screencap 取帧缓冲亦恒亮），故熄屏成功判据为 SF 级 powerMode=Off
+     * **或** DM 级 STATE_OFF（或即真黑，兼容老 ROM；scrcpy turn-screen-off 同构）。
+     * 单轮内先读 SF 再读 DM，每次读回均记日志；窗口约 2s 不变。
+     *
+     * @return 超时前任一判据命中 true，否则 false（含双路不可用）。
+     */
+    private fun pollDisplayOffState(): Boolean {
+        val deadline = android.os.SystemClock.uptimeMillis() + VERIFY_TIMEOUT_MS
+        var attempt = 0
+        while (true) {
+            attempt++
+            val sfOff: Boolean? = try {
+                SurfaceControl.readSFPowerOff()
+            } catch (t: Throwable) {
+                Log.e(TAG, "[PowerController] ${tid()} pollOffState attempt=$attempt sf threw", t)
+                null
+            }
+            val dmState: Int? = try {
+                SurfaceControl.readDisplayState(appContext())
+            } catch (t: Throwable) {
+                Log.e(TAG, "[PowerController] ${tid()} pollOffState attempt=$attempt dm threw", t)
+                null
+            }
+            val sfLog = when (sfOff) {
+                true -> "powerMode=Off"
+                false -> "powerMode!=Off"
+                null -> "unavailable"
+            }
+            val dmLog = if (dmState == null) "unavailable"
+                else "state=$dmState(${SurfaceControl.displayStateName(dmState)})"
+            Log.d(TAG, "[PowerController] ${tid()} pollOffState attempt=$attempt " +
+                "expect=SF-Off||DM-OFF sf=$sfLog dm=$dmLog")
+            if (sfOff == true || dmState == android.view.Display.STATE_OFF) {
+                Log.d(TAG, "[PowerController] ${tid()} pollOffState HIT attempt=$attempt " +
+                    "sf=$sfLog dm=$dmLog")
+                return true
+            }
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now >= deadline) break
+            try {
+                Thread.sleep(minOf(VERIFY_INTERVAL_MS, deadline - now).coerceAtLeast(50L))
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
+        }
+        Log.e(TAG, "[PowerController] ${tid()} pollOffState MISS attempts=$attempt")
+        return false
+    }
+
+    /**
+     * 熄屏单次读回日志串（SF 级 + DM 级双判据，供失败文案组装）。
+     *
+     * @return 如“sf=powerMode=Off dm=state=2(ON)”。
+     */
+    private fun readOffStateForLog(): String {
+        val sf = try {
+            SurfaceControl.readSFPowerForLog()
+        } catch (t: Throwable) {
+            "sf=readFailed:${t.message}"
+        }
+        return "$sf ${readDisplayForLog().replace("state=", "dm=state=")}"
+    }
+
+    /**
      * 按键兜底复验（Priv-Bridge-8 · 仅熄屏按键后用）。
      * 窗口约 6s（250ms 间隔不变，多轮），成功集放宽为
      * STATE_OFF/DOZE/DOZE_SUSPEND 任一（Display 读回已映射好三值，每次读值均记日志）。
@@ -319,8 +388,8 @@ object PowerController {
                 binderOk = false
                 Log.e(TAG, "[PowerController][BinderFirst] ${tid()} binder threw on=$on mode=$mode route=$route", t)
             }
-            val verifiedPoll = pollDisplayState(expectOff)
-            val read = readDisplayForLog()
+            val verifiedPoll = if (expectOff) pollDisplayOffState() else pollDisplayState(expectOff = false)
+            val read = if (expectOff) readOffStateForLog() else readDisplayForLog()
             Log.d(TAG, "[PowerController][BinderFirst] ${tid()} verify on=$on expect=$expectName " +
                 "binderOk=$binderOk binderErr=$binderErrMsg verified=$verifiedPoll read=$read")
             val verified = binderErrMsg == null && binderOk && verifiedPoll
@@ -420,8 +489,9 @@ object PowerController {
      * No-Lock-1 全链路（OPlus Android 15 真机实证：void 签名 ok=true 只代表无异常，
      * SurfaceFlinger 可静默忽略，故必须验效；熄屏永不 fallback 锁屏链）：
      * 1. binder：既有混合路由调 setDisplayPowerMode（无异常记 binderOk）；
-     * 2. 验效：[pollDisplayState] 轮询 Display 状态（熄屏验 STATE_OFF 严格判定，
-     *    点亮验 STATE_ON，约 2s，每次读回记日志；物理断电就该是 OFF）；
+     * 2. 验效：[pollDisplayOffState]（熄屏：SF 级 powerMode=Off 或 DM 级 STATE_OFF，
+     *    约 2s，每次双路读回记日志；物理断电就该 SF-Off）/
+     *    [pollDisplayState]（点亮验 STATE_ON，约 2s）；
      * 3. 熄屏无兜底：验效失败直接返 false，不注入 KEYCODE_SLEEP/KEYCODE_POWER，
      *    不调 lockNow/lockAndSleep/ensureScreenOff，失败文案含
      *    “物理断电未生效（本机忽略），未执行锁屏兜底”；
@@ -488,9 +558,10 @@ object PowerController {
                 binderOk = false
                 Log.e(TAG, "[PowerController] ${tid()} binder threw on=$on mode=$mode route=$route", t)
             }
-            // 验效：binder 调完后必须 poll（OPlus 静默忽略即在此现形）。
-            val firstVerified = pollDisplayState(expectOff)
-            val firstRead = readDisplayForLog()
+            // 验效：binder 调完后必须 poll（OPlus 静默忽略即在此现形；
+            // Power-Fix-2：熄屏走 SF 级或判据，点亮走 DM STATE_ON 不变）。
+            val firstVerified = if (expectOff) pollDisplayOffState() else pollDisplayState(expectOff = false)
+            val firstRead = if (expectOff) readOffStateForLog() else readDisplayForLog()
             Log.d(TAG, "[PowerController] ${tid()} firstVerify on=$on expect=$expectName " +
                 "binderOk=$binderOk binderErr=${binderErr?.message} " +
                 "verified=$firstVerified read=$firstRead")

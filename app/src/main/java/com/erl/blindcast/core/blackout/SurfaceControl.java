@@ -866,6 +866,223 @@ public final class SurfaceControl {
         return false;
     }
 
+    // ------------------------------------------------------------------
+    // Power-Fix-2：SurfaceFlinger 级熄屏验效（SDK 34+ 真机实证：
+    // Pixel BP4A / OPlus ColorOS 上 setDisplayPowerMode(OFF) 经 binder
+    // 到达 SurfaceFlinger 即断电（dumpsys SurfaceFlinger 示 powerMode=Off /
+    // isPoweredOn=0，scrcpy turn-screen-off 同构），但 DisplayManager 侧
+    // Display.state 仍报 ON（DisplayPowerController 未跟进，screencap 取
+    // 帧缓冲亦恒亮，故帧缓冲/DM 均不能作为熄屏判据）。
+    // 熄屏验效必须读 SF 级（dumpsys SurfaceFlinger 首个 powerMode= 行，
+    // 即主物理屏），点亮侧维持 DisplayManager STATE_ON 不动。
+    // 本组方法只在提权进程内跑验效时调（uid 0 / shell 均可 dumpsys，
+    // 普通 App 进程无 DUMP 按 unavailable 计，不抛）。
+    // ------------------------------------------------------------------
+
+    /**
+     * 读 SurfaceFlinger 主屏电源模式（单次，熄屏验效的基本单元）。
+     *
+     * <p>经 {@code dumpsys SurfaceFlinger} 取 {@code Displays} 列表首个
+     * {@code powerMode=} 行（主物理屏枚举在首位，单屏设备唯一）：
+     * {@code Off} 即面板断电真黑，{@code On} 为点亮。
+     *
+     * @return true = 主屏 SF 级已断电（powerMode=Off）；false = On/其他值；
+     *   null = dumpsys 不可用/解析失败（只记日志不抛，调用方按 miss 计）。
+     */
+    public static Boolean readSFPowerOff() {
+        String value = readSFPowerModeValue();
+        if (value == null) {
+            return null;
+        }
+        return "Off".equals(value);
+    }
+
+    /**
+     * SurfaceFlinger 主屏电源模式原始值（单次，日志/排障用）。
+     *
+     * @return 如 Off / On / Doze / DozeSuspend；不可用时 null。
+     */
+    static String readSFPowerModeValue() {
+        String dump = dumpSurfaceFlinger();
+        if (dump == null) {
+            return null;
+        }
+        try {
+            int idx = 0;
+            while (idx < dump.length()) {
+                int eol = dump.indexOf('\n', idx);
+                String line = (eol < 0 ? dump.substring(idx) : dump.substring(idx, eol)).trim();
+                if (line.startsWith("powerMode=")) {
+                    String v = line.substring("powerMode=".length()).trim();
+                    Log.d(TAG, "[SurfaceControl] " + tid()
+                            + " readSFPowerMode value=" + v);
+                    return v.isEmpty() ? null : v;
+                }
+                if (eol < 0) {
+                    break;
+                }
+                idx = eol + 1;
+            }
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " readSFPowerMode no powerMode line");
+        } catch (Throwable t) {
+            Log.e(TAG, "[SurfaceControl] " + tid()
+                    + " readSFPowerMode parse failed", t);
+        }
+        return null;
+    }
+
+    /**
+     * SF 级读回的日志串版（供 PowerController 熄屏失败文案与排障）。
+     *
+     * @return 如“sf=powerMode=Off”/“sf=powerMode=On”/“sf=unavailable”。
+     */
+    public static String readSFPowerForLog() {
+        try {
+            String v = readSFPowerModeValue();
+            return v == null ? "sf=unavailable" : "sf=powerMode=" + v;
+        } catch (Throwable t) {
+            Log.e(TAG, "[SurfaceControl] " + tid()
+                    + " readSFPowerForLog failed", t);
+            return "sf=readFailed:" + t.getMessage();
+        }
+    }
+
+    /**
+     * SF 级熄屏轮询验效（binder OFF 调完后调本方法；首次立即读，miss 按间隔重试至超时）。
+     *
+     * @param timeoutMs 最多等待时长（调用方传 {@link #VERIFY_TIMEOUT_MS}）。
+     * @param intervalMs 轮询间隔（调用方传 {@link #VERIFY_INTERVAL_MS}）。
+     * @return 超时前读到 powerMode=Off 即 true，否则 false（含不可用）。
+     */
+    public static boolean pollSFPowerOff(long timeoutMs, long intervalMs) {
+        long deadline = SystemClock.uptimeMillis() + Math.max(0L, timeoutMs);
+        long interval = Math.max(50L, intervalMs);
+        int attempt = 0;
+        String lastRead = "n/a";
+        while (true) {
+            attempt++;
+            Boolean off;
+            try {
+                off = readSFPowerOff();
+            } catch (Throwable t) {
+                Log.e(TAG, "[SurfaceControl] " + tid()
+                        + " pollSFPowerOff attempt=" + attempt + " read threw", t);
+                off = null;
+            }
+            lastRead = (off == null) ? "unavailable" : (off ? "powerMode=Off" : "powerMode!=Off");
+            Log.d(TAG, "[SurfaceControl] " + tid()
+                    + " pollSFPowerOff attempt=" + attempt
+                    + " expect=Off read=" + lastRead);
+            if (off != null && off) {
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " pollSFPowerOff HIT attempt=" + attempt);
+                return true;
+            }
+            long now = SystemClock.uptimeMillis();
+            if (now >= deadline) {
+                break;
+            }
+            long sleep = Math.min(interval, deadline - now);
+            try {
+                Thread.sleep(sleep);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " pollSFPowerOff interrupted attempt=" + attempt);
+                break;
+            }
+        }
+        Log.e(TAG, "[SurfaceControl] " + tid()
+                + " pollSFPowerOff MISS expect=Off"
+                + " last=" + lastRead + " attempts=" + attempt);
+        return false;
+    }
+
+    /**
+     * 执行一次 {@code dumpsys SurfaceFlinger} 并取回 stdout（截断防超长）。
+     *
+     * <p>实现注意：必须另起排空线程并发读 stdout（SF dump 远超 64KB 管道缓冲，
+     * 先 waitFor 再读必死锁超时），主线程只等退出 + 会合排空线程。
+     *
+     * @return dump 文本；失败/超时返回 null（只记日志不抛）。
+     */
+    private static String dumpSurfaceFlinger() {
+        Process p = null;
+        try {
+            p = new ProcessBuilder("dumpsys", "SurfaceFlinger")
+                    .redirectErrorStream(true)
+                    .start();
+            final Process proc = p;
+            final java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            Thread drain = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        java.io.InputStream in = proc.getInputStream();
+                        byte[] buf = new byte[8192];
+                        int total = 0;
+                        int r;
+                        while ((r = in.read(buf)) >= 0) {
+                            if (total + r > 256 * 1024) {
+                                out.write(buf, 0, 256 * 1024 - total);
+                                break;
+                            }
+                            out.write(buf, 0, r);
+                            total += r;
+                        }
+                        try {
+                            in.close();
+                        } catch (Throwable ignored) {
+                            // 关闭读端失败不掩盖主结果。
+                        }
+                    } catch (Throwable t) {
+                        Log.e(TAG, "[SurfaceControl] " + tid()
+                                + " dumpSurfaceFlinger drain failed", t);
+                    }
+                }
+            }, "BlindCast-SFDump-Drain");
+            drain.setDaemon(true);
+            drain.start();
+            boolean done;
+            try {
+                done = p.waitFor(1500, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                done = false;
+            }
+            try {
+                drain.join(1000);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+            if (!done) {
+                Log.e(TAG, "[SurfaceControl] " + tid()
+                        + " dumpSurfaceFlinger timeout");
+                return null;
+            }
+            String s = out.toString("UTF-8");
+            if (s.isEmpty()) {
+                Log.d(TAG, "[SurfaceControl] " + tid()
+                        + " dumpSurfaceFlinger empty");
+                return null;
+            }
+            return s;
+        } catch (Throwable t) {
+            Log.e(TAG, "[SurfaceControl] " + tid()
+                    + " dumpSurfaceFlinger failed", t);
+            return null;
+        } finally {
+            if (p != null) {
+                try {
+                    p.destroy();
+                } catch (Throwable ignored) {
+                    // 销毁失败不掩盖主结果。
+                }
+            }
+        }
+    }
+
     /**
      * 对主显示屏设置电源模式（取 token + 设模式一次完成，Priv-Bridge-3 实效核验版，
      * Priv-Bridge-4 三候选发现版）。
