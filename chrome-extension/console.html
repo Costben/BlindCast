@@ -29,15 +29,17 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
 .pill.bad{color:var(--danger);border-color:rgba(248,113,113,.4)}
 /* ---- 舞台 ---- */
 #stage{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;
+  padding:12px;
   background:#05060a repeating-conic-gradient(rgba(255,255,255,.014) 0% 25%,transparent 0% 50%) 0 0/28px 28px}
 #canvas{background:#000;border-radius:8px;box-shadow:0 0 0 1px var(--line),0 12px 48px rgba(0,0,0,.6);
   touch-action:none;cursor:crosshair;outline:none;max-width:100%;max-height:100%}
 #canvas:focus{box-shadow:0 0 0 1px rgba(52,211,153,.55),0 12px 48px rgba(0,0,0,.6)}
 .hint{position:absolute;left:12px;bottom:10px;font-family:var(--mono);font-size:11px;color:var(--dim);
   background:rgba(0,0,0,.45);padding:4px 10px;border-radius:8px;pointer-events:none}
-/* ---- 悬浮控制栏 ---- */
-#dock{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;z-index:6;
-  display:flex;gap:6px;align-items:center;padding:8px 10px;border-radius:16px;max-width:96vw;overflow-x:auto;
+/* ---- 悬浮控制栏（默认右侧垂直侧边栏，不再挡画面；窄窗回退底部横条见 media query） ---- */
+#dock{position:absolute;right:12px;top:50%;transform:translateY(-50%);z-index:6;
+  display:flex;flex-direction:column;gap:6px;align-items:stretch;padding:10px 8px;border-radius:16px;
+  max-height:96%;overflow-y:auto;overflow-x:hidden;
   background:rgba(16,19,26,.62);border:1px solid var(--line);backdrop-filter:blur(14px);
   box-shadow:0 8px 32px rgba(0,0,0,.5)}
 #dock button{flex:0 0 auto;border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--fg);
@@ -45,7 +47,7 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
 #dock button:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
 #dock button.on{background:rgba(52,211,153,.22);border-color:var(--neon);color:var(--neon)}
 #dock button.warn-on{background:rgba(251,191,36,.18);border-color:var(--warn);color:var(--warn)}
-#dock .sep{flex:0 0 auto;width:1px;height:24px;background:var(--line)}
+#dock .sep{flex:0 0 auto;width:24px;height:1px;margin:2px auto;background:var(--line)}
 #dock .lbl{font-size:10px;color:var(--dim);font-family:var(--mono)}
 /* ---- 遮罩 / 弹窗 ---- */
 .overlay{position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;
@@ -76,8 +78,26 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
   padding:8px 16px;border-radius:10px;animation:fadein .2s}
 @keyframes fadein{from{opacity:0;transform:translateY(-6px)}}
 footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,234,240,.32);
-  display:flex;gap:12px;border-top:1px solid rgba(255,255,255,.06)}
-@media (max-width:640px){ .hint{display:none} footer{display:none} .logo span.sub{display:none} }
+  display:flex;gap:12px;border-top:1px solid rgba(255,255,255,.06);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+footer span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+footer #footStat{flex:0 1 auto;min-width:0}
+footer #footFrame{flex:0 0 auto;margin-left:auto}
+/* ExtPolish-1: 窄窗去挤（dock 缩钮+横滑）/ 矮窗藏 hint / footer 合并一行不断行 */
+@media (max-width:720px){
+  header{padding:8px 10px;gap:8px}
+  .logo span.sub{display:none}
+  .pill{font-size:10px;padding:3px 8px}
+  #stage{padding:8px}
+  /* 窄窗（手机竖屏手持）回退到底部横条 */
+  #dock{left:50%;right:auto;top:auto;bottom:14px;transform:translateX(-50%);
+    flex-direction:row;align-items:center;gap:4px;padding:6px 8px;
+    max-width:96vw;max-height:none;overflow-x:auto;overflow-y:hidden}
+  #dock button{min-width:34px;height:34px;font-size:14px;padding:0 8px}
+  #dock .sep{width:1px;height:24px;margin:0}
+  #dock .lbl{display:none}
+}
+@media (max-height:560px){ .hint{display:none} }
 </style>
 </head>
 <body>

@@ -201,8 +201,13 @@ function feedVideo(payload) {
 function fitCanvas() {
   const vw = canvas.width || 9, vh = canvas.height || 20;
   const sw = stage.clientWidth, sh = stage.clientHeight;
-  const dockH = 76;
-  const scale = Math.min(sw / vw, (sh - dockH) / vh);
+  // #dock 默认右侧垂直侧边栏：从可用宽扣栏宽（约 64px），高度全给画面；
+  // 窄窗（<=720px）侧边栏回退到底部横条，改从可用高扣 76px。坐标映射走
+  // getBoundingClientRect（normPos），换边不影响。
+  const narrow = window.matchMedia && window.matchMedia("(max-width: 720px)").matches;
+  const dockW = 64, dockH = 76;
+  const scale = narrow ? Math.min(sw / vw, (sh - dockH) / vh)
+                       : Math.min((sw - dockW) / vw, sh / vh);
   const w = Math.max(1, Math.floor(vw * scale)), h = Math.max(1, Math.floor(vh * scale));
   canvas.style.width = w + "px"; canvas.style.height = h + "px";
 }

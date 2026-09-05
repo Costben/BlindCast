@@ -438,6 +438,7 @@ object BlindCastServer {
             val sb = StringBuilder()
             sb.append("HTTP/1.1 ").append(status).append(' ').append(reason).append("\r\n")
             for ((k, v) in headers) sb.append(k).append(": ").append(v).append("\r\n")
+            sb.append("Access-Control-Allow-Origin: *\r\n")
             sb.append("Connection: close\r\n")
             sb.append("Content-Length: ").append(body?.size ?: 0).append("\r\n")
             sb.append("\r\n")
