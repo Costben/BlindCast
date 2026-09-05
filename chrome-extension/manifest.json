@@ -8,5 +8,12 @@
     "default_title": "BlindCast Console",
     "default_popup": "popup.html"
   },
+  "permissions": ["sidePanel", "storage", "tabs"],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
   "host_permissions": ["http://*/*", "https://*/*"]
 }

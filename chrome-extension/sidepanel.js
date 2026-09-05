@@ -1,19 +1,16 @@
 "use strict";
 /* =====================================================================
- * BlindCast Web 控制台（插件版 app.js）
- * 由 app/src/main/assets/web/index.html 内联脚本导出，逻辑逐行一致，
- * 仅加一处差异：?host= 参数（插件页 origin 为 chrome-extension://，
- * 相对路径不可用，故全部请求拼绝对地址；普通网页打开时 HOST 为空保持原行为）。
- * 同步纪律：改网页端先改 index.html，再把 <script> 段整体拷过来并保留本补丁。
- * 后端协议严格对齐 core/server：
- *  - GET /api/auth/status -> {authRequired}            (AuthRoute)
- *  - GET /api/auth/verify?token= -> {ok}               (AuthRoute)
- *  - GET /api/status (鉴权) -> {blackedOut,batteryLevel...(DeviceApiRoute)
- *  - POST /api/screen {action} (鉴权)                  (DeviceApiRoute)
- *  - WS /ws/stream: 首条文本 hello, 后续二进制 1字节通道头+负载
- *      0x01 H.264 Annex-B NALU(首包SPS/PPS+IDR) / 0x02 AAC裸帧 /
- *      0x03 JPEG单帧[4字节大端长+JPEG](无WebCodecs降级,Universal-1) (StreamWsRoute)
- *  - WS /ws/control: 文本JSON down/move/up/key/click/text/audio/videoMode/ping (ControlWsRoute)
+ * BlindCast 侧栏中控台（sidepanel.js）
+ * 复用 console.html/app.js 的流解码与反控核心逻辑（逐行一致），差异仅：
+ *  1) HOST 可变：CURRENT_HOST，随设备下拉切换（?host= 仅作初始值）；
+ *  2) 多设备存储：chrome.storage.local devices:[{ip,name,lastSeen}] + currentHost，
+ *     并兼容迁移 popup 旧历史 hosts/host；
+ *  3) 局域网扫描：沿用 popup.js 30 并发池 + 800ms 超时，发现即入下拉框；
+ *  4) 假遮罩修复：连接成功（双通道建立）自动隐藏 bootOverlay + 连接代际
+ *     connEpoch 丢弃过期 onclose，不再“推流中断”卡死、无需点两次进入；
+ *  5) ⛶ 弹出独立大标签页（console.html?host=）。
+ * 侧栏属于 chrome-extension:// 安全源，WebCodecs 硬解全通，JPEG 降级保留。
+ * MV3 CSP：零内联 script（本文件外联）、零 on*=、零 eval，全 addEventListener。
  * ===================================================================== */
 const $ = id => document.getElementById(id);
 const canvas = $("canvas"), ctx = canvas.getContext("2d");
@@ -33,15 +30,21 @@ const qsToken = new URLSearchParams(location.search).get("token") || "";
 let token = "";
 try { token = localStorage.getItem("bc_token") || ""; } catch (e) { token = ""; }
 
-/* ---------------- 插件 host 参数（本文件独有） ----------------
- * 用法：console.html?host=192.168.31.216（端口缺省 8888，可写 host=IP:端口）。
- * 为空时即普通网页行为（location.host）。 */
-const qsHost = new URLSearchParams(location.search).get("host") || "";
-const HOST = qsHost.includes(":") ? qsHost.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
-  : (qsHost ? qsHost + ":8888" : "");
+/* ---------------- 可变 HOST（多设备核心） ----------------
+ * 初始值：?host=（支持 console.html 同款深链）→ storage currentHost → ""。
+ * 端口缺省 8888，可写 host=IP:端口。 */
+const qsHostRaw = new URLSearchParams(location.search).get("host") || "";
+function normHostPort(raw, defPort) {
+  const port = defPort || 8888;
+  let host = (raw || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  if (!host) return "";
+  if (host.indexOf(":") < 0) host += ":" + port;
+  return host;
+}
+let CURRENT_HOST = normHostPort(qsHostRaw, 8888);
 
 function apiUrl(path) {
-  const base = HOST ? "http://" + HOST + "/" : "";
+  const base = CURRENT_HOST ? "http://" + CURRENT_HOST + "/" : "";
   const p = base + path;
   return token ? p + (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : p;
 }
@@ -71,7 +74,107 @@ function showBoot(msg) {
 }
 function hideBoot() { $("bootOverlay").classList.add("hide"); }
 
-/* ---------------- 全局连接态 ---------------- */
+/* ---------------- 多设备存储 ---------------- */
+const DEV_MAX = 20;
+const SCAN_CONCURRENCY = 30;
+const SCAN_TIMEOUT_MS = 800;
+const SCAN_PORT = 8888;
+
+function storeGet(keys, cb) {
+  try {
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get(keys, function (v) { cb(v || {}); });
+      return;
+    }
+  } catch (e) {}
+  cb({});
+}
+function storeSet(obj) {
+  try {
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set(obj);
+    }
+  } catch (e) {}
+}
+function storeGetP(keys) {
+  return new Promise(resolve => storeGet(keys, resolve));
+}
+
+let devices = []; // [{ip,name,lastSeen}]
+
+function upsertDevice(ip, opts) {
+  ip = normHostPort(ip, SCAN_PORT);
+  if (!ip) return null;
+  const now = new Date().toISOString();
+  const keepName = opts && opts.name;
+  let found = null;
+  const rest = [];
+  for (const d of devices) {
+    if (d && d.ip === ip) found = d;
+    else if (d && d.ip) rest.push(d);
+  }
+  const name = keepName || (found && found.name) || ip;
+  const entry = { ip, name, lastSeen: now };
+  devices = [entry].concat(rest).slice(0, DEV_MAX);
+  storeSet({ devices });
+  return entry;
+}
+
+function renderDeviceSelect() {
+  const sel = $("deviceSelect");
+  sel.textContent = "";
+  if (!devices.length) {
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = "＋ 先扫描或手动添加设备";
+    sel.appendChild(o);
+    sel.value = "";
+    return;
+  }
+  for (const d of devices) {
+    const o = document.createElement("option");
+    o.value = d.ip;
+    o.textContent = (d.name && d.name !== d.ip) ? (d.name + " · " + d.ip) : d.ip;
+    sel.appendChild(o);
+  }
+  if (CURRENT_HOST && devices.some(d => d.ip === CURRENT_HOST)) {
+    sel.value = CURRENT_HOST;
+  } else if (CURRENT_HOST) {
+    // 当前 host 不在列表（?host= 深链）：临时展示一行，不写库，等连接成功再入库
+    const o = document.createElement("option");
+    o.value = CURRENT_HOST;
+    o.textContent = CURRENT_HOST + " · 新";
+    sel.insertBefore(o, sel.firstChild);
+    sel.value = CURRENT_HOST;
+  } else {
+    sel.value = devices[0].ip;
+    CURRENT_HOST = devices[0].ip;
+  }
+  updateFoot();
+}
+
+function setCurrentHost(ip, opts) {
+  ip = normHostPort(ip, SCAN_PORT);
+  if (!ip) return false;
+  CURRENT_HOST = ip;
+  if (!opts || !opts.deferSave) {
+    upsertDevice(ip, {});
+    storeSet({ currentHost: ip });
+  }
+  renderDeviceSelect();
+  updateFoot();
+  return true;
+}
+
+function updateFoot() {
+  try {
+    $("footStat").textContent = CURRENT_HOST
+      ? ("SidePanel · " + CURRENT_HOST)
+      : "BlindCast SidePanel · 未选设备";
+  } catch (e) {}
+}
+
+/* ---------------- 全局连接态（含假遮罩修复） ---------------- */
 const S = {
   streamWs: null, ctlWs: null, connected: false,
   streamOpenTs: 0, firstFrameTs: 0,
@@ -79,9 +182,10 @@ const S = {
   audioEnabled: true, dragging: false, lastMoveTs: 0, textBuf: "", textTimer: 0,
   videoMode: (typeof VideoDecoder === "undefined" ? "jpeg" : "h264"), jpegBusy: false,
 };
-// SidePanel-1 假遮罩修复：连接代际，过期 socket 的 onclose 直接丢弃，
-// 杜绝“重连后旧 onclose 复活 bootOverlay”卡死。
+// 连接代际：每次 close/connect 自增，过期 socket 的 onclose/onmessage 直接丢弃，
+// 杜绝“切设备/重连后旧 onclose 复活 bootOverlay”这类假遮罩。
 let connEpoch = 0;
+
 function setConn(on) {
   S.connected = on;
   const p = $("pillConn");
@@ -89,14 +193,12 @@ function setConn(on) {
   p.className = "pill " + (on ? "ok" : "bad");
 }
 function wsBase() {
-  if (HOST) return "ws://" + HOST;
+  if (CURRENT_HOST) return "ws://" + CURRENT_HOST;
   return (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
 }
 
 /* ---------------- H.264 解码管线 ---------------- */
 const KIND_VIDEO = 1, KIND_AUDIO = 2, KIND_JPEG = 3;
-// Universal-1: 裸浏览器经 http 局域网为非安全源，VideoDecoder undefined 即黑屏，
-// 故无硬解时自动订阅 JPEG (createImageBitmap→drawImage)，有硬解走老路不动。
 const HAS_WEBCODECS = (typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined");
 let vdec = null, vdecKey = "", vdecHasKey = false, videoTs = 0, lastVideoTsWall = 0;
 let spsCache = null, ppsCache = null;
@@ -166,7 +268,7 @@ function onVideoFrame(frame) {
       S.firstFrameTs = performance.now();
       const ms = Math.round(S.firstFrameTs - S.streamOpenTs);
       $("footFrame").textContent = "首帧 " + ms + "ms";
-      $("bootOverlay").classList.add("hide");
+      hideBoot();
     }
     S.fpsCount++;
   } finally { try { frame.close(); } catch (e) {} }
@@ -183,8 +285,8 @@ function feedVideo(payload) {
   }
   if (dirty || !vdec || vdec.state === "closed") { if (!ensureDecoder()) return; }
   if (!vdec || vdec.state !== "playing" && vdec.state !== "configured") { if (!ensureDecoder()) return; }
-  if (!hasIdr && !vdecHasKey) return; // 等待关键帧（I帧间隔1s内自愈）
-  if (vdec.decodeQueueSize > 10 && !hasIdr) return; // 背压：丢delta保实时
+  if (!hasIdr && !vdecHasKey) return;
+  if (vdec.decodeQueueSize > 10 && !hasIdr) return;
   let total = 0;
   for (const n of nalus) total += 4 + (n.end - n.hdr);
   const mp4 = new Uint8Array(total);
@@ -200,26 +302,21 @@ function feedVideo(payload) {
   try {
     vdec.decode(new EncodedVideoChunk({ type: (hasIdr || !vdecHasKey) ? "key" : "delta", timestamp: Math.round(videoTs), data: mp4 }));
     if (hasIdr) vdecHasKey = true;
-  } catch (e) { /* 坏帧丢弃，下轮I帧自愈 */ }
+  } catch (e) {}
 }
 function fitCanvas() {
   const vw = canvas.width || 9, vh = canvas.height || 20;
   const sw = stage.clientWidth, sh = stage.clientHeight;
-  // #dock 默认右侧垂直侧边栏：从可用宽扣栏宽（约 64px），高度全给画面；
-  // 窄窗（<=720px）侧边栏回退到底部横条，改从可用高扣 76px。坐标映射走
-  // getBoundingClientRect（normPos），换边不影响。
-  const narrow = window.matchMedia && window.matchMedia("(max-width: 720px)").matches;
-  const dockW = 64, dockH = 76;
-  const scale = narrow ? Math.min(sw / vw, (sh - dockH) / vh)
-                       : Math.min((sw - dockW) / vw, sh / vh);
+  // 侧栏 ~400px 宽与 9:20 竖屏天然契合：等比充满，可用宽扣 dock 约 60px。
+  // 侧栏无窄窗横条回退（始终右侧垂直 dock），故不做 matchMedia 分支。
+  const dockW = 60;
+  const scale = Math.min((sw - dockW) / vw, sh / vh);
   const w = Math.max(1, Math.floor(vw * scale)), h = Math.max(1, Math.floor(vh * scale));
   canvas.style.width = w + "px"; canvas.style.height = h + "px";
 }
 window.addEventListener("resize", fitCanvas);
 
-/* ---------------- JPEG 降级管线 (Universal-1) ----------------
- * 服务端线格式 [1字节0x03+4字节大端长+JPEG]，此处剥长后
- * createImageBitmap→drawImage，Canvas 照常；与 H264 共存，有硬解走老路不动。 */
+/* ---------------- JPEG 降级管线 ---------------- */
 function drawJpegBitmap(bmp) {
   try {
     const w = bmp.width || 720, h = bmp.height || 1600;
@@ -229,13 +326,12 @@ function drawJpegBitmap(bmp) {
       S.firstFrameTs = performance.now();
       const ms = Math.round(S.firstFrameTs - S.streamOpenTs);
       $("footFrame").textContent = "首帧 " + ms + "ms (JPEG)";
-      $("bootOverlay").classList.add("hide");
+      hideBoot();
     }
     S.fpsCount++;
   } finally { try { bmp.close && bmp.close(); } catch (e) {} S.jpegBusy = false; }
 }
 function feedJpeg(payload) {
-  // 剥 4 字节大端长（服务端沿用既有帧格式；长度不匹配则整包当 JPEG 容错）。
   let jpeg = payload;
   if (payload && payload.length >= 5) {
     const len = ((payload[0] << 24) >>> 0) + (payload[1] << 16) + (payload[2] << 8) + payload[3];
@@ -244,14 +340,13 @@ function feedJpeg(payload) {
     }
   }
   if (!jpeg || !jpeg.length) return;
-  if (S.jpegBusy) return; // 背压：上一帧还在解码则丢本帧保实时（服务端约10fps）
+  if (S.jpegBusy) return;
   S.jpegBusy = true;
   try {
     const blob = new Blob([jpeg], { type: "image/jpeg" });
     if (typeof createImageBitmap === "function") {
       createImageBitmap(blob).then(drawJpegBitmap).catch(() => { S.jpegBusy = false; });
     } else {
-      // 极老浏览器回退：Image + objectURL（仍零依赖）。
       const url = URL.createObjectURL(blob);
       const img = new Image();
       img.onload = () => { try { drawJpegBitmap(img); } finally { try { URL.revokeObjectURL(url); } catch (e) {} } };
@@ -272,9 +367,7 @@ function declareVideoMode() {
   sendCtl({ type: "videoMode", mode: S.videoMode });
 }
 
-/* ---------------- AAC 音频管线 ----------------
- * 服务端只下发AAC裸帧(无ADTS/无ASC, 默认48k立体声AAC-LC)。
- * 前端按默认ASC配置AudioDecoder, 连续出错则轮换常见ASC自愈。 */
+/* ---------------- AAC 音频管线 ---------------- */
 const ASC_CANDIDATES = [
   { tag: "48k Stereo",  sr: 48000, ch: 2, asc: new Uint8Array([0x11, 0x90]) },
   { tag: "44.1k Stereo", sr: 44100, ch: 2, asc: new Uint8Array([0x12, 0x10]) },
@@ -310,7 +403,7 @@ function ensureAudioDecoder() {
 }
 function onAudioError(e) {
   audioErrs++;
-  if (audioErrs >= 12) { // 连续坏帧: 大概率ASC错配, 轮换候选
+  if (audioErrs >= 12) {
     audioErrs = 0;
     ascIdx++;
     try { if (adec) adec.close(); } catch (x) {}
@@ -342,7 +435,7 @@ function feedAudio(payload) {
   } catch (e) {}
 }
 
-/* ---------------- 双 WS 连接 ---------------- */
+/* ---------------- 双 WS 连接（代际守卫 + 自动藏遮罩） ---------------- */
 function sendCtl(obj) {
   if (!S.ctlWs || S.ctlWs.readyState !== 1) return false;
   try { S.ctlWs.send(JSON.stringify(obj)); return true; }
@@ -362,6 +455,7 @@ function closeSockets() {
   S.jpegBusy = false;
 }
 function connect() {
+  if (!CURRENT_HOST) { showBoot("先在顶部选择或添加一台设备"); return; }
   closeSockets();
   ensureActx();
   setConn(false);
@@ -371,13 +465,15 @@ function connect() {
   const myEpoch = ++connEpoch;
   const isStale = () => myEpoch !== connEpoch;
   let streamUp = false, ctlUp = false;
-  // SidePanel-1 假遮罩修复：双通道一建立即自动隐藏 bootOverlay，无需点两次进入。
+  // 假遮罩修复核心：双通道一建立即藏遮罩，不等首帧；过期代际直接丢弃。
   const maybeUp = () => {
     if (isStale()) return;
     if (streamUp && ctlUp) {
-      setConn(true); hideBoot();
-      toast("● 双通道已建立 (" + S.videoMode + ")");
-      startPing(); pollStatus();
+      setConn(true);
+      hideBoot();
+      toast("● 双通道已建立 (" + S.videoMode + ") · " + CURRENT_HOST);
+      startPing();
+      pollStatus();
     }
   };
 
@@ -387,7 +483,7 @@ function connect() {
   sws.onopen = () => { if (isStale() || S.streamWs !== sws) return; streamUp = true; maybeUp(); };
   sws.onmessage = ev => {
     if (isStale() || S.streamWs !== sws) return;
-    if (typeof ev.data === "string") return; // hello自描述, 格式固定可忽略
+    if (typeof ev.data === "string") return;
     const buf = ev.data;
     if (!buf || buf.byteLength < 2) return;
     const u8 = new Uint8Array(buf);
@@ -397,17 +493,24 @@ function connect() {
     else if (kind === KIND_AUDIO) feedAudio(payload);
     else if (kind === KIND_JPEG) { if (S.videoMode !== "jpeg") return; feedJpeg(payload); }
   };
-  sws.onclose = () => { if (isStale() || S.streamWs !== sws) return; setConn(false); showBoot("推流中断，点击重连"); };
+  sws.onclose = () => {
+    if (isStale() || S.streamWs !== sws) return;
+    setConn(false);
+    showBoot("推流中断，点击重连");
+  };
   sws.onerror = () => { try { sws.close(); } catch (e) {} };
 
   const cws = new WebSocket(wsBase() + "/ws/control" + (token ? "?token=" + encodeURIComponent(token) : ""));
   S.ctlWs = cws;
-  cws.onopen = () => { if (isStale() || S.ctlWs !== cws) return; ctlUp = true; maybeUp(); declareVideoMode(); if (!S.audioEnabled) sendCtl({ type: "audio", enabled: false }); };
+  cws.onopen = () => {
+    if (isStale() || S.ctlWs !== cws) return;
+    ctlUp = true; maybeUp(); declareVideoMode();
+    if (!S.audioEnabled) sendCtl({ type: "audio", enabled: false });
+  };
   cws.onmessage = ev => {
     if (isStale() || S.ctlWs !== cws) return;
     let m = null;
     try { m = JSON.parse(ev.data); } catch (e) { return; }
-    if (m && m.type === "pong" && typeof m._t === "undefined") { /* 服务端pong无回显字段, 用到达计时 */ }
     if (m && m.type === "pong") {
       const rtt = Math.round(performance.now() - pingSentTs);
       S.lastLat = rtt;
@@ -417,6 +520,49 @@ function connect() {
   };
   cws.onclose = () => { stopPing(); if (!isStale() && S.ctlWs === cws) setConn(false); };
   cws.onerror = () => { try { cws.close(); } catch (e) {} };
+}
+
+/* 按设备建连：先鉴权探测，再 connect；成功入库 + 藏遮罩逻辑走 connect/maybeUp */
+async function connectTo(host) {
+  host = normHostPort(host, SCAN_PORT);
+  if (!host) { showBoot("先在顶部选择或添加一台设备"); return; }
+  CURRENT_HOST = host;
+  storeSet({ currentHost: host });
+  renderDeviceSelect();
+  updateFoot();
+  hideAuth();
+  showBoot("正在连接 " + host + " …");
+  let st = null;
+  try { st = await apiStatus(); }
+  catch (e) {
+    // 保持代际一致：此次失败不污染旧连接（已在 connect 前切断，故直接提示）
+    showBoot("无法连接 " + host + "，检查手机服务与 Wi-Fi");
+    return;
+  }
+  if (!st.authRequired) {
+    if (qsToken) rememberToken(qsToken);
+    upsertDevice(host, {});
+    renderDeviceSelect();
+    connect();
+    startStatusPoll();
+    return;
+  }
+  if (qsToken && await apiVerify(qsToken)) {
+    rememberToken(qsToken);
+    upsertDevice(host, {});
+    renderDeviceSelect();
+    connect();
+    startStatusPoll();
+    return;
+  }
+  if (token && await apiVerify(token)) {
+    upsertDevice(host, {});
+    renderDeviceSelect();
+    connect();
+    startStatusPoll();
+    return;
+  }
+  showAuth("");
 }
 
 /* ---------------- 心跳延迟 / 状态轮询 ---------------- */
@@ -431,6 +577,7 @@ function stopPing() { if (pingTimer) clearInterval(pingTimer); pingTimer = 0; }
 
 let statusTimer = 0;
 async function pollStatus() {
+  if (!CURRENT_HOST) return;
   try {
     const r = await fetch(apiUrl("api/status"), { cache: "no-store" });
     if (!r.ok) return;
@@ -447,7 +594,6 @@ async function pollStatus() {
 }
 function startStatusPoll() { if (!statusTimer) statusTimer = setInterval(pollStatus, 5000); }
 
-/* FPS 统计 */
 setInterval(() => {
   $("pillFps").textContent = "FPS " + S.fpsCount;
   $("pillFps").className = "pill " + (S.fpsCount > 0 ? "ok" : "");
@@ -460,14 +606,14 @@ function normPos(e) {
   return { x: clamp01((e.clientX - r.left) / r.width), y: clamp01((e.clientY - r.top) / r.height) };
 }
 canvas.addEventListener("contextmenu", e => e.preventDefault());
-canvas.addEventListener("mousedown", e => { if (e.button === 1) e.preventDefault(); }); // 拦截中键自动滚动
+canvas.addEventListener("mousedown", e => { if (e.button === 1) e.preventDefault(); });
 canvas.addEventListener("auxclick", e => e.preventDefault());
 
 canvas.addEventListener("pointerdown", e => {
   ensureActx();
   try { canvas.focus(); } catch (x) {}
-  if (e.button === 2) { sendCtl({ type: "click", button: "right" }); return; } // 右键=返回
-  if (e.button === 1) { sendCtl({ type: "click", button: "middle" }); return; } // 中键=Home
+  if (e.button === 2) { sendCtl({ type: "click", button: "right" }); return; }
+  if (e.button === 1) { sendCtl({ type: "click", button: "middle" }); return; }
   if (e.button !== 0) return;
   const p = normPos(e);
   S.dragging = true;
@@ -477,7 +623,7 @@ canvas.addEventListener("pointerdown", e => {
 canvas.addEventListener("pointermove", e => {
   if (!S.dragging || e.buttons === 0 && e.pointerType === "mouse") return;
   const now = performance.now();
-  if (now - S.lastMoveTs < 16) return; // ~60Hz节流
+  if (now - S.lastMoveTs < 16) return;
   S.lastMoveTs = now;
   const p = normPos(e);
   sendCtl({ type: "move", x: +p.x.toFixed(4), y: +p.y.toFixed(4) });
@@ -492,7 +638,6 @@ function endDrag(e) {
 canvas.addEventListener("pointerup", endDrag);
 canvas.addEventListener("pointercancel", () => { if (S.dragging) { S.dragging = false; sendCtl({ type: "up", x: 0.5, y: 0.5 }); } });
 
-/* 滚轮 = 定向滑动 */
 canvas.addEventListener("wheel", e => {
   e.preventDefault();
   const horiz = Math.abs(e.deltaX) > Math.abs(e.deltaY);
@@ -514,7 +659,6 @@ canvas.addEventListener("wheel", e => {
   setTimeout(() => sendCtl({ type: "up", x: +x1.toFixed(4), y: +y1.toFixed(4) }), (steps + 1) * 18);
 }, { passive: false });
 
-/* 键盘: 可打印字符走text批量注入, 功能键走key */
 const KEYMAP = {
   Enter: 66, Backspace: 67, Escape: 4, Tab: 61,
   ArrowUp: 19, ArrowDown: 20, ArrowLeft: 21, ArrowRight: 22,
@@ -526,9 +670,9 @@ function flushText() {
   sendCtl({ type: "text", text: t });
 }
 document.addEventListener("keydown", e => {
-  if (!$("authOverlay").classList.contains("hide")) return; // 鉴权框内不拦截
+  if (!$("authOverlay").classList.contains("hide")) return;
   const tag = (e.target && e.target.tagName) || "";
-  if (tag === "INPUT" || tag === "TEXTAREA") return;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
   if (!S.connected) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key.length === 1) {
@@ -581,18 +725,29 @@ $("btnJpeg").onclick = () => {
   S.videoMode = (S.videoMode === "jpeg" ? "h264" : "jpeg");
   S.jpegBusy = false;
   declareVideoMode();
-  toast(S.videoMode === "jpeg" ? "🎞 已切 JPEG 降级 (裸浏览器)" : "🎞 已切回 H264 (硬解路)");
+  toast(S.videoMode === "jpeg" ? "🎞 已切 JPEG 降级" : "🎞 已切回 H264 硬解");
 };
-$("btnReconnect").onclick = () => { showBoot("正在重连…"); connect(); };
-$("btnEnter").onclick = () => { $("bootOverlay").classList.add("hide"); connect(); startStatusPoll(); };
+$("btnReconnect").onclick = () => { if (CURRENT_HOST) connectTo(CURRENT_HOST); else showBoot("先选择设备"); };
+$("btnEnter").onclick = () => {
+  if (!CURRENT_HOST) { showBoot("先在顶部选择或添加一台设备"); return; }
+  hideBoot();
+  connectTo(CURRENT_HOST);
+  startStatusPoll();
+};
 
 /* ---------------- 鉴权提交 ---------------- */
 async function submitAuth() {
   const t = $("tokenInput").value.trim();
   if (!t) { $("authErr").textContent = "请输入 Token"; return; }
   $("authErr").textContent = "校验中…";
-  if (await apiVerify(t)) { rememberToken(t); hideAuth(); showBoot("鉴权通过，点击进入控制台"); }
-  else {
+  if (await apiVerify(t)) {
+    rememberToken(t);
+    hideAuth();
+    upsertDevice(CURRENT_HOST, {});
+    renderDeviceSelect();
+    connect();
+    startStatusPoll();
+  } else {
     $("authErr").textContent = "Token 错误，请重试";
     $("authCard").classList.remove("shake");
     void $("authCard").offsetWidth;
@@ -602,19 +757,204 @@ async function submitAuth() {
 $("btnAuth").onclick = submitAuth;
 $("tokenInput").addEventListener("keydown", e => { if (e.key === "Enter") submitAuth(); });
 
-/* ---------------- 启动 ---------------- */
-(async function boot() {
-  fitCanvas();
-  let st = null;
-  try { st = await apiStatus(); }
-  catch (e) { showBoot("无法连接服务，检查 http://&lt;手机IP&gt;:8888"); return; }
-  if (!st.authRequired) {
-    if (qsToken) rememberToken(qsToken); // 免密模式也记住URL携带的token(供WS/REST透传)
-    showBoot("服务运行中，点击进入低延迟控制台");
+/* ---------------- 局域网扫描（沿用 popup 30 并发池） ---------------- */
+function normPrefix(raw) {
+  const p = (raw || "").trim();
+  if (/^\d+\.\d+\.\d+\.?$/.test(p)) {
+    return p.charAt(p.length - 1) !== "." ? p + "." : p;
+  }
+  return null;
+}
+function probeIp(url) {
+  let ctl = null;
+  try { ctl = new AbortController(); } catch (e) { ctl = null; }
+  let timer = 0;
+  let done = false;
+  function finishOk(authRequired) {
+    if (done) return null;
+    done = true;
+    if (timer) clearTimeout(timer);
+    return { authRequired };
+  }
+  let fetchP = null;
+  try {
+    const opt = { cache: "no-store" };
+    if (ctl) {
+      opt.signal = ctl.signal;
+      timer = setTimeout(function () { try { ctl.abort(); } catch (e) {} }, SCAN_TIMEOUT_MS);
+    } else {
+      timer = setTimeout(function () {}, SCAN_TIMEOUT_MS);
+    }
+    fetchP = fetch(url, opt).then(
+      function (r) {
+        if (r.status !== 200) { if (timer) clearTimeout(timer); done = true; return null; }
+        return r.json().then(
+          function (j) { return finishOk(!!(j && j.authRequired)); },
+          function () { return finishOk(false); }
+        );
+      },
+      function () { if (timer) clearTimeout(timer); done = true; return null; }
+    );
+  } catch (e) {
+    if (timer) clearTimeout(timer);
+    fetchP = Promise.resolve(null);
+  }
+  if (!ctl) {
+    const timeoutP = new Promise(function (res) {
+      setTimeout(function () { if (!done) { done = true; res(null); } }, SCAN_TIMEOUT_MS);
+    });
+    return Promise.race([fetchP, timeoutP]);
+  }
+  return fetchP;
+}
+
+let scanning = false;
+function setScanProgress(done, total) {
+  const pct = total ? (done / total) * 100 : 0;
+  $("scanBar").style.width = pct + "%";
+  $("scanMeta").textContent = total ? (done + "/" + total) : "就绪";
+}
+
+function scanLan() {
+  if (scanning) return;
+  const prefix = normPrefix($("scanPrefix").value);
+  if (!prefix) {
+    $("scanMsg").textContent = "前缀像这样写：192.168.31.（三段数字+点）";
+    $("scanPrefix").focus();
     return;
   }
-  // 设密模式: ?token= > localStorage > 弹窗
-  if (qsToken && await apiVerify(qsToken)) { rememberToken(qsToken); showBoot("Token 免密通过，点击进入控制台"); return; }
-  if (token && await apiVerify(token)) { showBoot("已记住 Token，点击进入控制台"); return; }
-  showAuth("");
-})();
+  scanning = true;
+  $("btnScan").disabled = true;
+  $("scanMsg").textContent = "正在扫描 " + prefix + "1–254…";
+  const total = 254;
+  let done = 0, foundCount = 0;
+  setScanProgress(0, total);
+  $("btnScan").textContent = "扫描中 0/254";
+
+  let next = 1;
+  function worker() {
+    function step() {
+      if (next > total) return Promise.resolve();
+      const i = next++;
+      const ip = prefix + i;
+      return probeIp("http://" + ip + ":" + SCAN_PORT + "/api/auth/status").then(function (r) {
+        done++;
+        setScanProgress(done, total);
+        $("btnScan").textContent = "扫描中 " + done + "/254";
+        if (r) {
+          const host = ip + ":" + SCAN_PORT;
+          upsertDevice(host, {});
+          renderDeviceSelect();
+          foundCount++;
+          $("scanMsg").textContent = "扫到 " + foundCount + " 台，已自动加入下拉框（点下拉框切换）。";
+          // 首次发现且当前无连接：自动连第一台，侧栏开箱即用
+          if (!CURRENT_HOST) {
+            CURRENT_HOST = host;
+            storeSet({ currentHost: host });
+            renderDeviceSelect();
+            connectTo(host);
+          }
+        }
+        return step();
+      });
+    }
+    return step();
+  }
+
+  const workers = [];
+  for (let k = 0; k < SCAN_CONCURRENCY; k++) workers.push(worker());
+  Promise.all(workers).then(function () {
+    scanning = false;
+    $("btnScan").disabled = false;
+    $("btnScan").textContent = "🔍 扫描";
+    setScanProgress(total, total);
+    if (!foundCount) {
+      $("scanMsg").textContent = "没扫到手机：先确认手机和电脑同一 Wi-Fi，再核对前缀（多半 192.168.31. 或 192.168.1.），手机 App 服务开着。";
+    } else {
+      $("scanMsg").textContent = "扫到 " + foundCount + " 台，已加入下拉框，切换即连。";
+      toast("🔍 扫到 " + foundCount + " 台设备");
+    }
+  });
+}
+$("btnScan").onclick = scanLan;
+$("scanPrefix").addEventListener("keydown", e => { if (e.key === "Enter") scanLan(); });
+
+/* ---------------- 顶部：切换 / 手动添加 / 弹出 ---------------- */
+$("deviceSelect").addEventListener("change", e => {
+  const v = e.target.value;
+  if (!v) return;
+  // 平滑切断旧 WS 并连新设备（closeSockets 代际自增，旧 onclose 自动作废）
+  connectTo(v);
+});
+function addManual() {
+  const raw = $("manualIp").value;
+  const host = normHostPort(raw, SCAN_PORT);
+  if (!host) { $("manualIp").focus(); toast("先输入局域网 IP"); return; }
+  $("manualIp").value = "";
+  upsertDevice(host, {});
+  connectTo(host);
+}
+$("btnAdd").onclick = addManual;
+$("manualIp").addEventListener("keydown", e => { if (e.key === "Enter") addManual(); });
+
+function consoleUrl(host) {
+  try {
+    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) {
+      return chrome.runtime.getURL("console.html?host=" + encodeURIComponent(host) + (token ? "&token=" + encodeURIComponent(token) : ""));
+    }
+  } catch (e) {}
+  return "console.html?host=" + encodeURIComponent(host);
+}
+$("btnPopout").onclick = () => {
+  if (!CURRENT_HOST) { toast("先选择一台设备再弹出"); return; }
+  const url = consoleUrl(CURRENT_HOST);
+  try {
+    if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.create) {
+      chrome.tabs.create({ url });
+      return;
+    }
+  } catch (e) {}
+  window.open(url, "_blank");
+};
+
+/* ---------------- 启动 ---------------- */
+async function bootSidepanel() {
+  fitCanvas();
+  updateFoot();
+  // 载入多设备 + 迁移 popup 旧历史
+  const v = await storeGetP(["devices", "currentHost", "hosts", "host"]);
+  let stored = Array.isArray(v.devices) ? v.devices.filter(d => d && d.ip) : [];
+  // 迁移 popup hosts[≤5]/host
+  if (!stored.length && Array.isArray(v.hosts) && v.hosts.length) {
+    stored = v.hosts
+      .map(h => normHostPort(h, SCAN_PORT))
+      .filter(Boolean)
+      .map(ip => ({ ip, name: ip, lastSeen: new Date(0).toISOString() }));
+  }
+  devices = stored.slice(0, DEV_MAX);
+  if (!CURRENT_HOST) {
+    CURRENT_HOST = normHostPort(v.currentHost || v.host || "", SCAN_PORT) ||
+      (devices.length ? devices[0].ip : "");
+  }
+  // ?host= 深链优先：入库并置顶
+  if (qsHostRaw) {
+    const deep = normHostPort(qsHostRaw, SCAN_PORT);
+    if (deep) {
+      CURRENT_HOST = deep;
+      upsertDevice(deep, {});
+      storeSet({ currentHost: deep });
+    }
+  }
+  // 猜网段前缀：从当前设备 IP 段推导，缺省 192.168.31.
+  try {
+    const m = (CURRENT_HOST || (devices[0] && devices[0].ip) || "").match(/^(\d+\.\d+\.\d+)\./);
+    if (m) $("scanPrefix").value = m[1] + ".";
+  } catch (e) {}
+  renderDeviceSelect();
+  if (!CURRENT_HOST) {
+    showBoot("下拉框为空：点 🔍 扫描局域网，或手动输入 IP 添加");
+    return;
+  }
+  connectTo(CURRENT_HOST);
+}
+bootSidepanel();

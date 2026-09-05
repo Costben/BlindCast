@@ -217,3 +217,4 @@ updated: 2026-09-05
 - 2026-09-05: smooth-1 收官（99011a0）：常驻 Root 输入 daemon（tap ack 1.7s→20-33ms，drag 实时跟手）+ DisplayGlobal 免 Context 路打通 Root-H264 泵（JPEG 2.4→9.5fps，首帧 0.39s；附带修 isKey 扫描与 stop 孤儿泄漏）；主控亲验 .216：H264 107帧/12s、裸页首帧 645ms/延迟 45ms、按键 ack true。
 - 2026-09-05: cua-1 真机验证（codex+muse-spark，19 张截图 outputs/cua-shots/）：JPEG 在裸页出图清晰（主控亲见 Syncthing 竖屏）；但安全源下 H264 黑屏 0 帧（此前用户 PC 21fps，回归待查，疑 smooth-1 动过 SPS/编码参数）；tap 致手机切屏 MD5 变（控制可达）；本机 Chrome 被组织策略管住装不上插件，用户需在自己 PC 加载。
 - 2026-09-05: h264black-1 收官：黑屏根因=DisplayGlobal 建屏缺请求刷新率致静态零 IDR（新客卡 IDR 门闩 38s），补 setRequestedRefreshRate；安全源 H264 复活（首帧 46ms、动屏 FPS 15~29，主控亲见硬解截图 FPS 17/延迟 11ms）；JPEG 回归正常。
+- 2026-09-05: sidepanel-1 收官：Chrome 原生侧边栏（ChatGPT 同款）多设备中控台交付；manifest 启用 sidePanel API，点击扩展图标直开右侧栏；集成设备下拉切换、局域网并发扫描、竖屏 9:20 吃满可视高度、WebCodecs 硬件解码全通；修复进入页面时的假遮罩残留。
