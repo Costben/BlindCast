@@ -164,8 +164,7 @@ private fun ActionsCard(
     } else {
         stringResource(R.string.blindcast_home_screen_on)
     }
-    // Priv-Bridge-3：最近一次特权操作持久可见（成功时间 / 失败文案），不靠一闪而过的 Toast。
-    val privLine = privResult ?: stringResource(R.string.blindcast_home_priv_result_none)
+    // 特权操作结果行已隐藏（排障时看 logcat；状态仍在 HomeUiState.privResult 保留）。
     TonalCard {
         Column(
             modifier = Modifier
@@ -201,11 +200,6 @@ private fun ActionsCard(
             }
             Text(
                 text = "${stringResource(R.string.blindcast_home_blackout_summary)} · $screenSummary",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            Text(
-                text = "${stringResource(R.string.blindcast_home_priv_result_title)}：$privLine",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )

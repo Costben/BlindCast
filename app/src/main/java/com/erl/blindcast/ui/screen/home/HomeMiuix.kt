@@ -252,8 +252,7 @@ private fun BlindCastActionsCard(
     } else {
         stringResource(R.string.blindcast_home_screen_on)
     }
-    // Priv-Bridge-3：最近一次特权操作持久可见（成功时间 / 失败文案），不靠一闪而过的 Toast。
-    val privLine = privResult ?: stringResource(R.string.blindcast_home_priv_result_none)
+    // 特权操作结果行已隐藏（排障时看 logcat；状态仍在 HomeUiState.privResult 保留）。
     Card(modifier = Modifier.fillMaxWidth()) {
         BasicComponent(
             title = stringResource(R.string.blindcast_home_action_start),
@@ -264,11 +263,6 @@ private fun BlindCastActionsCard(
             title = stringResource(R.string.blindcast_home_action_stop),
             summary = "${stringResource(R.string.blindcast_home_restore_summary)} · $screenSummary",
             onClick = onRestore,
-        )
-        BasicComponent(
-            title = stringResource(R.string.blindcast_home_priv_result_title),
-            summary = privLine,
-            onClick = {},
         )
         SwitchPreference(
             title = stringResource(R.string.blindcast_home_service_switch),
