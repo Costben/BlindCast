@@ -92,7 +92,7 @@ footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,23
 </header>
 
 <div id="stage">
-  <canvas id="canvas" tabindex="0"></canvas>
+  <canvas id="canvas" tabindex="0" width="720" height="1600"></canvas>
   <div class="hint">左键拖拽=触控 · 右键=返回 · 中键=Home · 滚轮=滑动 · 键盘直接打字</div>
 
   <div id="dock">
@@ -326,7 +326,7 @@ function feedVideo(payload) {
   } catch (e) { /* 坏帧丢弃，下轮I帧自愈 */ }
 }
 function fitCanvas() {
-  const vw = canvas.width || 16, vh = canvas.height || 9;
+  const vw = canvas.width || 9, vh = canvas.height || 20;
   const sw = stage.clientWidth, sh = stage.clientHeight;
   const dockH = 76;
   const scale = Math.min(sw / vw, (sh - dockH) / vh);
@@ -340,7 +340,7 @@ window.addEventListener("resize", fitCanvas);
  * createImageBitmap→drawImage，Canvas 照常；与 H264 共存，有硬解走老路不动。 */
 function drawJpegBitmap(bmp) {
   try {
-    const w = bmp.width || 1280, h = bmp.height || 720;
+    const w = bmp.width || 720, h = bmp.height || 1600;
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; fitCanvas(); }
     ctx.drawImage(bmp, 0, 0, w, h);
     if (!S.firstFrameTs) {
