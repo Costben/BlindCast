@@ -1,6 +1,8 @@
 <div align="center">
 
-# ▚ BlindCast · 隐播
+<img src="app/src/main/res/raw/logo.svg" width="120" height="120" alt="BlindCast Logo" />
+
+# BlindCast · 隐播
 
 **安卓硬件级物理熄屏挂机工作站 · 局域网低延迟硬解串流 · scrcpy 级键鼠反向触控 · Chrome 原生侧栏中控台**
 

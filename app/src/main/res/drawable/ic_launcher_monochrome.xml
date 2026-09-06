@@ -2,22 +2,58 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
+    android:viewportWidth="512"
+    android:viewportHeight="512">
 
-    <group
-        android:scaleX="0.135"
-        android:scaleY="0.135">
-        <path
-            android:pathData="M259,259 H541 V541 H259 V259 Z"
-            android:strokeWidth="18"
-            android:strokeColor="#000000"
-            android:fillColor="@android:color/transparent" />
-        <path
-            android:fillColor="#000000"
-            android:pathData="M393,257 H543 V407 H393 V257 Z" />
-        <path
-            android:fillColor="#000000"
-            android:pathData="M257,393 H407 V543 H257 V393 Z" />
-    </group>
+    <!-- Outer Ambient Broadcast Wave -->
+    <path
+        android:pathData="M132,152 A156,156 0 0,1 380,152"
+        android:strokeWidth="14"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeAlpha="0.45" />
+
+    <!-- Phone Body -->
+    <path
+        android:pathData="M198,106 L314,106 A36,36 0 0,1 350,142 L350,370 A36,36 0 0,1 314,406 L198,406 A36,36 0 0,1 162,370 L162,142 A36,36 0 0,1 198,106 Z"
+        android:strokeWidth="9"
+        android:strokeColor="#FFFFFF" />
+
+    <!-- Middle Wave -->
+    <path
+        android:pathData="M178,196 A96,96 0 0,1 334,196"
+        android:strokeWidth="14"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeAlpha="0.75" />
+
+    <!-- Inner Wave -->
+    <path
+        android:pathData="M208,228 A58,58 0 0,1 304,228"
+        android:strokeWidth="15"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+
+    <!-- Central Standby Power Core (⏻) -->
+    <path
+        android:pathData="M224,266 A34,34 0 1,0 288,266"
+        android:strokeWidth="15"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M256,232 L256,276"
+        android:strokeWidth="15"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+
+    <!-- Speaker Notch & Home Bar -->
+    <path
+        android:pathData="M238,126 L274,126 A2,2 0 0,1 276,128 A2,2 0 0,1 274,130 L238,130 A2,2 0 0,1 236,128 A2,2 0 0,1 238,126 Z"
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.6" />
+    <path
+        android:pathData="M224,382 L288,382 A2,2 0 0,1 290,384 A2,2 0 0,1 288,386 L224,386 A2,2 0 0,1 222,384 A2,2 0 0,1 224,382 Z"
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.6" />
+
 </vector>

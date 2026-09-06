@@ -1,6 +1,45 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="KernelSU Style UI Kit logo">
-  <rect width="512" height="512" fill="#FFFFFF"/>
-  <rect x="164" y="164" width="180" height="180" fill="none" stroke="#1E110D" stroke-width="12"/>
-  <rect x="250" y="163" width="96" height="96" fill="#1E110D"/>
-  <rect x="163" y="250" width="96" height="96" fill="#1E110D"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0E1626" />
+      <stop offset="100%" stop-color="#020614" />
+    </linearGradient>
+    <linearGradient id="waveGlow" x1="120" y1="140" x2="392" y2="140" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#34D399" />
+      <stop offset="100%" stop-color="#38BDF8" />
+    </linearGradient>
+    <linearGradient id="frameGrad" x1="150" y1="100" x2="362" y2="410" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38475E" />
+      <stop offset="100%" stop-color="#182232" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Base Squircle (Tile / App Icon background) -->
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#bg)" stroke="#1E293B" stroke-width="4"/>
+
+  <!-- Ambient Wave (Piercing outside phone bezel) -->
+  <path d="M 132 152 A 156 156 0 0 1 380 152" stroke="url(#waveGlow)" stroke-width="14" stroke-linecap="round" fill="none" opacity="0.45" filter="url(#glow)"/>
+
+  <!-- Phone Body (Deep AMOLED Black Screen) -->
+  <rect x="162" y="106" width="188" height="300" rx="36" fill="#030712" stroke="url(#frameGrad)" stroke-width="9"/>
+  <rect x="170" y="114" width="172" height="284" rx="28" fill="#000000" stroke="#34D399" stroke-width="1.5" stroke-opacity="0.22"/>
+
+  <!-- Middle Wave -->
+  <path d="M 178 196 A 96 96 0 0 1 334 196" stroke="#38BDF8" stroke-width="14" stroke-linecap="round" fill="none" opacity="0.8"/>
+  <!-- Inner Wave -->
+  <path d="M 208 228 A 58 58 0 0 1 304 228" stroke="#34D399" stroke-width="15" stroke-linecap="round" fill="none" opacity="0.95"/>
+
+  <!-- Central Standby Power Core (⏻) -->
+  <path d="M 224 266 A 34 34 0 1 0 288 266" stroke="#10B981" stroke-width="15" stroke-linecap="round" fill="none"/>
+  <line x1="256" y1="232" x2="256" y2="276" stroke="#34D399" stroke-width="15" stroke-linecap="round" filter="url(#glow)"/>
+  <circle cx="256" cy="232" r="4.5" fill="#FFFFFF"/>
+
+  <!-- Notch & Home Bar -->
+  <rect x="236" y="126" width="40" height="4" rx="2" fill="#1E293B"/>
+  <rect x="222" y="382" width="68" height="4" rx="2" fill="#1E293B"/>
 </svg>
