@@ -23,7 +23,8 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * ## running 语义（供 ForegroundService.bootStack）
  * - [isRunning] = 服务端监听中（start 后 true，stop 后 false）；
- * - [hasVideo]/[hasAudio] = 已收到对应通道首帧（首帧门闩）；
+ * - [hasVideo]/[hasAudio] = 已收到对应通道首帧（首帧门闩；stop 时清零，
+ *   故 `isRunning || hasVideo` 即串流实际开态，停后不粘 true）；
  * - [awaitFirstFrame] 等首帧或 3s 超时（bootStack 据此标 running/记 lastError）。
  */
 object CaptureSocketLink {
@@ -174,6 +175,10 @@ object CaptureSocketLink {
 
     private fun stopLocked() {
         isRunning = false
+        // 首帧门闩同步清零：停后 `isRunning || hasVideo` 即回到 false，
+        // 状态流/UI/API 不粘旧 true（等帧方持旧 latch 引用不受影响，见 awaitFirstFrame）。
+        hasVideo = false
+        hasAudio = false
         acceptThread?.interrupt()
         try { acceptThread?.join(1_000L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         acceptThread = null

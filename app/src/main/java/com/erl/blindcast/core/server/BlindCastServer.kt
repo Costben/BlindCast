@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * - `GET /ws/stream` → [StreamWsRoute]（鉴权后升级，NALU/AAC 二进制下发）；
  * - `GET /ws/control` → [ControlWsRoute]（鉴权后升级，JSON 指令上行）；
  * - `GET /api/auth/status`、`GET|POST /api/auth/verify` → [AuthRoute]（公开）；
- * - `GET|POST /api/screen`、`GET /api/status` → [DeviceApiRoute]（需鉴权）；
+ * - `GET|POST /api/screen`、`GET /api/status`、`GET|POST /api/stream` → [DeviceApiRoute]（需鉴权）；
  * - 其余 → 404；鉴权失败 → 401 JSON（WS 升级前同样先验，失败直接 401 不升级）。
  *
  * ## 线程模型
@@ -256,11 +256,13 @@ object BlindCastServer {
                 serveJson(output, req.method, AuthRoute.handleStatus())
             path == "/api/auth/verify" ->
                 serveJson(output, req.method, AuthRoute.handleVerify(req.method, req.rawQuery, req.headers, req.body))
-            path == "/api/screen" || path == "/api/status" -> {
+            path == "/api/screen" || path == "/api/status" || path == "/api/stream" -> {
                 if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
                     serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
                 } else if (path == "/api/screen") {
                     serveJson(output, req.method, DeviceApiRoute.handleScreen(req.method, req.rawQuery, req.body))
+                } else if (path == "/api/stream") {
+                    serveJson(output, req.method, DeviceApiRoute.handleStream(req.method, req.rawQuery, req.body))
                 } else {
                     if (req.method != "GET") {
                         serveJson(output, req.method, 405 to """{"ok":false,"error":"method not allowed"}""")

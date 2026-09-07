@@ -88,6 +88,12 @@ object ScreencapJpegPoller {
     private fun loop() {
         while (!Thread.currentThread().isInterrupted) {
             try {
+                // 开关分离：串流关着时连兜底也不采（用户要的是零录屏零转码）。
+                // 只看采集链路实际态：停后 isRunning 与首帧门闩均为 false。
+                if (!CaptureSocketLink.isRunning && !CaptureSocketLink.hasVideo) {
+                    sleep(NO_DEMAND_IDLE_MS)
+                    continue
+                }
                 if (!JpegTranscoder.hasDemand()) {
                     sleep(NO_DEMAND_IDLE_MS)
                     continue

@@ -6,13 +6,14 @@
  *  - 零画面：无图像标签 / 解码管线 / 音频管线；
  *  - 零流连接：只用轻量 HTTP，不建持久通道：
  *      GET /api/auth/status（公开探活） + GET /api/status（轻量轮询）
- *      POST /api/screen（快捷熄屏/点亮）；
+ *      POST /api/screen（快捷熄屏/点亮） + GET/POST /api/stream（投屏采集开关）；
  *  - 设备库：chrome.storage.local devices:[{ip,port,name,token,lastSeen}]，
  *    启动恢复并各拉一次 /api/status；
  *  - 扫描候选区（ transient，不入库 ）：
  *      点条目 -> 填入顶部输入框并聚焦；右侧 [+ 添加] -> 一键入库成卡；
  *      顶部 + / 回车 -> 将输入框内容永久存库并成卡；
  *  - 卡片操作：[打开投屏] 新标签开 console.html?host=（已开则聚焦复用）、
+ *    [投屏开/关] 直调 POST /api/stream（只停采集不断端口）、
  *    [熄屏/点亮] 直调 POST /api/screen、[刷新]、[移除]。
  * MV3 CSP：外联脚本、零 on*=、零 eval，全 addEventListener + textContent。
  * ===================================================================== */
@@ -464,6 +465,11 @@ function createCard(dev) {
   scr.dataset.role = "screen";
   scr.textContent = "屏幕 --";
   caps.appendChild(scr);
+  const stm = document.createElement("span");
+  stm.className = "capsule";
+  stm.dataset.role = "stream";
+  stm.textContent = "投屏 --";
+  caps.appendChild(stm);
   card.appendChild(caps);
 
   const sub = document.createElement("div");
@@ -512,6 +518,18 @@ function createCard(dev) {
   open.dataset.role = "open";
   open.addEventListener("click", () => openConsole(dev));
   card.appendChild(open);
+
+  const rowStream = document.createElement("div");
+  rowStream.className = "row-2";
+  const stream = document.createElement("button");
+  stream.className = "btn-sec";
+  stream.type = "button";
+  stream.textContent = "🎬 投屏开关";
+  stream.title = "直调 POST /api/stream：只停采集不断端口，省电";
+  stream.dataset.role = "stream";
+  stream.addEventListener("click", () => toggleStream(dev, stream));
+  rowStream.appendChild(stream);
+  card.appendChild(rowStream);
 
   const row2 = document.createElement("div");
   row2.className = "row-2";
@@ -568,11 +586,28 @@ function updateCardStatus(dev, st) {
   const trow = el.querySelector('[data-role="tokenrow"]');
   const power = el.querySelector('[data-role="power"]');
   const open = el.querySelector('[data-role="open"]');
+  const stm = el.querySelector('[data-role="stream"]');
+  const streamBtn = el.querySelector('button[data-role="stream"]');
+
+  function paintStream(state) {
+    // state: true=采集中 / false=已停 / null=未知(离线·需Token·检查中)
+    if (stm) {
+      if (state === true) { stm.textContent = "🎬 投屏开"; stm.className = "capsule ok"; }
+      else if (state === false) { stm.textContent = "⏹ 投屏关"; stm.className = "capsule"; }
+      else { stm.textContent = "投屏 --"; stm.className = "capsule"; }
+    }
+    if (streamBtn) {
+      if (state === true) { streamBtn.textContent = "⏹ 停止投屏"; streamBtn.disabled = false; }
+      else if (state === false) { streamBtn.textContent = "🎬 开启投屏"; streamBtn.disabled = false; }
+      else { streamBtn.textContent = "🎬 投屏开关"; streamBtn.disabled = true; }
+    }
+  }
 
   if (st.checking) {
     if (dot) dot.className = "dot check";
     if (conn) { conn.textContent = "… 检查中"; conn.className = "dev-conn"; }
     if (net) { net.textContent = "… 检查中"; net.className = "capsule"; }
+    paintStream(null);
     return;
   }
   if (st.online && st.data) {
@@ -596,6 +631,7 @@ function updateCardStatus(dev, st) {
     }
     if (power) power.textContent = j.blackedOut ? "⏻ 点亮" : "⏻ 熄屏";
     if (trow) trow.classList.add("hide");
+    paintStream(typeof j.streaming === "boolean" ? j.streaming : null);
     if (sub) {
       const extra = [];
       if (typeof j.streamClients === "number" || typeof j.controlClients === "number") {
@@ -611,6 +647,7 @@ function updateCardStatus(dev, st) {
     if (scr) { scr.textContent = "屏幕 --"; scr.className = "capsule"; }
     if (power) power.textContent = "⏻ 熄屏";
     if (trow) trow.classList.remove("hide");
+    paintStream(null);
     if (sub) sub.textContent = (st.error === "bad-token" ? "Token 错误，请更新" : "该设备需访问 Token") + " · 上次见到 " + fmtTime(dev.lastSeen);
   } else {
     if (dot) dot.className = "dot off";
@@ -628,6 +665,7 @@ function updateCardStatus(dev, st) {
     if (scr) { scr.textContent = "屏幕 --"; scr.className = "capsule"; }
     if (power) power.textContent = "⏻ 熄屏";
     if (trow) trow.classList.add("hide");
+    paintStream(null);
     if (sub) {
       const reason = !st.error ? "未检测到服务" : (st.error === "timeout" ? "连接超时" : st.error);
       sub.textContent = "○ 离线 · " + reason + " · 上次见到 " + fmtTime(dev.lastSeen);
@@ -823,6 +861,43 @@ async function toggleScreen(dev, btn) {
     }
   } catch (e) {
     toast("屏幕切换请求失败");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/* ---------------- 投屏采集开关（POST /api/stream，只停采集不断端口） ---------------- */
+async function toggleStream(dev, btn) {
+  const key = devKey(dev);
+  const st = statusOf(key);
+  const cur = (st.data && typeof st.data.streaming === "boolean") ? !!st.data.streaming : null;
+  const action = cur === null ? "toggle" : (cur ? "off" : "on");
+  const token = deviceToken(dev);
+  if (btn) btn.disabled = true;
+  try {
+    const url = deviceBase(dev) + "api/stream" + (token ? "?token=" + encodeURIComponent(token) : "");
+    const r = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action })
+    }, STATUS_TIMEOUT_MS);
+    if (r.status === 401) {
+      st.needToken = true;
+      st.online = false;
+      st.error = "need-token";
+      updateCardStatus(dev, st);
+      toast("该设备需 Token，先在卡片填写 Token");
+      return;
+    }
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok !== false) {
+      toast(cur === true ? "⏹ 已停止投屏采集（端口保持）" : (cur === false ? "🎬 已开启投屏采集" : "投屏采集已切换"));
+      await refreshOne(dev);
+    } else {
+      toast("投屏切换失败：" + (j.error || r.status));
+    }
+  } catch (e) {
+    toast("投屏切换请求失败");
   } finally {
     if (btn) btn.disabled = false;
   }

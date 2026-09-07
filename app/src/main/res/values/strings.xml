@@ -67,6 +67,10 @@
     <string name="blindcast_home_token_off" translatable="false">关闭</string>
     <string name="blindcast_home_service_switch" translatable="false">串流后台总服务</string>
     <string name="blindcast_home_service_switch_summary" translatable="false">一键启动 / 关闭录屏编码与 HTTP 监听服务</string>
+    <string name="blindcast_home_http_switch" translatable="false">HTTP 端口服务</string>
+    <string name="blindcast_home_http_switch_summary" translatable="false">只开端口：可远程息屏 / 点亮，不录屏不转码</string>
+    <string name="blindcast_home_stream_switch" translatable="false">串流采集服务</string>
+    <string name="blindcast_home_stream_switch_summary" translatable="false">开启录屏编码与推流（会自动打开 HTTP 端口）</string>
     <string name="blindcast_home_blackout_summary" translatable="false">彻底关闭物理屏幕，进入极致省电无感前台挂机</string>
     <string name="blindcast_home_restore_summary" translatable="false">恢复屏幕显示（亦支持按两次物理电源键唤醒）</string>
     <string name="blindcast_home_screen_off" translatable="false">屏幕：已熄屏</string>

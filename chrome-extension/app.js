@@ -10,6 +10,7 @@
  *  - GET /api/auth/verify?token= -> {ok}               (AuthRoute)
  *  - GET /api/status (鉴权) -> {blackedOut,batteryLevel...(DeviceApiRoute)
  *  - POST /api/screen {action} (鉴权)                  (DeviceApiRoute)
+ *  - GET /api/stream -> {streaming} / POST /api/stream {action} (鉴权，远控串流开关)
  *  - WS /ws/stream: 首条文本 hello, 后续二进制 1字节通道头+负载
  *      0x01 H.264 Annex-B NALU(首包SPS/PPS+IDR) / 0x02 AAC裸帧 /
  *      0x03 JPEG单帧[4字节大端长+JPEG](无WebCodecs降级,Universal-1) (StreamWsRoute)
@@ -442,6 +443,9 @@ async function pollStatus() {
     const pw = $("btnPower");
     if (j.blackedOut) { pw.classList.add("warn-on"); pw.title = "点亮屏幕"; }
     else { pw.classList.remove("warn-on"); pw.title = "息屏挂机"; }
+    const pwLabel = pw.querySelector("span");
+    if (pwLabel) pwLabel.textContent = j.blackedOut ? "点亮" : "息屏";
+    if (typeof j.streaming === "boolean") updateStreamUI(j.streaming);
     if (typeof j.audioEnabled === "boolean" && j.audioEnabled !== S.audioEnabled) setAudioUI(j.audioEnabled);
   } catch (e) {}
 }
@@ -547,10 +551,48 @@ document.addEventListener("keyup", () => {});
 /* ---------------- 悬浮栏 ---------------- */
 function setAudioUI(on) {
   S.audioEnabled = on;
-  $("btnMute").classList.toggle("on", !on);
-  $("btnMute").textContent = on ? "🎵" : "🔇";
-  $("btnMute").title = on ? "音频传输开 (点击静音)" : "音频传输关 (点击恢复)";
+  const btn = $("btnMute");
+  btn.classList.toggle("on", !on);
+  const icon = btn.querySelector("i");
+  if (icon) icon.textContent = on ? "🎵" : "🔇";
+  btn.title = on ? "音频传输开 (点击静音)" : "音频传输关 (点击恢复)";
   if (masterGain && actx) masterGain.gain.value = on ? 1 : 0;
+}
+/* 停止/开启投屏（远控设备端串流采集，不关端口；画面定格，重开后自动续流） */
+function updateStreamUI(streaming) {
+  const btn = $("btnStream");
+  if (!btn) return;
+  const icon = btn.querySelector("i"), label = btn.querySelector("span");
+  if (streaming) {
+    if (icon) icon.textContent = "⏹";
+    if (label) label.textContent = "停止投屏";
+    btn.classList.add("warn-on");
+    btn.title = "停止投屏采集（省电，画面定格，可再点开启）";
+  } else {
+    if (icon) icon.textContent = "▶";
+    if (label) label.textContent = "开启投屏";
+    btn.classList.remove("warn-on");
+    btn.title = "开启投屏采集";
+  }
+}
+async function toggleStream() {
+  const btn = $("btnStream");
+  if (btn) btn.disabled = true;
+  try {
+    const cur = (S.lastStatus && typeof S.lastStatus.streaming === "boolean") ? S.lastStatus.streaming : null;
+    const action = cur === null ? "toggle" : (cur ? "off" : "on");
+    const r = await fetch(apiUrl("api/stream"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok !== false) {
+      toast(cur === true ? "⏹ 已停止投屏采集（端口保持，可远程点亮）"
+        : cur === false ? "🎬 已开启投屏采集" : "投屏采集已切换");
+      pollStatus();
+    } else toast("投屏切换失败: " + (j.error || r.status));
+  } catch (e) { toast("投屏切换请求失败"); }
+  finally { if (btn) btn.disabled = false; }
 }
 $("btnBack").onclick = () => sendCtl({ type: "click", button: "right" });
 $("btnHome").onclick = () => sendCtl({ type: "click", button: "middle" });
@@ -584,6 +626,7 @@ $("btnJpeg").onclick = () => {
   toast(S.videoMode === "jpeg" ? "🎞 已切 JPEG 降级 (裸浏览器)" : "🎞 已切回 H264 (硬解路)");
 };
 $("btnReconnect").onclick = () => { showBoot("正在重连…"); connect(); };
+$("btnStream").onclick = toggleStream;
 $("btnEnter").onclick = () => { $("bootOverlay").classList.add("hide"); connect(); startStatusPoll(); };
 
 /* ---------------- 鉴权提交 ---------------- */

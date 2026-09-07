@@ -25,10 +25,13 @@ data class HomeUiState(
     val privResult: String? = null,
 )
 
-/** Hero 大卡片：串流总服务实时快照。 */
+/** Hero 大卡片：服务实时快照（HTTP 端口与串流采集独立）。 */
 @Immutable
 data class ServiceCardState(
+    /** HTTP 端口在线（轻量，可远程息屏/点亮）。 */
     val isRunning: Boolean = false,
+    /** 串流采集运行中（录屏编码推流，重耗电；开必含 HTTP 开）。 */
+    val isStreaming: Boolean = false,
     val port: Int = 8888,
     val fps: Int = -1,
     val bitrateMbps: Double = -1.0,
@@ -65,6 +68,9 @@ data class HomeActions(
     val onOpenUrl: (String) -> Unit,
     // Slice 6.1 快捷操作（由 HomeScreen 接入 HomeViewModel / 剪贴板）。
     val onToggleService: (Boolean) -> Unit = {},
+    // 开关分离：HTTP 端口（轻量）与串流采集（重耗电）独立。
+    val onToggleHttp: (Boolean) -> Unit = {},
+    val onToggleStreaming: (Boolean) -> Unit = {},
     val onBlackout: () -> Unit = {},
     val onRestore: () -> Unit = {},
     val onCopyLanUrl: (String) -> Unit = {},

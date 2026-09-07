@@ -102,7 +102,8 @@ fun HomePagerMiuix(
                             privResult = state.privResult,
                             onBlackout = actions.onBlackout,
                             onRestore = actions.onRestore,
-                            onToggleService = actions.onToggleService,
+                            onToggleHttp = actions.onToggleHttp,
+                            onToggleStreaming = actions.onToggleStreaming,
                         )
                         BlindCastLanCard(
                             lan = state.lan,
@@ -245,7 +246,8 @@ private fun BlindCastActionsCard(
     privResult: String? = null,
     onBlackout: () -> Unit,
     onRestore: () -> Unit,
-    onToggleService: (Boolean) -> Unit,
+    onToggleHttp: (Boolean) -> Unit,
+    onToggleStreaming: (Boolean) -> Unit,
 ) {
     val screenSummary = if (service.blackedOut) {
         stringResource(R.string.blindcast_home_screen_off)
@@ -265,10 +267,16 @@ private fun BlindCastActionsCard(
             onClick = onRestore,
         )
         SwitchPreference(
-            title = stringResource(R.string.blindcast_home_service_switch),
-            summary = stringResource(R.string.blindcast_home_service_switch_summary),
+            title = stringResource(R.string.blindcast_home_http_switch),
+            summary = stringResource(R.string.blindcast_home_http_switch_summary),
             checked = service.isRunning,
-            onCheckedChange = onToggleService,
+            onCheckedChange = onToggleHttp,
+        )
+        SwitchPreference(
+            title = stringResource(R.string.blindcast_home_stream_switch),
+            summary = stringResource(R.string.blindcast_home_stream_switch_summary),
+            checked = service.isStreaming,
+            onCheckedChange = onToggleStreaming,
         )
     }
 }

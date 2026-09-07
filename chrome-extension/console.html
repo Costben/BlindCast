@@ -43,7 +43,11 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
   background:rgba(16,19,26,.62);border:1px solid var(--line);backdrop-filter:blur(14px);
   box-shadow:0 8px 32px rgba(0,0,0,.5)}
 #dock button{flex:0 0 auto;border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--fg);
-  border-radius:10px;min-width:42px;height:38px;font-size:16px;cursor:pointer;padding:0 10px}
+  border-radius:10px;min-width:42px;height:38px;font-size:16px;cursor:pointer;padding:0 10px;
+  display:flex;align-items:center;gap:8px;justify-content:flex-start;text-align:left}
+#dock button i{font-style:normal;font-size:16px;line-height:1;flex:0 0 auto}
+#dock button span{font-size:12px;line-height:1.2;white-space:nowrap}
+#dock button:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
 #dock button:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
 #dock button.on{background:rgba(52,211,153,.22);border-color:var(--neon);color:var(--neon)}
 #dock button.warn-on{background:rgba(251,191,36,.18);border-color:var(--warn);color:var(--warn)}
@@ -94,6 +98,7 @@ footer #footFrame{flex:0 0 auto;margin-left:auto}
     flex-direction:row;align-items:center;gap:4px;padding:6px 8px;
     max-width:96vw;max-height:none;overflow-x:auto;overflow-y:hidden}
   #dock button{min-width:34px;height:34px;font-size:14px;padding:0 8px}
+  #dock button span{display:none}
   #dock .sep{width:1px;height:24px;margin:0}
   #dock .lbl{display:none}
 }
@@ -116,19 +121,20 @@ footer #footFrame{flex:0 0 auto;margin-left:auto}
   <div class="hint">左键拖拽=触控 · 右键=返回 · 中键=Home · 滚轮=滑动 · 键盘直接打字</div>
 
   <div id="dock">
-    <button id="btnBack" title="返回 (Back)">◀</button>
-    <button id="btnHome" title="桌面 (Home)">●</button>
-    <button id="btnRecents" title="最近任务 (Recents)">■</button>
+    <button id="btnBack" title="返回 (Back)"><i>◀</i><span>返回</span></button>
+    <button id="btnHome" title="桌面 (Home)"><i>●</i><span>桌面</span></button>
+    <button id="btnRecents" title="最近任务 (Recents)"><i>■</i><span>最近任务</span></button>
     <span class="sep"></span>
-    <button id="btnVolDown" title="音量 -">🔉</button>
-    <button id="btnVolUp" title="音量 +">🔊</button>
-    <button id="btnMute" title="音频传输开关">🎵</button>
+    <button id="btnVolDown" title="音量 -"><i>🔉</i><span>音量-</span></button>
+    <button id="btnVolUp" title="音量 +"><i>🔊</i><span>音量+</span></button>
+    <button id="btnMute" title="音频传输开关"><i>🎵</i><span>音频</span></button>
     <span class="sep"></span>
-    <button id="btnPower" title="息屏 / 亮屏">⏻</button>
-    <button id="btnFull" title="全屏">⛶</button>
-    <button id="btnKeys" title="聚焦键盘输入">⌨</button>
-    <button id="btnJpeg" title="切换 JPEG/H264 (裸浏览器降级)">🎞</button>
-    <button id="btnReconnect" title="重连">⟳</button>
+    <button id="btnPower" title="息屏 / 亮屏"><i>⏻</i><span>息屏</span></button>
+    <button id="btnStream" title="停止投屏采集"><i>⏹</i><span>停止投屏</span></button>
+    <button id="btnFull" title="全屏"><i>⛶</i><span>全屏</span></button>
+    <button id="btnKeys" title="聚焦键盘输入"><i>⌨</i><span>键盘</span></button>
+    <button id="btnJpeg" title="切换 JPEG/H264 (裸浏览器降级)"><i>🎞</i><span>画质</span></button>
+    <button id="btnReconnect" title="重连"><i>⟳</i><span>重连</span></button>
   </div>
 
   <!-- Token 鉴权弹窗 -->

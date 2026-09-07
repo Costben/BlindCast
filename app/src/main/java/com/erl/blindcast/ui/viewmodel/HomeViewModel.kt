@@ -142,6 +142,31 @@ class HomeViewModel : ViewModel() {
     }
 
     /**
+     * HTTP 端口开关（轻量：只开端口，可远程息屏/点亮，不起录屏编码）。
+     * 关即总停（串流同关，服务退出）。
+     */
+    fun toggleHttp(enable: Boolean) {
+        if (enable) {
+            BlindCastForegroundService.startHttp(app)
+        } else {
+            BlindCastForegroundService.stop(app)
+        }
+        viewModelScope.launch(Dispatchers.IO) { updateFromSnapshot() }
+    }
+
+    /**
+     * 串流采集开关（开隐含开 HTTP；关只停采集不断端口）。
+     */
+    fun toggleStreaming(enable: Boolean) {
+        if (enable) {
+            BlindCastForegroundService.startStreaming(app)
+        } else {
+            BlindCastForegroundService.stopStreaming(app)
+        }
+        viewModelScope.launch(Dispatchers.IO) { updateFromSnapshot() }
+    }
+
+    /**
      * 立即息屏挂机：经 Shizuku 特权路由物理熄屏 + 启动 4s 喂狗（后台执行，含跨进程绑定）。
      *
      * Priv-Bridge-2 应用内一键授权：daemon 在跑但未授权时自动走一次
@@ -285,6 +310,7 @@ class HomeViewModel : ViewModel() {
             current.copy(
                 service = ServiceCardState(
                     isRunning = svc.isRunning,
+                    isStreaming = svc.isStreaming,
                     port = effectivePort,
                     fps = svc.fps,
                     bitrateMbps = if (svc.bitrateBps > 0) svc.bitrateBps / 1_000_000.0 else -1.0,

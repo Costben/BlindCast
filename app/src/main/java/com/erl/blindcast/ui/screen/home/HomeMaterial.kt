@@ -66,7 +66,8 @@ fun HomePagerMaterial(
                 privResult = state.privResult,
                 onBlackout = actions.onBlackout,
                 onRestore = actions.onRestore,
-                onToggleService = actions.onToggleService,
+                onToggleHttp = actions.onToggleHttp,
+                onToggleStreaming = actions.onToggleStreaming,
             )
             LanCard(
                 lan = state.lan,
@@ -157,7 +158,8 @@ private fun ActionsCard(
     privResult: String? = null,
     onBlackout: () -> Unit,
     onRestore: () -> Unit,
-    onToggleService: (Boolean) -> Unit,
+    onToggleHttp: (Boolean) -> Unit,
+    onToggleStreaming: (Boolean) -> Unit,
 ) {
     val screenSummary = if (service.blackedOut) {
         stringResource(R.string.blindcast_home_screen_off)
@@ -179,16 +181,34 @@ private fun ActionsCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = stringResource(R.string.blindcast_home_service_switch),
+                        text = stringResource(R.string.blindcast_home_http_switch),
                         style = MaterialTheme.typography.titleSmall,
                     )
                     Text(
-                        text = stringResource(R.string.blindcast_home_service_switch_summary),
+                        text = stringResource(R.string.blindcast_home_http_switch_summary),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline,
                     )
                 }
-                Switch(checked = service.isRunning, onCheckedChange = onToggleService)
+                Switch(checked = service.isRunning, onCheckedChange = onToggleHttp)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.blindcast_home_stream_switch),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        text = stringResource(R.string.blindcast_home_stream_switch_summary),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
+                Switch(checked = service.isStreaming, onCheckedChange = onToggleStreaming)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onClick = onBlackout, modifier = Modifier.weight(1f)) {

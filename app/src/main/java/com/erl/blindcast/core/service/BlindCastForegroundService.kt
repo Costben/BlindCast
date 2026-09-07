@@ -41,9 +41,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 常驻前台保活服务（Slice 6.1 · MVP.md 第四章 core/service）。
+ *
+ * ## 开关分离（HTTP 端口 vs 串流采集）
+ * - HTTP 开关 = 轻量端口在线（静态页/状态 API/息屏点亮 API/WS 信令可用，
+ *   不起录屏编码，省电）；串流开关 = 特权采集（录屏 + 转码推流，重耗电）。
+ * - 串流开隐含 HTTP 开（先保端口再起采集）；HTTP 关则串流同关；
+ *   只停串流不断端口（可继续远程息屏/点亮）。
+ * - 期望态双落盘（`service_http_enabled`/`service_stream_enabled`），
+ *   START_STICKY 粘性重启按盘恢复；后台重试只看本代际 + 期望态，过期自弃。
  *
  * ## FGS 类型为什么是 dataSync（Fix-FGS-1）
  * - `connectedDevice` 不可用：targetSDK=37 上以该类型起 FGS 要求
@@ -86,6 +95,8 @@ class BlindCastForegroundService : Service() {
     /** 对外可观察的服务快照。 */
     data class ServiceStatus(
         val isRunning: Boolean = false,
+        /** HTTP 监听是否在线（端口开 / 可远程息屏点亮）。 */
+        val isStreaming: Boolean = false,
         val port: Int = BlindCastServer.DEFAULT_PORT,
         val fps: Int = -1,
         val bitrateBps: Int = -1,
@@ -99,6 +110,12 @@ class BlindCastForegroundService : Service() {
         private const val TAG = "BlindCast-FgService"
         private const val ACTION_START = "com.erl.blindcast.action.STREAM_START"
         private const val ACTION_STOP = "com.erl.blindcast.action.STREAM_STOP"
+        /** 只开 HTTP 端口（可远程息屏/点亮，不起录屏编码）。 */
+        private const val ACTION_START_HTTP = "com.erl.blindcast.action.HTTP_START"
+        /** 开串流（隐含开 HTTP：先保端口在线，再起特权采集）。 */
+        private const val ACTION_START_STREAM = "com.erl.blindcast.action.STREAMING_START"
+        /** 只停串流采集（端口保持在线）。 */
+        private const val ACTION_STOP_STREAM = "com.erl.blindcast.action.STREAMING_STOP"
         private const val NOTIF_ID = 0xB11DC4
         private const val CHANNEL_ID = "blindcast_stream"
 
@@ -110,6 +127,15 @@ class BlindCastForegroundService : Service() {
 
         /** HTTP 监听端口键（默认 [BlindCastServer.DEFAULT_PORT]）。 */
         const val KEY_PORT = "server_port"
+
+        /**
+         * 开关持久化（与 sticky 重启恢复共用，键名冻结）：
+         * - [KEY_HTTP_ENABLED] = 端口开关期望态；
+         * - [KEY_STREAM_ENABLED] = 串流采集期望态（含隐含 HTTP）。
+         * 语义：串流开必含 HTTP 开；HTTP 关必含串流关；只停串流不断端口。
+         */
+        const val KEY_HTTP_ENABLED = "service_http_enabled"
+        const val KEY_STREAM_ENABLED = "service_stream_enabled"
 
         /** 状态轮询间隔 2s。 */
         const val POLL_INTERVAL_MS = 2_000L
@@ -140,9 +166,82 @@ class BlindCastForegroundService : Service() {
 
         /** 停止串流总服务（任意线程；UI 层唯一入口）。 */
         fun stop(context: Context) {
+            setHttpWanted(context, false)
+            setStreamWanted(context, false)
+            streamWanted = false
+            captureGen.incrementAndGet()
             val intent = Intent(context, BlindCastForegroundService::class.java)
                 .setAction(ACTION_STOP)
             context.startService(intent)
+        }
+
+        /**
+         * 只开 HTTP 端口（轻量：可远程息屏/点亮，不起录屏编码；串流期望清零）。
+         * 任意线程；HTTP 开关 UI 唯一入口。
+         */
+        fun startHttp(context: Context) {
+            setHttpWanted(context, true)
+            setStreamWanted(context, false)
+            streamWanted = false
+            captureGen.incrementAndGet()
+            val intent = Intent(context, BlindCastForegroundService::class.java)
+                .setAction(ACTION_START_HTTP)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /**
+         * 开串流（含隐含 HTTP：端口先在线，再起特权采集）。
+         * 任意线程；串流开关 UI 唯一入口。
+         */
+        fun startStreaming(context: Context) {
+            setHttpWanted(context, true)
+            setStreamWanted(context, true)
+            streamWanted = true
+            val intent = Intent(context, BlindCastForegroundService::class.java)
+                .setAction(ACTION_START_STREAM)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /**
+         * 只停串流采集（端口保持在线，可继续远程息屏/点亮）。
+         * 服务未跑时只落持久化、不拉起服务。
+         */
+        fun stopStreaming(context: Context) {
+            setStreamWanted(context, false)
+            streamWanted = false
+            captureGen.incrementAndGet()
+            if (!BlindCastServer.isRunning && !CaptureSocketLink.isRunning && !CaptureSocketLink.hasVideo) {
+                runCatching { _status.value = snapshot() }
+                return
+            }
+            val intent = Intent(context, BlindCastForegroundService::class.java)
+                .setAction(ACTION_STOP_STREAM)
+            context.startService(intent)
+        }
+
+        /** 读 HTTP 期望态（缺键默认 false；服务被显式拉起即视为 true）。 */
+        private fun readHttpWanted(context: Context): Boolean = runCatching {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(KEY_HTTP_ENABLED, false)
+        }.getOrDefault(false)
+
+        private fun readStreamWanted(context: Context): Boolean = runCatching {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(KEY_STREAM_ENABLED, false)
+        }.getOrDefault(false)
+
+        private fun setHttpWanted(context: Context, value: Boolean) {
+            runCatching {
+                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_HTTP_ENABLED, value).apply()
+            }
+        }
+
+        private fun setStreamWanted(context: Context, value: Boolean) {
+            runCatching {
+                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_STREAM_ENABLED, value).apply()
+            }
         }
 
         /** 刷新一次对外快照（供 UI 在服务未运行时主动对齐）。 */
@@ -172,6 +271,17 @@ class BlindCastForegroundService : Service() {
         }
 
         /**
+         * 串流期望态（内存态，与 [KEY_STREAM_ENABLED] 持久化同写）：
+         * 后台采集重试循环据此收敛——用户关串流后重试直接放弃，不复活采集。
+         */
+        @Volatile
+        var streamWanted: Boolean = false
+            private set
+
+        /** 采集代际：停串流/切模式即自增，过期异步采集任务见代际不符直接放弃。 */
+        private val captureGen = AtomicInteger(0)
+
+        /**
          * 当前快照：运行态读特权链路实时值（首帧后），停止态读偏好端口。
          * Stream-Priv-1 改道：server 照常本进程；video/audio 改特权链路，
          * fps/bitrate 优先读 [CaptureSocketLink]（有首帧才有效），无首帧回退本地引擎
@@ -194,6 +304,7 @@ class BlindCastForegroundService : Service() {
             }
             @Suppress("UNUSED_VARIABLE")
             val linkHint = linkActive
+            val streaming = CaptureSocketLink.isRunning || CaptureSocketLink.hasVideo
             val errText = lastError?.message ?: lastError?.toString()
                 ?: captureError?.message ?: captureError?.toString()
                 ?: CaptureSocketLink.errorMessage()
@@ -201,6 +312,7 @@ class BlindCastForegroundService : Service() {
                 ?: AudioCaptureEngine.lastError?.message
             return ServiceStatus(
                 isRunning = running,
+                isStreaming = streaming,
                 port = port,
                 fps = fps,
                 bitrateBps = bitrate,
@@ -228,6 +340,14 @@ class BlindCastForegroundService : Service() {
      */
     private val booting = AtomicBoolean(false)
 
+    /**
+     * 采集任务活跃标记（主线程置 true 发起，后台任务终局失败或主线程停串流时清零）。
+     * 作用：onCreate 与 onStartCommand 同一主线程串行先后进入时，第二个入口看到
+     * 已发起即跳过，避免同一代际双任务并发抢绑 Shizuku（见 ensureCaptureStarted）。
+     */
+    @Volatile
+    private var captureActive = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -250,9 +370,32 @@ class BlindCastForegroundService : Service() {
             return
         }
         runCatching { acquireLocks() }
-        // 开机读档自启路径（START_STICKY 重建同样走这里）：受 bootStack 内外双层保护。
+        // 开关分离：onCreate 按持久化期望恢复（HTTP 与串流独立）。
+        // 公开 start* 入口均先落盘后发 intent，故此处读盘即得本次期望；
+        // 双盘皆空视为未知拉起，兼容旧行为默认全开并落盘。
+        streamWanted = readStreamWanted(this)
+        var httpWanted = readHttpWanted(this)
+        if (!httpWanted && !streamWanted) {
+            httpWanted = true
+            streamWanted = true
+            setHttpWanted(this, true)
+            setStreamWanted(this, true)
+        }
         try {
-            bootStack()
+            if (httpWanted) ensureServerStarted()
+            if (streamWanted) {
+                ensureCaptureStarted()
+            } else {
+                runCatching { stopPrivilegedCapture() }
+                captureActive = false
+            }
+            ensureInputDaemon()
+            syncKeeper()
+            _status.value = snapshot()
+            if (lastError != null && BlindCastServer.isRunning) {
+                lastError = null
+                runCatching { _status.value = snapshot() }
+            }
         } catch (se: SecurityException) {
             recordError(se)
             runCatching { stopSelf() }
@@ -270,28 +413,133 @@ class BlindCastForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                // 总停：双期望清零，stopSelf 进 onDestroy 同步收尾（停服/放锁/熔断）。
+                streamWanted = false
+                setHttpWanted(this, false)
+                setStreamWanted(this, false)
+                captureGen.incrementAndGet()
+                captureActive = false
+                runCatching { _status.value = snapshot() }
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_STOP_STREAM -> {
+                // 只停串流：端口保持在线（异步停，不卡主线程）。
+                streamWanted = false
+                setStreamWanted(this, false)
+                return try {
+                    stopCaptureAsync()
+                    _status.value = snapshot()
+                    START_STICKY
+                } catch (se: SecurityException) {
+                    recordError(se)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                } catch (t: Exception) {
+                    recordError(t)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                }
+            }
+            ACTION_START_HTTP -> {
+                // 只开端口：串流期望清零并确保采集已收。
+                setHttpWanted(this, true)
+                setStreamWanted(this, false)
+                streamWanted = false
+                captureGen.incrementAndGet()
+                return try {
+                    ensureServerStarted()
+                    stopCaptureAsync()
+                    ensureInputDaemon()
+                    syncKeeper()
+                    _status.value = snapshot()
+                    START_STICKY
+                } catch (se: SecurityException) {
+                    recordError(se)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                } catch (t: Exception) {
+                    recordError(t)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                }
+            }
+            ACTION_START_STREAM -> {
+                // 开串流（含隐含 HTTP）。
+                setHttpWanted(this, true)
+                setStreamWanted(this, true)
+                streamWanted = true
+                return try {
+                    ensureServerStarted()
+                    ensureCaptureStarted()
+                    ensureInputDaemon()
+                    syncKeeper()
+                    _status.value = snapshot()
+                    START_STICKY
+                } catch (se: SecurityException) {
+                    recordError(se)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                } catch (t: Exception) {
+                    recordError(t)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                }
+            }
+            ACTION_START -> {
+                // 兼容旧总开关：双开。
+                setHttpWanted(this, true)
+                setStreamWanted(this, true)
+                streamWanted = true
+                return try {
+                    if (!BlindCastServer.isRunning) bootStack() else {
+                        ensureCaptureStarted()
+                        ensureInputDaemon()
+                        syncKeeper()
+                    }
+                    _status.value = snapshot()
+                    START_STICKY
+                } catch (se: SecurityException) {
+                    recordError(se)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                } catch (t: Exception) {
+                    recordError(t)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                }
+            }
+            else -> {
+                // 粘性重启（系统杀死后拉起，action=null）与未知 action：按持久化期望恢复。
+                streamWanted = readStreamWanted(this)
+                val httpWanted = readHttpWanted(this) || streamWanted
+                return try {
+                    if (httpWanted && !BlindCastServer.isRunning) ensureServerStarted()
+                    if (streamWanted && BlindCastServer.isRunning) ensureCaptureStarted()
+                    if (BlindCastServer.isRunning) {
+                        ensureInputDaemon()
+                        syncKeeper()
+                    }
+                    _status.value = snapshot()
+                    START_STICKY
+                } catch (se: SecurityException) {
+                    recordError(se)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                } catch (t: Exception) {
+                    recordError(t)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                }
+            }
         }
-        // 粘性重启（系统杀死后拉起）：确保协议栈处于启动态；同样受保护，失败保持关态。
-        try {
-            if (!BlindCastServer.isRunning) bootStack()
-            _status.value = snapshot()
-        } catch (se: SecurityException) {
-            recordError(se)
-            runCatching { stopSelf() }
-            return START_NOT_STICKY
-        } catch (t: Exception) {
-            recordError(t)
-            runCatching { stopSelf() }
-            return START_NOT_STICKY
-        }
-        return START_STICKY
     }
 
     override fun onDestroy() {
         runCatching { scope.cancel() }
+        captureActive = false
         // 逆序回收（Stream-Priv-1）：先停喂狗，先停 socket 搬运，再 destroy 特权采集，
         // 再停本地引擎兜底，最后停监听与熔断。
         runCatching { UserActivityKeeper.stop() }
@@ -358,20 +606,22 @@ class BlindCastForegroundService : Service() {
      * 失败记 captureError 进状态流/Home 可见，绝不阻塞 onCreate。
      */
     private fun bootStackInternal() {
+        ensureServerStarted()
+        ensureCaptureStarted()
+        ensureInputDaemon()
+        syncKeeper()
+        _status.value = snapshot()
+    }
+
+    /**
+     * 起 HTTP 监听（幂等，主线程调用）。
+     * 含偏好读档（端口/Token）与控制闸同步；失败只记日志不抛，
+     * 调用方按需看 [BlindCastServer.isRunning]（采集重试据此决定是否继续）。
+     */
+    private fun ensureServerStarted(): Boolean {
         val port = configuredPort()
         val token = runCatching { prefs().getString(KEY_TOKEN, "") ?: "" }.getOrDefault("")
-        // 偏好键冻结不动（Slice 6.2 与 SettingsRepositoryImpl 一致，缺键回退默认）。
-        val p = runCatching { prefs() }.getOrNull()
-        val resolution = p?.getString("video_resolution", "720P")?.takeIf { it in setOf("720P", "1080P", "原生") } ?: "720P"
-        val fps = p?.getInt("video_fps", 30)?.takeIf { it == 30 || it == 60 } ?: 30
-        val bitrateMbps = p?.getInt("video_bitrate_mbps", 4)?.takeIf { it in 2..8 } ?: 4
-        val audioEnabled = p?.getBoolean("audio_enabled", true) ?: true
-        val touch = p?.getBoolean("scrcpy_touch_enabled", true) ?: true
-        val rightBack = p?.getBoolean("scrcpy_right_back_enabled", true) ?: true
-        val keyboard = p?.getBoolean("scrcpy_keyboard_enabled", true) ?: true
-        val keepAlive = p?.getBoolean("keepalive_enabled", true) ?: true
-        runCatching { AudioCaptureEngine.setAudioEnabled(audioEnabled) }
-        runCatching { ScrcpyGate.sync(touch, rightBack, keyboard) }
+        runCatching { syncGates() }
         BlindCastServer.init(this)
         ScreenCaptureEngine.init(this)
         BlindCastServer.setToken(token)
@@ -380,6 +630,28 @@ class BlindCastForegroundService : Service() {
         if (!serverOk) {
             Log.w(TAG, "BlindCastServer.start($port) failed", BlindCastServer.lastError)
         }
+        return serverOk
+    }
+
+    /** 控制闸同步（偏好键冻结，与 SettingsRepositoryImpl 同键）。 */
+    private fun syncGates() {
+        val p = runCatching { prefs() }.getOrNull() ?: return
+        val audioEnabled = p.getBoolean("audio_enabled", true)
+        val touch = p.getBoolean("scrcpy_touch_enabled", true)
+        val rightBack = p.getBoolean("scrcpy_right_back_enabled", true)
+        val keyboard = p.getBoolean("scrcpy_keyboard_enabled", true)
+        runCatching { AudioCaptureEngine.setAudioEnabled(audioEnabled) }
+        runCatching { ScrcpyGate.sync(touch, rightBack, keyboard) }
+    }
+
+    private data class CaptureParams(val vw: Int, val vh: Int, val bitrate: Int, val fps: Int)
+
+    /** 读采集档位（分辨率等比自适应，TouchOffset-Fix-1 语义不变）。 */
+    private fun readCaptureParams(): CaptureParams {
+        val p = runCatching { prefs() }.getOrNull()
+        val resolution = p?.getString("video_resolution", "720P")?.takeIf { it in setOf("720P", "1080P", "原生") } ?: "720P"
+        val fps = p?.getInt("video_fps", 30)?.takeIf { it == 30 || it == 60 } ?: 30
+        val bitrateMbps = p?.getInt("video_bitrate_mbps", 4)?.takeIf { it in 2..8 } ?: 4
         // TouchOffset-Fix-1：竖屏等比自适应（旧 1280x720 横屏硬编码致左右黑边 + 点击右偏）。
         // 竖屏机 1080x2376 下 720P=720x1584、1080P=1080x2376、原生=物理偶数对齐；横屏机宽高互换等比。
         val (vw, vh) = runCatching {
@@ -387,27 +659,42 @@ class BlindCastForegroundService : Service() {
             com.erl.blindcast.core.scrcpy.VideoResolution.resolve(resolution, m.widthPixels, m.heightPixels)
         }.getOrDefault(com.erl.blindcast.core.scrcpy.VideoResolution.resolve(resolution, 0, 0))
         Log.i(TAG, "[CaptureRoute] resolution=$resolution phys=${runCatching { resources.displayMetrics.widthPixels }.getOrDefault(-1)}x${runCatching { resources.displayMetrics.heightPixels }.getOrDefault(-1)} capture=${vw}x${vh}")
-        val bitrate = bitrateMbps * 1_000_000
+        return CaptureParams(vw, vh, bitrateMbps * 1_000_000, fps)
+    }
+
+    /**
+     * 起串流采集（主线程调用，幂等）。
+     * [captureActive]/链路运行中重复进入直接返回，避免同代际双任务抢绑；
+     * 停串流由 [captureGen] 自增 + [stopPrivilegedCapture] 使旧任务自弃。
+     */
+    private fun ensureCaptureStarted() {
+        if (captureActive || CaptureSocketLink.isRunning || CaptureSocketLink.hasVideo) {
+            Log.i(TAG, "[CaptureRoute] ensureCapture skipped (already active)")
+            return
+        }
+        captureActive = true
+        val params = readCaptureParams()
+        val gen = captureGen.get()
         // 本地引擎不再 App 进程直起（必吃 SecurityException 静默 false，旧根因）：
         // 只做特权链路（搬运服先起，特权建连 + 首帧等待放后台，避免阻塞主线程 ANR）。
         // Stream-Priv-2 解耦降级：HTTP 已在上方先起（UI/API/WS 可用），采集失败只记
         // captureError 进状态流（videoRunning=false），绝不碰 server；后台重试一次
         //（5s 后），仍失败就停等下次开关。
         scope.launch {
-            val okFirst = runCatching { runPrivilegedCaptureBlocking(vw, vh, bitrate, fps) }.getOrDefault(false)
+            val okFirst = runCatching { runPrivilegedCaptureBlocking(params.vw, params.vh, params.bitrate, params.fps, gen) }.getOrDefault(false)
             runCatching { _status.value = snapshot() }
             Log.i(TAG, "[CaptureRoute] boot privileged done ok=$okFirst mode=$captureMode " +
                 "hasVideo=${CaptureSocketLink.hasVideo} hasAudio=${CaptureSocketLink.hasAudio}")
             if (okFirst) return@launch
-            if (!isActive || !BlindCastServer.isRunning) {
-                Log.i(TAG, "[CaptureRoute] capture failed, skip retry (service stopped)")
+            if (!isActive || !BlindCastServer.isRunning || !streamWanted || gen != captureGen.get()) {
+                Log.i(TAG, "[CaptureRoute] capture failed, skip retry (stopped or superseded)")
                 return@launch
             }
             Log.i(TAG, "[CaptureRoute] capture failed, retry once after 5s " +
                 "(videoRunning=false, server keeps running)")
             delay(5_000L)
-            if (!isActive || !BlindCastServer.isRunning) {
-                Log.i(TAG, "[CaptureRoute] retry skipped (service stopped)")
+            if (!isActive || !BlindCastServer.isRunning || !streamWanted || gen != captureGen.get()) {
+                Log.i(TAG, "[CaptureRoute] retry skipped (stopped or superseded)")
                 return@launch
             }
             if (CaptureSocketLink.hasVideo) {
@@ -415,32 +702,59 @@ class BlindCastForegroundService : Service() {
                 return@launch
             }
             Log.i(TAG, "[CaptureRoute] retrying privileged capture once")
-            val okRetry = runCatching { runPrivilegedCaptureBlocking(vw, vh, bitrate, fps) }.getOrDefault(false)
+            val okRetry = runCatching { runPrivilegedCaptureBlocking(params.vw, params.vh, params.bitrate, params.fps, gen) }.getOrDefault(false)
             runCatching { _status.value = snapshot() }
             Log.i(TAG, "[CaptureRoute] retry privileged done ok=$okRetry mode=$captureMode " +
                 "hasVideo=${CaptureSocketLink.hasVideo} hasAudio=${CaptureSocketLink.hasAudio}")
             if (!okRetry) {
                 // 仍失败就停等下次开关：确保采集已收，不碰 server（HTTP/UI/API/WS 保持可用）。
-                runCatching { stopPrivilegedCapture() }
-                runCatching { _status.value = snapshot() }
+                // 只处理本代际任务：代际已变说明用户已另起/另停，不碰新状态。
+                if (gen == captureGen.get()) {
+                    captureActive = false
+                    runCatching { stopPrivilegedCapture() }
+                    runCatching { _status.value = snapshot() }
+                }
                 Log.w(TAG, "[CaptureRoute] retry failed, capture stopped waiting next toggle; " +
                     "serverRunning=${BlindCastServer.isRunning}")
             }
         }
-        // Smooth-1 常驻输入 daemon（随服务启停）：后台 ensure，存活即复用；
-        // 反控 tap/drag/down/move/up 经 daemon ack（~数十 ms），不再每次冷起 app_process。
-        // 失败只记日志（ControlWsRoute 回退单次 Root→Shizuku 老路，反控不断）。
+    }
+
+    /**
+     * Smooth-1 常驻输入 daemon（随服务启停）：后台 ensure，存活即复用；
+     * 反控 tap/drag/down/move/up 经 daemon ack（~数十 ms），不再每次冷起 app_process。
+     * 失败只记日志（ControlWsRoute 回退单次 Root→Shizuku 老路，反控不断）。
+     */
+    private fun ensureInputDaemon() {
         scope.launch {
             val ok = runCatching { RootInputDaemon.ensureStarted(packageName) }.getOrDefault(false)
             Log.i(TAG, "[InputDaemon] boot ensure ok=$ok")
             runCatching { _status.value = snapshot() }
         }
+    }
+
+    private fun syncKeeper() {
+        val keepAlive = runCatching { prefs().getBoolean("keepalive_enabled", true) }.getOrDefault(true)
         if (keepAlive) {
             runCatching { UserActivityKeeper.start(this) }
         } else {
             runCatching { UserActivityKeeper.stop() }
         }
-        _status.value = snapshot()
+    }
+
+    /**
+     * 停串流采集（主线程调用，不阻塞）。
+     * Root 常驻停服含 1.5s 宽限 sleep + 搬运线程 join，同步调会卡主线程，
+     * 故代际自增作废旧任务后丢后台停，2s 状态轮询自动对齐快照。
+     * onDestroy 专属同步版（scope 已 cancel，只能同步收）。
+     */
+    private fun stopCaptureAsync() {
+        captureGen.incrementAndGet()
+        captureActive = false
+        scope.launch {
+            runCatching { stopPrivilegedCapture() }
+            runCatching { _status.value = snapshot() }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -457,13 +771,16 @@ class BlindCastForegroundService : Service() {
     /**
      * 后台阻塞式跑完特权建连 + 首帧等待（IO 线程调用，bootStack 经 scope.launch 进入）。
      * 成功（3s 内有首帧）清 captureError；失败记 captureError 进状态流/Home 可见。
+     * @param gen 发起代际：等帧期间用户停串流（代际自增/期望清零）则失败不再留痕，
+     *   避免“主动关”被记成“采集错”。
      */
-    private fun runPrivilegedCaptureBlocking(vw: Int, vh: Int, bitrate: Int, fps: Int): Boolean {
+    private fun runPrivilegedCaptureBlocking(vw: Int, vh: Int, bitrate: Int, fps: Int, gen: Int): Boolean {
         // 1. 搬运服先起（App 进程 LocalServerSocket accept，特权侧 connect）。
         val linkOk = runCatching { CaptureSocketLink.start(vw, vh, bitrate, fps) }.getOrDefault(false)
         if (!linkOk) {
             val t = IllegalStateException("搬运服启动失败：${CaptureSocketLink.errorMessage() ?: "unknown"}")
-            recordCaptureError(t)
+            if (streamWanted && gen == captureGen.get()) recordCaptureError(t)
+            else Log.i(TAG, "[CaptureRoute] link start failed but superseded, skip error record")
             return false
         }
         // 2. 特权建连二选一：Shizuku 常驻优先，Root 常驻备用（理由见日志，任务包要求写清）。
@@ -510,7 +827,8 @@ class BlindCastForegroundService : Service() {
                     "请去 Shizuku 管理器启动并授权，或到 KernelSU 授予 Root 后重试")
                 runCatching { CaptureSocketLink.stop() }
                 runCatching { unbindShizukuCapture() }
-                recordCaptureError(t)
+                if (streamWanted && gen == captureGen.get()) recordCaptureError(t)
+                else Log.i(TAG, "[CaptureRoute] capture bind failed but superseded, skip error record")
                 return false
             }
         }
@@ -528,7 +846,8 @@ class BlindCastForegroundService : Service() {
             "特权进程可能被杀或 SurfaceControl 被 ROM 忽略，见特权进程 logcat [PrivilegedCapture] 明细")
         // 超时即收（先停 socket，再 destroy 特权采集，逆序收）。
         runCatching { stopPrivilegedCapture() }
-        recordCaptureError(t)
+        if (streamWanted && gen == captureGen.get()) recordCaptureError(t)
+        else Log.i(TAG, "[CaptureRoute] first frame timeout but superseded, skip error record")
         return false
     }
 
