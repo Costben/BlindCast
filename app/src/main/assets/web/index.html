@@ -133,7 +133,10 @@ footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,23
     <div class="card">
       <h1><b>BlindCast</b> · 隐播</h1>
       <p id="bootMsg"><span class="dot"></span>服务运行中，点击进入低延迟控制台</p>
-      <div class="row"><button class="btn" id="btnEnter">进入控制台</button></div>
+      <div class="row">
+        <button class="btn" id="btnEnter">进入控制台</button>
+        <button class="btn" id="btnStreamOn" style="display:none">开启投屏</button>
+      </div>
       <p style="font-size:11px">WebCodecs 硬解 · WebSocket 推流 · 零外部依赖</p>
     </div>
   </div>
@@ -201,6 +204,36 @@ function hideAuth() { $("authOverlay").classList.add("hide"); }
 function showBoot(msg) {
   if (msg) $("bootMsg").innerHTML = '<span class="dot"></span>' + msg;
   $("bootOverlay").classList.remove("hide");
+}
+function hideBoot() { $("bootOverlay").classList.add("hide"); }
+/* 投屏开关门禁：串流没开时不让进黑屏，遮罩提示去插件/APP 打开，可一键远控开启 */
+const STREAM_OFF_MSG = "当前投屏开关没有打开,请在插件或者 APP 里面打开.";
+let streamOffShown = false;
+function showStreamOff() {
+  streamOffShown = true;
+  showBoot(STREAM_OFF_MSG);
+  $("btnEnter").style.display = "none";
+  $("btnStreamOn").style.display = "";
+}
+function hideStreamOffRestore() {
+  streamOffShown = false;
+  $("btnEnter").style.display = "";
+  $("btnStreamOn").style.display = "none";
+}
+async function queryStreaming() {
+  try {
+    const r = await fetch(apiUrl("api/stream"), { cache: "no-store" });
+    if (!r.ok) return null; // 老版本无此接口：不过问，保持原流程
+    const j = await r.json().catch(() => ({}));
+    return (typeof j.streaming === "boolean") ? j.streaming : null;
+  } catch (e) { return null; }
+}
+/* 进入门禁：开着进正常页，没开亮提示（老版本查不到状态直接放行） */
+async function gateEnter(msg) {
+  const st = await queryStreaming();
+  if (st === false) { showStreamOff(); return; }
+  hideStreamOffRestore();
+  showBoot(msg);
 }
 
 /* ---------------- 全局连接态 ---------------- */
@@ -508,7 +541,7 @@ function connect() {
     else if (kind === KIND_AUDIO) feedAudio(payload);
     else if (kind === KIND_JPEG) { if (S.videoMode !== "jpeg") return; feedJpeg(payload); }
   };
-  sws.onclose = () => { if (S.streamWs === sws) { setConn(false); showBoot("推流中断，点击重连"); $("bootOverlay").classList.remove("hide"); } };
+  sws.onclose = () => { if (S.streamWs === sws) { setConn(false); hideStreamOffRestore(); showBoot("推流中断，点击重连"); $("bootOverlay").classList.remove("hide"); } };
   sws.onerror = () => { try { sws.close(); } catch (e) {} };
 
   const cws = new WebSocket(wsBase() + "/ws/control" + (token ? "?token=" + encodeURIComponent(token) : ""));
@@ -554,7 +587,16 @@ async function pollStatus() {
     else { pw.classList.remove("warn-on"); pw.title = "息屏挂机"; }
     const pwLabel = pw.querySelector("span");
     if (pwLabel) pwLabel.textContent = j.blackedOut ? "点亮" : "息屏";
-    if (typeof j.streaming === "boolean") updateStreamUI(j.streaming);
+    if (typeof j.streaming === "boolean") {
+      updateStreamUI(j.streaming);
+      // 会话中途被关（插件/APP 侧手动关）：亮提示遮罩；那边再打开后自动重连续流。
+      if (!j.streaming && S.connected) showStreamOff();
+      else if (j.streaming && streamOffShown && S.connected) {
+        hideStreamOffRestore();
+        hideBoot();
+        connect();
+      }
+    }
     if (typeof j.audioEnabled === "boolean" && j.audioEnabled !== S.audioEnabled) setAudioUI(j.audioEnabled);
   } catch (e) {}
 }
@@ -698,6 +740,8 @@ async function toggleStream() {
     if (r.ok && j.ok !== false) {
       toast(cur === true ? "⏹ 已停止投屏采集（端口保持，可远程点亮）"
         : cur === false ? "🎬 已开启投屏采集" : "投屏采集已切换");
+      if (cur === true) showStreamOff();
+      else hideStreamOffRestore();
       pollStatus();
     } else toast("投屏切换失败: " + (j.error || r.status));
   } catch (e) { toast("投屏切换请求失败"); }
@@ -734,16 +778,35 @@ $("btnJpeg").onclick = () => {
   declareVideoMode();
   toast(S.videoMode === "jpeg" ? "🎞 已切 JPEG 降级 (裸浏览器)" : "🎞 已切回 H264 (硬解路)");
 };
-$("btnReconnect").onclick = () => { showBoot("正在重连…"); connect(); };
+$("btnReconnect").onclick = () => { hideStreamOffRestore(); showBoot("正在重连…"); connect(); };
 $("btnStream").onclick = toggleStream;
-$("btnEnter").onclick = () => { $("bootOverlay").classList.add("hide"); connect(); startStatusPoll(); };
+$("btnEnter").onclick = () => { hideStreamOffRestore(); $("bootOverlay").classList.add("hide"); connect(); startStatusPoll(); };
+$("btnStreamOn").onclick = async () => {
+  const btn = $("btnStreamOn");
+  btn.disabled = true;
+  try {
+    const r = await fetch(apiUrl("api/stream"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "on" }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok !== false) {
+      toast("🎬 已开启投屏采集，正在进入");
+      hideStreamOffRestore();
+      hideBoot();
+      connect();
+      startStatusPoll();
+    } else toast("开启投屏失败: " + (j.error || r.status));
+  } catch (e) { toast("开启投屏请求失败"); }
+  finally { btn.disabled = false; }
+};
 
 /* ---------------- 鉴权提交 ---------------- */
 async function submitAuth() {
   const t = $("tokenInput").value.trim();
   if (!t) { $("authErr").textContent = "请输入 Token"; return; }
   $("authErr").textContent = "校验中…";
-  if (await apiVerify(t)) { rememberToken(t); hideAuth(); showBoot("鉴权通过，点击进入控制台"); }
+  if (await apiVerify(t)) { rememberToken(t); hideAuth(); await gateEnter("鉴权通过，点击进入控制台"); }
   else {
     $("authErr").textContent = "Token 错误，请重试";
     $("authCard").classList.remove("shake");
@@ -762,12 +825,12 @@ $("tokenInput").addEventListener("keydown", e => { if (e.key === "Enter") submit
   catch (e) { showBoot("无法连接服务，检查 http://&lt;手机IP&gt;:8888"); return; }
   if (!st.authRequired) {
     if (qsToken) rememberToken(qsToken); // 免密模式也记住URL携带的token(供WS/REST透传)
-    showBoot("服务运行中，点击进入低延迟控制台");
+    await gateEnter("服务运行中，点击进入低延迟控制台");
     return;
   }
   // 设密模式: ?token= > localStorage > 弹窗
-  if (qsToken && await apiVerify(qsToken)) { rememberToken(qsToken); showBoot("Token 免密通过，点击进入控制台"); return; }
-  if (token && await apiVerify(token)) { showBoot("已记住 Token，点击进入控制台"); return; }
+  if (qsToken && await apiVerify(qsToken)) { rememberToken(qsToken); await gateEnter("Token 免密通过，点击进入控制台"); return; }
+  if (token && await apiVerify(token)) { await gateEnter("已记住 Token，点击进入控制台"); return; }
   showAuth("");
 })();
 </script>

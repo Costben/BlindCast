@@ -12,7 +12,8 @@
  *  - 扫描候选区（ transient，不入库 ）：
  *      点条目 -> 填入顶部输入框并聚焦；右侧 [+ 添加] -> 一键入库成卡；
  *      顶部 + / 回车 -> 将输入框内容永久存库并成卡；
- *  - 卡片操作：[打开投屏] 新标签开 console.html?host=（已开则聚焦复用）、
+ *  - 卡片操作：[打开投屏] 新标签开 console.html?host=（已开则聚焦复用，
+ *    投屏开关没开时禁用，防进黑屏页）、
  *    [投屏开/关] 直调 POST /api/stream（只停采集不断端口）、
  *    [熄屏/点亮] 直调 POST /api/screen、[刷新]、[移除]。
  * MV3 CSP：外联脚本、零 on*=、零 eval，全 addEventListener + textContent。
@@ -607,6 +608,7 @@ function updateCardStatus(dev, st) {
     if (dot) dot.className = "dot check";
     if (conn) { conn.textContent = "… 检查中"; conn.className = "dev-conn"; }
     if (net) { net.textContent = "… 检查中"; net.className = "capsule"; }
+    if (open) { open.disabled = true; open.title = "检查中…"; }
     paintStream(null);
     return;
   }
@@ -632,6 +634,16 @@ function updateCardStatus(dev, st) {
     if (power) power.textContent = j.blackedOut ? "⏻ 点亮" : "⏻ 熄屏";
     if (trow) trow.classList.add("hide");
     paintStream(typeof j.streaming === "boolean" ? j.streaming : null);
+    // 投屏开关没开时不让进投屏页（进去也是黑屏）：先去开下面的投屏开关。
+    if (open) {
+      if (j.streaming === true) {
+        open.disabled = false;
+        open.title = "在独立大标签页打开 console.html?host=" + key;
+      } else {
+        open.disabled = true;
+        open.title = "投屏开关没开：先点下方「开启投屏」，再进投屏页";
+      }
+    }
     if (sub) {
       const extra = [];
       if (typeof j.streamClients === "number" || typeof j.controlClients === "number") {
@@ -647,6 +659,7 @@ function updateCardStatus(dev, st) {
     if (scr) { scr.textContent = "屏幕 --"; scr.className = "capsule"; }
     if (power) power.textContent = "⏻ 熄屏";
     if (trow) trow.classList.remove("hide");
+    if (open) { open.disabled = true; open.title = "先填写 Token 并通过鉴权"; }
     paintStream(null);
     if (sub) sub.textContent = (st.error === "bad-token" ? "Token 错误，请更新" : "该设备需访问 Token") + " · 上次见到 " + fmtTime(dev.lastSeen);
   } else {
@@ -665,13 +678,14 @@ function updateCardStatus(dev, st) {
     if (scr) { scr.textContent = "屏幕 --"; scr.className = "capsule"; }
     if (power) power.textContent = "⏻ 熄屏";
     if (trow) trow.classList.add("hide");
+    if (open) { open.disabled = true; open.title = "设备离线，无法打开投屏"; }
     paintStream(null);
     if (sub) {
       const reason = !st.error ? "未检测到服务" : (st.error === "timeout" ? "连接超时" : st.error);
       sub.textContent = "○ 离线 · " + reason + " · 上次见到 " + fmtTime(dev.lastSeen);
     }
   }
-  if (open) open.disabled = false;
+  // open.disabled 由各分支按投屏开关/在线态独立判定，此处不再统一放行。
 }
 
 function updateCount() {
