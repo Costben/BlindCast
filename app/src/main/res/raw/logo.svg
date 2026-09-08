@@ -1,45 +1,61 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bgTile" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#0E1626" />
+      <stop offset="50%" stop-color="#090E1A" />
       <stop offset="100%" stop-color="#020614" />
     </linearGradient>
-    <linearGradient id="waveGlow" x1="120" y1="140" x2="392" y2="140" gradientUnits="userSpaceOnUse">
+    <linearGradient id="castGrad" x1="171" y1="157" x2="341" y2="355" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#38BDF8" />
       <stop offset="50%" stop-color="#34D399" />
-      <stop offset="100%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#10B981" />
     </linearGradient>
-    <linearGradient id="frameGrad" x1="150" y1="100" x2="362" y2="410" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#38475E" />
-      <stop offset="100%" stop-color="#182232" />
+    <linearGradient id="waveGrad" x1="187" y1="332" x2="268" y2="251" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#34D399" />
+      <stop offset="100%" stop-color="#10B981" />
     </linearGradient>
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="6" result="blur" />
-      <feComposite in="SourceGraphic" in2="blur" operator="over" />
-    </filter>
+    <linearGradient id="laserBeam" x1="231" y1="234" x2="320" y2="234" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0" />
+      <stop offset="25%" stop-color="#38BDF8" stop-opacity="0.6" />
+      <stop offset="50%" stop-color="#FFFFFF" stop-opacity="0.9" />
+      <stop offset="75%" stop-color="#34D399" stop-opacity="0.6" />
+      <stop offset="100%" stop-color="#10B981" stop-opacity="0" />
+    </linearGradient>
   </defs>
 
-  <!-- Base Squircle (Tile / App Icon background) -->
-  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#bg)" stroke="#1E293B" stroke-width="4"/>
+  <!-- Base Squircle Tile Background -->
+  <rect x="28" y="28" width="456" height="456" rx="108" fill="url(#bgTile)" stroke="#1E293B" stroke-width="3" />
 
-  <!-- Ambient Wave (Piercing outside phone bezel) -->
-  <path d="M 132 152 A 156 156 0 0 1 380 152" stroke="url(#waveGlow)" stroke-width="14" stroke-linecap="round" fill="none" opacity="0.45" filter="url(#glow)"/>
+  <!-- Ambient Radial Glow behind subject -->
+  <circle cx="256" cy="256" r="92" fill="#38BDF8" opacity="0.06" />
 
-  <!-- Phone Body (Deep AMOLED Black Screen) -->
-  <rect x="162" y="106" width="188" height="300" rx="36" fill="#030712" stroke="url(#frameGrad)" stroke-width="9"/>
-  <rect x="170" y="114" width="172" height="284" rx="28" fill="#000000" stroke="#34D399" stroke-width="1.5" stroke-opacity="0.22"/>
+  <!-- Screen Dark AMOLED Glass (W=170, H=198, rx=48, centered at 256, 256) -->
+  <path d="M 218 157 L 294 157 A 48 48 0 0 1 341 204 L 341 308 A 48 48 0 0 1 294 355 L 218 355 A 48 48 0 0 1 171 308 L 171 204 A 48 48 0 0 1 218 157 Z"
+        fill="#020617" stroke="#1E293B" stroke-width="1.5" />
 
-  <!-- Middle Wave -->
-  <path d="M 178 196 A 96 96 0 0 1 334 196" stroke="#38BDF8" stroke-width="14" stroke-linecap="round" fill="none" opacity="0.8"/>
-  <!-- Inner Wave -->
-  <path d="M 208 228 A 58 58 0 0 1 304 228" stroke="#34D399" stroke-width="15" stroke-linecap="round" fill="none" opacity="0.95"/>
+  <!-- Glowing Cast Rail Frame with Lower-Left Opening -->
+  <path d="M 171 249 L 171 204 A 48 48 0 0 1 218 157 L 294 157 A 48 48 0 0 1 341 204 L 341 308 A 48 48 0 0 1 294 355 L 249 355"
+        fill="none" stroke="url(#castGrad)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round" />
 
-  <!-- Central Standby Power Core (⏻) -->
-  <path d="M 224 266 A 34 34 0 1 0 288 266" stroke="#10B981" stroke-width="15" stroke-linecap="round" fill="none"/>
-  <line x1="256" y1="232" x2="256" y2="276" stroke="#34D399" stroke-width="15" stroke-linecap="round" filter="url(#glow)"/>
-  <circle cx="256" cy="232" r="4.5" fill="#FFFFFF"/>
+  <!-- 3-Tier Cast Waves in lower-left opening -->
+  <!-- Origin Beacon Dot at (187, 332) -->
+  <circle cx="187" cy="332" r="8.5" fill="#38BDF8" />
+  <circle cx="187" cy="332" r="3.5" fill="#FFFFFF" />
 
-  <!-- Notch & Home Bar -->
-  <rect x="236" y="126" width="40" height="4" rx="2" fill="#1E293B"/>
-  <rect x="222" y="382" width="68" height="4" rx="2" fill="#1E293B"/>
+  <!-- Wave 1 (Radius 28) -->
+  <path d="M 187 304 A 28 28 0 0 1 215 332" fill="none" stroke="#38BDF8" stroke-width="11" stroke-linecap="round" />
+
+  <!-- Wave 2 (Radius 55) -->
+  <path d="M 187 277 A 55 55 0 0 1 242 332" fill="none" stroke="#34D399" stroke-width="11" stroke-linecap="round" />
+
+  <!-- Wave 3 (Radius 81) -->
+  <path d="M 187 251 A 81 81 0 0 1 268 332" fill="none" stroke="url(#waveGrad)" stroke-width="11" stroke-linecap="round" />
+
+  <!-- Live 60fps Stream Pulse (Upper Right at 304, 194) -->
+  <circle cx="304" cy="194" r="5" fill="#34D399" />
+  <circle cx="304" cy="194" r="11" stroke="#34D399" stroke-width="1.5" opacity="0.35" />
+
+  <!-- Stealth Blackout Laser Beam -->
+  <line x1="231" y1="234" x2="320" y2="234" stroke="url(#laserBeam)" stroke-width="2" stroke-linecap="round" />
 </svg>

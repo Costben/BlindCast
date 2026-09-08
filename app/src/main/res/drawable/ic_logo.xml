@@ -8,9 +8,9 @@
 
     <!-- Base Squircle Tile Background -->
     <path
-        android:pathData="M136,24 L376,24 A112,112 0 0,1 488,136 L488,376 A112,112 0 0,1 376,488 L136,488 A112,112 0 0,1 24,376 L24,136 A112,112 0 0,1 136,24 Z"
-        android:strokeWidth="4"
-        android:strokeColor="#1E293B">
+        android:pathData="M136,28 L376,28 A108,108 0 0,1 484,136 L484,376 A108,108 0 0,1 376,484 L136,484 A108,108 0 0,1 28,376 L28,136 A108,108 0 0,1 136,28 Z"
+        android:strokeWidth="3"
+        android:strokeColor="#FF1E293B">
         <aapt:attr name="android:fillColor">
             <gradient
                 android:startX="0"
@@ -19,84 +19,116 @@
                 android:endY="512"
                 android:type="linear">
                 <item android:offset="0.0" android:color="#FF0E1626" />
+                <item android:offset="0.5" android:color="#FF090E1A" />
                 <item android:offset="1.0" android:color="#FF020614" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- Outer Ambient Broadcast Wave -->
+    <!-- Ambient Radial Glow behind subject -->
     <path
-        android:pathData="M132,152 A156,156 0 0,1 380,152"
-        android:strokeWidth="14"
+        android:pathData="M256,164 A92,92 0 1,0 256,348 A92,92 0 1,0 256,164 Z"
+        android:fillColor="#FF38BDF8"
+        android:fillAlpha="0.06" />
+
+    <!-- Screen Dark AMOLED Glass (Centered at 256, 256) -->
+    <path
+        android:pathData="M218,157 L294,157 A48,48 0 0,1 341,204 L341,308 A48,48 0 0,1 294,355 L218,355 A48,48 0 0,1 171,308 L171,204 A48,48 0 0,1 218,157 Z"
+        android:fillColor="#FF020617"
+        android:strokeWidth="1.5"
+        android:strokeColor="#FF1E293B" />
+
+    <!-- Glowing Cast Rail Frame with Lower-Left Opening -->
+    <path
+        android:pathData="M171,249 L171,204 A48,48 0 0,1 218,157 L294,157 A48,48 0 0,1 341,204 L341,308 A48,48 0 0,1 294,355 L249,355"
+        android:strokeWidth="13"
         android:strokeLineCap="round"
-        android:strokeAlpha="0.55">
+        android:strokeLineJoin="round">
         <aapt:attr name="android:strokeColor">
             <gradient
-                android:startX="120"
-                android:startY="140"
-                android:endX="392"
-                android:endY="140"
+                android:startX="171"
+                android:startY="157"
+                android:endX="341"
+                android:endY="355"
                 android:type="linear">
                 <item android:offset="0.0" android:color="#FF38BDF8" />
                 <item android:offset="0.5" android:color="#FF34D399" />
-                <item android:offset="1.0" android:color="#FF38BDF8" />
+                <item android:offset="1.0" android:color="#FF10B981" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- Phone Body (Deep AMOLED Black Screen) -->
+    <!-- 3-Tier Cast Waves in lower-left opening -->
+    <!-- Origin Beacon Dot -->
     <path
-        android:pathData="M198,106 L314,106 A36,36 0 0,1 350,142 L350,370 A36,36 0 0,1 314,406 L198,406 A36,36 0 0,1 162,370 L162,142 A36,36 0 0,1 198,106 Z"
-        android:fillColor="#FF030712"
-        android:strokeWidth="9"
-        android:strokeColor="#FF2A374A" />
-
-    <!-- Inner Screen Bezel Accent -->
+        android:pathData="M187,323.5 A8.5,8.5 0 1,0 187,340.5 A8.5,8.5 0 1,0 187,323.5 Z"
+        android:fillColor="#FF38BDF8" />
     <path
-        android:pathData="M198,114 L314,114 A28,28 0 0,1 342,142 L342,370 A28,28 0 0,1 314,398 L198,398 A28,28 0 0,1 170,142 L170,142 A28,28 0 0,1 198,114 Z"
-        android:fillColor="#FF000000"
-        android:strokeWidth="1.5"
-        android:strokeColor="#FF34D399"
-        android:strokeAlpha="0.25" />
-
-    <!-- Speaker Notch -->
-    <path
-        android:pathData="M238,126 L274,126 A2,2 0 0,1 276,128 A2,2 0 0,1 274,130 L238,130 A2,2 0 0,1 236,128 A2,2 0 0,1 238,126 Z"
-        android:fillColor="#FF1E293B" />
-
-    <!-- Middle Wave -->
-    <path
-        android:pathData="M178,196 A96,96 0 0,1 334,196"
-        android:strokeWidth="14"
-        android:strokeColor="#FF38BDF8"
-        android:strokeLineCap="round"
-        android:strokeAlpha="0.8" />
-
-    <!-- Inner Wave -->
-    <path
-        android:pathData="M208,228 A58,58 0 0,1 304,228"
-        android:strokeWidth="15"
-        android:strokeColor="#FF34D399"
-        android:strokeLineCap="round" />
-
-    <!-- Central Standby Power Core (⏻) -->
-    <path
-        android:pathData="M224,266 A34,34 0 1,0 288,266"
-        android:strokeWidth="15"
-        android:strokeColor="#FF10B981"
-        android:strokeLineCap="round" />
-    <path
-        android:pathData="M256,232 L256,276"
-        android:strokeWidth="15"
-        android:strokeColor="#FF34D399"
-        android:strokeLineCap="round" />
-    <path
-        android:pathData="M256,232 A4.5,4.5 0 1,1 255.9,232"
+        android:pathData="M187,328.5 A3.5,3.5 0 1,0 187,335.5 A3.5,3.5 0 1,0 187,328.5 Z"
         android:fillColor="#FFFFFFFF" />
 
-    <!-- Home Bar -->
+    <!-- Wave 1 (Radius 28) -->
     <path
-        android:pathData="M224,382 L288,382 A2,2 0 0,1 290,384 A2,2 0 0,1 288,386 L224,386 A2,2 0 0,1 222,384 A2,2 0 0,1 224,382 Z"
-        android:fillColor="#FF1E293B" />
+        android:pathData="M187,304 A28,28 0 0,1 215,332"
+        android:strokeWidth="11"
+        android:strokeColor="#FF38BDF8"
+        android:strokeLineCap="round" />
+
+    <!-- Wave 2 (Radius 55) -->
+    <path
+        android:pathData="M187,277 A55,55 0 0,1 242,332"
+        android:strokeWidth="11"
+        android:strokeColor="#FF34D399"
+        android:strokeLineCap="round" />
+
+    <!-- Wave 3 (Radius 81) -->
+    <path
+        android:pathData="M187,251 A81,81 0 0,1 268,332"
+        android:strokeWidth="11"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="187"
+                android:startY="332"
+                android:endX="268"
+                android:endY="251"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF38BDF8" />
+                <item android:offset="0.5" android:color="#FF34D399" />
+                <item android:offset="1.0" android:color="#FF10B981" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Live 60fps Stream Pulse (Upper Right) -->
+    <path
+        android:pathData="M304,189 A5,5 0 1,0 304,199 A5,5 0 1,0 304,189 Z"
+        android:fillColor="#FF34D399" />
+    <path
+        android:pathData="M304,183 A11,11 0 1,0 304,205 A11,11 0 1,0 304,183 Z"
+        android:strokeWidth="1.5"
+        android:strokeColor="#FF34D399"
+        android:strokeAlpha="0.35" />
+
+    <!-- Stealth Blackout Laser Beam -->
+    <path
+        android:pathData="M231,234 L320,234"
+        android:strokeWidth="2"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="231"
+                android:startY="234"
+                android:endX="320"
+                android:endY="234"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#0038BDF8" />
+                <item android:offset="0.25" android:color="#9938BDF8" />
+                <item android:offset="0.5" android:color="#F2FFFFFF" />
+                <item android:offset="0.75" android:color="#9934D399" />
+                <item android:offset="1.0" android:color="#0010B981" />
+            </gradient>
+        </aapt:attr>
+    </path>
 
 </vector>
