@@ -847,10 +847,27 @@ function openConsole(dev) {
 async function toggleScreen(dev, btn) {
   const key = devKey(dev);
   const st = statusOf(key);
-  const cur = (st.data && typeof st.data.blackedOut === "boolean") ? !!st.data.blackedOut : null;
-  const action = cur === null ? "toggle" : (cur ? "on" : "off");
   const token = deviceToken(dev);
   if (btn) btn.disabled = true;
+  // ScreenSync-1：点击前先 GET 新鲜态，不用 10s 轮询缓存算方向。
+  // 服务端已融合上报（广播同步 + DM 熔断），新鲜值即含手动电源键变更。
+  let cur = (st.data && typeof st.data.blackedOut === "boolean") ? !!st.data.blackedOut : null;
+  try {
+    const sUrl = deviceBase(dev) + "api/screen" + (token ? "?token=" + encodeURIComponent(token) : "");
+    const sr = await fetchWithTimeout(sUrl, {}, STATUS_TIMEOUT_MS);
+    if (sr.ok) {
+      const sj = await sr.json().catch(() => ({}));
+      if (sj && typeof sj.blackedOut === "boolean") {
+        cur = !!sj.blackedOut;
+        if (!st.data) st.data = {};
+        st.data.blackedOut = cur;
+        st.online = true;
+        st.error = "";
+        updateCardStatus(dev, st);
+      }
+    }
+  } catch (e) { /* 读失败就回退轮询缓存 */ }
+  const action = cur === null ? "toggle" : (cur ? "on" : "off");
   try {
     const url = deviceBase(dev) + "api/screen" + (token ? "?token=" + encodeURIComponent(token) : "");
     const r = await fetchWithTimeout(url, {
@@ -868,9 +885,23 @@ async function toggleScreen(dev, btn) {
     }
     const j = await r.json().catch(() => ({}));
     if (r.ok && j.ok !== false) {
+      // POST 回包即带融合后 blackedOut：立即纠偏按钮，不等下轮 10s 轮询。
+      if (j && typeof j.blackedOut === "boolean") {
+        if (!st.data) st.data = {};
+        st.data.blackedOut = !!j.blackedOut;
+        st.online = true;
+        st.error = "";
+        updateCardStatus(dev, st);
+      }
       toast(cur === true ? "已点亮屏幕" : (cur === false ? "已熄屏挂机" : "屏幕已切换"));
       await refreshOne(dev);
     } else {
+      // 失败也可能带 blackedOut（服务端纠偏）：同样先对齐再提示。
+      if (j && typeof j.blackedOut === "boolean") {
+        if (!st.data) st.data = {};
+        st.data.blackedOut = !!j.blackedOut;
+        updateCardStatus(dev, st);
+      }
       toast("屏幕切换失败：" + (j.error || j.detail || r.status));
     }
   } catch (e) {

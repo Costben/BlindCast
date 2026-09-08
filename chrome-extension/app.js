@@ -642,13 +642,31 @@ $("btnVolDown").onclick = () => sendCtl({ type: "key", keycode: 25 });
 $("btnMute").onclick = () => { const next = !S.audioEnabled; if (sendCtl({ type: "audio", enabled: next })) setAudioUI(next); else toast("控制通道未连接"); };
 $("btnPower").onclick = async () => {
   try {
-    const cur = S.lastStatus ? !!S.lastStatus.blackedOut : false;
+    // ScreenSync-1：点击前先 GET 新鲜态（含手动电源键变更），不用 5s 轮询缓存算方向。
+    let cur = S.lastStatus ? !!S.lastStatus.blackedOut : false;
+    try {
+      const sr = await fetch(apiUrl("api/screen"), { cache: "no-store" });
+      if (sr.ok) {
+        const sj = await sr.json().catch(() => ({}));
+        if (sj && typeof sj.blackedOut === "boolean") {
+          cur = !!sj.blackedOut;
+          if (!S.lastStatus) S.lastStatus = {};
+          S.lastStatus.blackedOut = cur;
+        }
+      }
+    } catch (e) { /* 读失败回退轮询缓存 */ }
     const r = await fetch(apiUrl("api/screen"), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: cur ? "on" : "off" }),
     });
     const j = await r.json().catch(() => ({}));
-    if (r.ok && j.ok !== false) { toast(cur ? "⏻ 已点亮屏幕" : "⏻ 已息屏挂机"); pollStatus(); }
+    if (r.ok && j.ok !== false) {
+      if (j && typeof j.blackedOut === "boolean") {
+        if (!S.lastStatus) S.lastStatus = {};
+        S.lastStatus.blackedOut = !!j.blackedOut;
+      }
+      toast(cur ? "⏻ 已点亮屏幕" : "⏻ 已息屏挂机"); pollStatus();
+    }
     else toast("屏幕切换失败: " + (j.error || j.detail || r.status));
   } catch (e) { toast("屏幕切换请求失败"); }
 };

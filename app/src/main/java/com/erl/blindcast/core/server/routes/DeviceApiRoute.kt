@@ -3,7 +3,9 @@ package com.erl.blindcast.core.server.routes
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.display.DisplayManager
 import android.os.BatteryManager
+import android.view.Display
 import com.erl.blindcast.BuildConfig
 import com.erl.blindcast.blindCastApp
 import com.erl.blindcast.core.blackout.PowerController
@@ -44,23 +46,33 @@ object DeviceApiRoute {
 
     fun handleScreen(method: String, rawQuery: String?, body: ByteArray): Pair<Int, String> {
         if (method == "GET") {
-            return 200 to JSONObject().put("blackedOut", PowerController.isBlackedOut).toString()
+            return 200 to JSONObject().put("blackedOut", currentBlackedOut()).toString()
         }
         if (method != "POST") {
             return 405 to err("method not allowed")
         }
         val query = TokenAuthenticator.parseQuery(rawQuery)
-        val target = query["on"]?.toBooleanStrictOrNull()?.let { it }
-            ?: query["action"]?.let(::actionToOn)
+        // ScreenSync-1：toggle 必须按融合值算，不能按纯缓存算（手动键会绕过缓存）。
+        val rawAction = query["action"]
             ?: runCatching {
                 if (body.isEmpty()) null
-                else {
-                    val json = JSONObject(body.toString(Charsets.UTF_8))
-                    if (json.has("on")) json.optBoolean("on")
-                    else if (json.has("action")) actionToOn(json.optString("action", ""))
-                    else null
-                }
+                else JSONObject(body.toString(Charsets.UTF_8)).optString("action", "").takeIf { it.isNotBlank() }
             }.getOrNull()
+        val target = if (rawAction?.lowercase() == "toggle") {
+            !currentBlackedOut()
+        } else {
+            query["on"]?.toBooleanStrictOrNull()?.let { it }
+                ?: query["action"]?.let(::actionToOn)
+                ?: runCatching {
+                    if (body.isEmpty()) null
+                    else {
+                        val json = JSONObject(body.toString(Charsets.UTF_8))
+                        if (json.has("on")) json.optBoolean("on")
+                        else if (json.has("action")) actionToOn(json.optString("action", ""))
+                        else null
+                    }
+                }.getOrNull()
+        }
         if (target == null) {
             return 400 to err("missing on|action (on|off|toggle)")
         }
@@ -79,6 +91,8 @@ object DeviceApiRoute {
                 .put("ok", false)
                 .put("error", "set_display_power failed")
                 .put("detail", PowerController.lastError?.message)
+                // 失败也带上当前融合态，前端可据此纠偏按钮（省一次轮询）。
+                .put("blackedOut", currentBlackedOut())
                 .toString()
         }
     }
@@ -87,7 +101,7 @@ object DeviceApiRoute {
         val ctx = appContextOverride ?: runCatching { blindCastApp.applicationContext }.getOrNull()
         val battery = readBattery(ctx)
         val json = JSONObject()
-            .put("blackedOut", PowerController.isBlackedOut)
+            .put("blackedOut", currentBlackedOut())
             .put("batteryLevel", battery.level)
             .put("batteryTempC", battery.tempC)
             .put("charging", battery.charging)
@@ -161,10 +175,38 @@ object DeviceApiRoute {
     // 内部实现
     // ------------------------------------------------------------------
 
+    /**
+     * ScreenSync-1 融合上报（GET /api/screen、GET /api/status、toggle 共用）。
+     *
+     * - 缓存 `isBlackedOut=true`：可信（binder 真黑态 DM 恒报 ON，不能被 DM==ON 清掉，
+     *   Power-Fix-2；手动亮屏由广播 [PowerController.syncExternalState] 清）；
+     * - DM 报 OFF/DOZE/DOZE_SUSPEND：必是真灭（手动灭 / 进程重启丢缓存），直接 true，
+     *   覆盖进程重启后缓存复位 false 的撒谎窗口；
+     * - 其余：返回缓存。
+     * 单次 DisplayManager 读回，无提权、无 dumpsys，连接线程可调。
+     */
+    private fun currentBlackedOut(): Boolean {
+        val cached = PowerController.isBlackedOut
+        if (cached) return true
+        val ctx = appContextOverride ?: runCatching { blindCastApp.applicationContext }.getOrNull()
+        if (ctx == null) return cached
+        return runCatching {
+            val dm = ctx.getSystemService(DisplayManager::class.java) ?: return cached
+            when (dm.getDisplay(Display.DEFAULT_DISPLAY)?.state) {
+                Display.STATE_OFF, Display.STATE_DOZE, Display.STATE_DOZE_SUSPEND -> {
+                    // 顺手回写缓存，后续 toggle 直接正确（省得每次都读 DM）。
+                    PowerController.syncExternalState(false)
+                    true
+                }
+                else -> cached
+            }
+        }.getOrDefault(cached)
+    }
+
     private fun actionToOn(action: String?): Boolean? = when (action?.lowercase()) {
         "on", "wake", "true" -> true
         "off", "sleep", "blackout", "false" -> false
-        "toggle" -> !PowerController.isBlackedOut
+        "toggle" -> !currentBlackedOut()
         else -> null
     }
 

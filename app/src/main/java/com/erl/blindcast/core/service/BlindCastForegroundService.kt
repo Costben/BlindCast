@@ -3,14 +3,20 @@ package com.erl.blindcast.core.service
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.hardware.display.DisplayManager
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
+import android.view.Display
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.erl.blindcast.R
@@ -348,6 +354,13 @@ class BlindCastForegroundService : Service() {
     @Volatile
     private var captureActive = false
 
+    // ScreenSync-1：手动电源键同步（广播为主 + DisplayListener 兜底 Doze 过渡）。
+    // binder 熄屏是 SF 级断电、DM 恒报 ON，故此处只处理系统广播的真实亮灭，
+    // 不用 DisplayManager.getState() 直接覆盖缓存（会把真黑误报成亮）。
+    private var screenStateReceiver: BroadcastReceiver? = null
+    private var screenDisplayManager: DisplayManager? = null
+    private var screenDisplayListener: DisplayManager.DisplayListener? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -370,6 +383,7 @@ class BlindCastForegroundService : Service() {
             return
         }
         runCatching { acquireLocks() }
+        runCatching { registerScreenStateSync() }
         // 开关分离：onCreate 按持久化期望恢复（HTTP 与串流独立）。
         // 公开 start* 入口均先落盘后发 intent，故此处读盘即得本次期望；
         // 双盘皆空视为未知拉起，兼容旧行为默认全开并落盘。
@@ -538,6 +552,7 @@ class BlindCastForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching { unregisterScreenStateSync() }
         runCatching { scope.cancel() }
         captureActive = false
         // 逆序回收（Stream-Priv-1）：先停喂狗，先停 socket 搬运，再 destroy 特权采集，
@@ -561,6 +576,97 @@ class BlindCastForegroundService : Service() {
     // ------------------------------------------------------------------
     // 内部实现
     // ------------------------------------------------------------------
+
+    /**
+     * ScreenSync-1：注册手动电源键同步（广播为主 + DisplayListener 兜底）。
+     * 幂等，主线程调用；失败只记日志（不影响建连主流程）。
+     */
+    private fun registerScreenStateSync() {
+        if (screenStateReceiver != null) return
+        // 启动即对齐一次：进程重启会丢 isBlackedOut（默认 false），若当前 DM 已是灭态
+        //（用户手动灭屏后重拉服务），先纠成 true，防重启后首查撒谎。
+        runCatching {
+            val dm = getSystemService(DisplayManager::class.java)
+            val st = dm?.getDisplay(Display.DEFAULT_DISPLAY)?.state
+            if (st != null && (st == Display.STATE_OFF || st == Display.STATE_DOZE || st == Display.STATE_DOZE_SUSPEND)) {
+                PowerController.syncExternalState(false)
+            }
+        }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    Intent.ACTION_SCREEN_ON -> {
+                        runCatching { PowerController.syncExternalState(true) }
+                        runCatching { _status.value = snapshot() }
+                    }
+                    Intent.ACTION_SCREEN_OFF -> {
+                        runCatching { PowerController.syncExternalState(false) }
+                        runCatching { _status.value = snapshot() }
+                    }
+                }
+            }
+        }
+        runCatching {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            }
+            registerReceiver(receiver, filter)
+            screenStateReceiver = receiver
+        }.onFailure {
+            Log.w(TAG, "registerScreenStateSync receiver failed", it)
+            return
+        }
+        // DisplayListener 兜底：部分 ROM 广播延迟时，Display 变化仍能纠偏；
+        // 只处理 OFF/DOZE 系（灭）与 ON（亮），UNKNOWN 忽略。
+        // 注意：binder 熄屏态 DM 恒报 ON，不会误触发 OFF 分支（Power-Fix-2）。
+        runCatching {
+            val dm = getSystemService(DisplayManager::class.java) ?: return
+            val listener = object : DisplayManager.DisplayListener {
+                override fun onDisplayAdded(displayId: Int) {}
+                override fun onDisplayRemoved(displayId: Int) {}
+                override fun onDisplayChanged(displayId: Int) {
+                    if (displayId != Display.DEFAULT_DISPLAY) return
+                    runCatching {
+                        val st = dm.getDisplay(Display.DEFAULT_DISPLAY)?.state ?: return
+                        when (st) {
+                            Display.STATE_OFF, Display.STATE_DOZE, Display.STATE_DOZE_SUSPEND -> {
+                                PowerController.syncExternalState(false)
+                                runCatching { _status.value = snapshot() }
+                            }
+                            Display.STATE_ON -> {
+                                // DM==ON 时不盲目清缓存：binder 真黑态 DM 也是 ON。
+                                // 只有缓存说黑、但系统刚报了 SCREEN_ON 广播时才由广播分支清；
+                                // 此处仅当 DM 从 OFF 系回到 ON 且伴随用户点亮时做纠偏：
+                                // 若缓存为黑且当前是用户可交互态，跟随一次，避免广播漏收。
+                                // 保守起见：此处不清零，只记日志，纠偏完全交给广播。
+                                Log.d(TAG, "displayChanged ON (keep cached blackedOut=${PowerController.isBlackedOut})")
+                            }
+                            else -> {}
+                        }
+                    }
+                }
+            }
+            dm.registerDisplayListener(listener, Handler(Looper.getMainLooper()))
+            screenDisplayManager = dm
+            screenDisplayListener = listener
+        }.onFailure {
+            Log.w(TAG, "registerScreenStateSync displayListener failed", it)
+        }
+        Log.i(TAG, "screenStateSync registered")
+    }
+
+    private fun unregisterScreenStateSync() {
+        runCatching { screenStateReceiver?.let { unregisterReceiver(it) } }
+        screenStateReceiver = null
+        runCatching {
+            val dm = screenDisplayManager
+            val li = screenDisplayListener
+            if (dm != null && li != null) dm.unregisterDisplayListener(li)
+        }
+        screenDisplayManager = null
+        screenDisplayListener = null
+    }
 
     private fun prefs() = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 

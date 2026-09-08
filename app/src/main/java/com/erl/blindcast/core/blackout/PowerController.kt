@@ -138,10 +138,29 @@ object PowerController {
     var lastPrivAtMs: Long = 0L
         private set
 
-    /** 最近一次操作失败文案（成功时为 null，只记 message 不记隐私）。 */
+    /**
+     * 最近一次操作失败文案（成功时为 null，只记 message 不记隐私）。 */
     @Volatile
     var lastPrivError: String? = null
         private set
+
+    /**
+     * 外部屏幕状态同步（ScreenSync-1 · 手动电源键纠偏）。
+     *
+     * 手机侧用户手动按电源键完全绕过本控制器，[isBlackedOut] 会永久是旧值，
+     * 进而 `GET /api/status` 撒谎、前端按旧值算 on/off 导致要点两下。
+     * 由前台 Service 的 `ACTION_SCREEN_ON/OFF` 广播 + `DisplayListener` 回调调入：
+     * 只翻转 [isBlackedOut]，不碰 [lastError]/操作摘要（手动行为不是一次路由调用）。
+     *
+     * @param screenOn true = 屏幕已亮（对应 blackedOut=false），false = 已灭。
+     */
+    @Synchronized
+    fun syncExternalState(screenOn: Boolean) {
+        val want = !screenOn
+        if (isBlackedOut == want) return
+        isBlackedOut = want
+        Log.d(TAG, "[PowerController] ${tid()} syncExternalState screenOn=$screenOn blackedOut=$isBlackedOut via=manual-key")
+    }
 
     // ------------------------------------------------------------------
     // Priv-Bridge-7：验效 + 按键兜底支撑（Context 与轮询参数）。
