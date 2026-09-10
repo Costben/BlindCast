@@ -124,4 +124,8 @@ class SettingsRepositoryImpl : SettingsRepository {
     override var keepAliveEnabled: Boolean
         get() = prefs.getBoolean("keepalive_enabled", true)
         set(value) = prefs.edit { putBoolean("keepalive_enabled", value) }
+
+    override var bootStartEnabled: Boolean
+        get() = prefs.getBoolean("boot_start_enabled", true)
+        set(value) = prefs.edit { putBoolean("boot_start_enabled", value) }
 }

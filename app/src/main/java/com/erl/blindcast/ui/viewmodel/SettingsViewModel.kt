@@ -74,6 +74,7 @@ class SettingsViewModel(
             val keyboard = repo.scrcpyKeyboardEnabled
             val blackoutMode = repo.blackoutMode
             val keepAlive = repo.keepAliveEnabled
+            val bootStart = repo.bootStartEnabled
 
             // 内存门与持久化对齐（幂等，可重复调用）。
             runCatching { AudioCaptureEngine.setAudioEnabled(audioEnabled) }
@@ -104,6 +105,7 @@ class SettingsViewModel(
                     scrcpyKeyboardEnabled = keyboard,
                     blackoutMode = blackoutMode,
                     keepAliveEnabled = keepAlive,
+                    bootStartEnabled = bootStart,
                 )
             }
         }
@@ -206,6 +208,11 @@ class SettingsViewModel(
         } else {
             runCatching { UserActivityKeeper.stop() }
         }
+    }
+
+    fun setBootStartEnabled(enabled: Boolean) {
+        repo.bootStartEnabled = enabled
+        _uiState.update { it.copy(bootStartEnabled = enabled) }
     }
 
     // ------------------------------------------------------------------

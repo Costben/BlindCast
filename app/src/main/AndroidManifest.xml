@@ -31,6 +31,8 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- Slice 3.2 前台音频抓取服务类型前置：仅声明，暂不启用任何 service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- 开机自启动权限：设备重启/开机后自动拉起前台守护服务 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
 
@@ -72,6 +74,21 @@
             android:name=".core.service.BlindCastForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- 开机与更新自启动接收器（支持 Direct Boot 锁屏前与用户解锁后双阶段拉起） -->
+        <receiver
+            android:name=".core.receiver.BootReceiver"
+            android:directBootAware="true"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <!-- Priv-Bridge-1 Shizuku 提权桥：Shizuku Binder 下发通道（authorities 必须为 ${applicationId}.shizuku；
             permission/exported/multiprocess 取值按 Shizuku 官方要求，防普通应用访问；UserService 通道无需 <service>

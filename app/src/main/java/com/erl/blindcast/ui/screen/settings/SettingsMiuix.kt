@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.SettingsEthernet
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.TouchApp
@@ -372,6 +373,18 @@ private fun BlackoutCard(uiState: SettingsUiState, actions: SettingsScreenAction
             },
             checked = uiState.keepAliveEnabled,
             onCheckedChange = actions.onSetKeepAlive,
+        )
+        SwitchPreference(
+            title = stringResource(R.string.settings_boot_start),
+            summary = stringResource(R.string.settings_boot_start_summary),
+            startAction = {
+                SettingsLeadingIcon(
+                    Icons.Rounded.PowerSettingsNew,
+                    stringResource(R.string.settings_boot_start)
+                )
+            },
+            checked = uiState.bootStartEnabled,
+            onCheckedChange = actions.onSetBootStart,
         )
     }
 }

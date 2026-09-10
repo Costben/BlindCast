@@ -26,6 +26,7 @@ import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.DataUsage
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Keyboard
+import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.SettingsEthernet
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.TouchApp
@@ -235,6 +236,15 @@ fun SettingPagerMaterial(
                             summary = stringResource(R.string.settings_keepalive_summary),
                             checked = uiState.keepAliveEnabled,
                             onCheckedChange = actions.onSetKeepAlive,
+                        )
+                    },
+                    {
+                        SegmentedSwitchItem(
+                            icon = Icons.Rounded.PowerSettingsNew,
+                            title = stringResource(R.string.settings_boot_start),
+                            summary = stringResource(R.string.settings_boot_start_summary),
+                            checked = uiState.bootStartEnabled,
+                            onCheckedChange = actions.onSetBootStart,
                         )
                     },
                 )

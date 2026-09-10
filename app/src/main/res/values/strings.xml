@@ -156,6 +156,8 @@
     <string name="settings_blackout_summary" translatable="false">遮罩为免提权降级预留，当前仍走硬件通道</string>
     <string name="settings_keepalive" translatable="false">挂机常亮锁（WakeLock + 4s 喂狗防休眠）</string>
     <string name="settings_keepalive_summary" translatable="false">关闭后息屏可能进入 Doze 导致断流</string>
+    <string name="settings_boot_start" translatable="false">开机自启动</string>
+    <string name="settings_boot_start_summary" translatable="false">手机重启或开机后自动启动后台守护（需在系统设置中允许自启动）</string>
     <string name="settings_appearance_title" translatable="false">外观与关于</string>
     <string name="blindcast_settings_todo_title" translatable="false">串流与安全设置（骨架占位）</string>
     <string name="blindcast_settings_todo_subtitle" translatable="false">画质 / Token / 息屏策略，Slice 6.2 全量绑定</string>

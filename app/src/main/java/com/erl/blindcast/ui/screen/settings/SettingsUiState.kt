@@ -31,6 +31,7 @@ data class SettingsUiState(
     val scrcpyKeyboardEnabled: Boolean = true,
     val blackoutMode: String = "hardware",
     val keepAliveEnabled: Boolean = true,
+    val bootStartEnabled: Boolean = true,
 )
 
 @Immutable
@@ -51,4 +52,5 @@ data class SettingsScreenActions(
     val onSetKeyboardEnabled: (Boolean) -> Unit = {},
     val onSetBlackoutIndex: (Int) -> Unit = {},
     val onSetKeepAlive: (Boolean) -> Unit = {},
+    val onSetBootStart: (Boolean) -> Unit = {},
 )

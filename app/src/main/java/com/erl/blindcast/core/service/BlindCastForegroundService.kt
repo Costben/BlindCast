@@ -143,6 +143,9 @@ class BlindCastForegroundService : Service() {
         const val KEY_HTTP_ENABLED = "service_http_enabled"
         const val KEY_STREAM_ENABLED = "service_stream_enabled"
 
+        /** 开机自启动开关键（默认 true，与 SettingsRepository 共用）。 */
+        const val KEY_BOOT_START_ENABLED = "boot_start_enabled"
+
         /** 状态轮询间隔 2s。 */
         const val POLL_INTERVAL_MS = 2_000L
 
@@ -548,6 +551,19 @@ class BlindCastForegroundService : Service() {
                     START_NOT_STICKY
                 }
             }
+        }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.i(TAG, "onTaskRemoved: rootIntent=$rootIntent (Activity removed from recents)")
+        // 用户在最近任务界面划掉界面时，若服务处于开启期望态，确保前台常驻通知和唤醒锁继续有效，防系统误杀
+        val prefs = prefs()
+        val httpWant = prefs.getBoolean(KEY_HTTP_ENABLED, false)
+        val streamWant = prefs.getBoolean(KEY_STREAM_ENABLED, false)
+        if (httpWant || streamWant) {
+            runCatching { acquireLocks() }
+            runCatching { startForegroundInternal() }
         }
     }
 

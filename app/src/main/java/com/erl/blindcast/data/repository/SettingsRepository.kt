@@ -39,4 +39,5 @@ interface SettingsRepository {
     // ---- Slice 6.2: 息屏保活（hardware=优先硬件物理熄屏 / overlay=降级全黑遮罩预留） ----
     var blackoutMode: String
     var keepAliveEnabled: Boolean
+    var bootStartEnabled: Boolean
 }

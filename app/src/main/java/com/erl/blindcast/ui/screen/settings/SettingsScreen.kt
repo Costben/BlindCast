@@ -43,6 +43,7 @@ fun SettingPager(
         onSetKeyboardEnabled = viewModel::setKeyboardEnabled,
         onSetBlackoutIndex = viewModel::setBlackoutIndex,
         onSetKeepAlive = viewModel::setKeepAliveEnabled,
+        onSetBootStart = viewModel::setBootStartEnabled,
     )
 
     when (LocalUiMode.current) {
