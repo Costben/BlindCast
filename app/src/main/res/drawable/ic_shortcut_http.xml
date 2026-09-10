@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- Circular Dark AMOLED Badge -->
+    <path
+        android:pathData="M24,24m-22,0a22,22 0 1,0 44,0a22,22 0 1,0 -44,0"
+        android:fillColor="#FF0F172A" />
+    <path
+        android:pathData="M24,24m-21,0a21,21 0 1,0 42,0a21,21 0 1,0 -42,0"
+        android:strokeWidth="1.5"
+        android:strokeColor="#FF38BDF8"
+        android:strokeAlpha="0.6" />
+
+    <!-- Cast / HTTP Broadcast Symbol -->
+    <path
+        android:pathData="M14,31 L14,18 A3,3 0 0,1 17,15 L33,15 A3,3 0 0,1 36,18 L36,30 A3,3 0 0,1 33,33 L26,33"
+        android:strokeWidth="2.8"
+        android:strokeColor="#FF38BDF8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M14,33 L14.01,33"
+        android:strokeWidth="3.6"
+        android:strokeColor="#FF34D399"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M14,28 A5,5 0 0,1 19,33"
+        android:strokeWidth="2.8"
+        android:strokeColor="#FF34D399"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M14,23 A10,10 0 0,1 24,33"
+        android:strokeWidth="2.8"
+        android:strokeColor="#FF10B981"
+        android:strokeLineCap="round" />
+</vector>

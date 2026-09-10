@@ -57,6 +57,24 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 桌面长按应用图标快捷菜单 (App Shortcuts) -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!-- 桌面长按快捷方式中转（透明极速退出，不占多任务卡片） -->
+        <activity
+            android:name=".ui.shortcut.ShortcutTrampolineActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="com.erl.blindcast.action.SHORTCUT_BLACKOUT" />
+                <action android:name="com.erl.blindcast.action.SHORTCUT_HTTP" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <provider
@@ -89,6 +107,30 @@
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
+
+        <!-- 状态栏磁贴：快速熄屏 -->
+        <service
+            android:name=".core.tile.BlackoutTileService"
+            android:icon="@drawable/ic_tile_blackout"
+            android:label="@string/tile_blackout"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- 状态栏磁贴：HTTP 服务 -->
+        <service
+            android:name=".core.tile.HttpTileService"
+            android:icon="@drawable/ic_tile_http"
+            android:label="@string/tile_http"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <!-- Priv-Bridge-1 Shizuku 提权桥：Shizuku Binder 下发通道（authorities 必须为 ${applicationId}.shizuku；
             permission/exported/multiprocess 取值按 Shizuku 官方要求，防普通应用访问；UserService 通道无需 <service>

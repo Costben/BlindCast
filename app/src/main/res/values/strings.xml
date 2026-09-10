@@ -158,6 +158,13 @@
     <string name="settings_keepalive_summary" translatable="false">关闭后息屏可能进入 Doze 导致断流</string>
     <string name="settings_boot_start" translatable="false">开机自启动</string>
     <string name="settings_boot_start_summary" translatable="false">手机重启或开机后自动启动后台守护（需在系统设置中允许自启动）</string>
+    <!-- Shortcuts & QS Tiles -->
+    <string name="shortcut_blackout" translatable="false">快速熄屏</string>
+    <string name="shortcut_blackout_long" translatable="false">物理熄屏挂机</string>
+    <string name="shortcut_http" translatable="false">HTTP 服务</string>
+    <string name="shortcut_http_long" translatable="false">开启 HTTP 服务</string>
+    <string name="tile_blackout" translatable="false">快速熄屏</string>
+    <string name="tile_http" translatable="false">HTTP 服务</string>
     <string name="settings_appearance_title" translatable="false">外观与关于</string>
     <string name="blindcast_settings_todo_title" translatable="false">串流与安全设置（骨架占位）</string>
     <string name="blindcast_settings_todo_subtitle" translatable="false">画质 / Token / 息屏策略，Slice 6.2 全量绑定</string>

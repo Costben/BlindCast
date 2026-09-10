@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="shortcut_blackout"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_blackout"
+        android:shortcutShortLabel="@string/shortcut_blackout"
+        android:shortcutLongLabel="@string/shortcut_blackout_long">
+        <intent
+            android:action="com.erl.blindcast.action.SHORTCUT_BLACKOUT"
+            android:targetPackage="com.erl.blindcast"
+            android:targetClass="com.erl.blindcast.ui.shortcut.ShortcutTrampolineActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="shortcut_http"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_http"
+        android:shortcutShortLabel="@string/shortcut_http"
+        android:shortcutLongLabel="@string/shortcut_http_long">
+        <intent
+            android:action="com.erl.blindcast.action.SHORTCUT_HTTP"
+            android:targetPackage="com.erl.blindcast"
+            android:targetClass="com.erl.blindcast.ui.shortcut.ShortcutTrampolineActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+</shortcuts>
