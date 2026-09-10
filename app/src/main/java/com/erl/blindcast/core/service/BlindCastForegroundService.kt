@@ -356,6 +356,7 @@ class BlindCastForegroundService : Service() {
      */
     @Volatile
     private var captureActive = false
+    private var captureJob: kotlinx.coroutines.Job? = null
 
     // ScreenSync-1：手动电源键同步（广播为主 + DisplayListener 兜底 Doze 过渡）。
     // binder 熄屏是 SF 级断电、DM 恒报 ON，故此处只处理系统广播的真实亮灭，
@@ -790,19 +791,15 @@ class BlindCastForegroundService : Service() {
      * 停串流由 [captureGen] 自增 + [stopPrivilegedCapture] 使旧任务自弃。
      */
     private fun ensureCaptureStarted() {
-        if (captureActive || CaptureSocketLink.isRunning || CaptureSocketLink.hasVideo) {
-            Log.i(TAG, "[CaptureRoute] ensureCapture skipped (already active)")
+        if (CaptureSocketLink.isRunning && CaptureSocketLink.hasVideo) {
+            Log.i(TAG, "[CaptureRoute] ensureCapture skipped (already streaming)")
             return
         }
+        captureJob?.cancel()
         captureActive = true
         val params = readCaptureParams()
-        val gen = captureGen.get()
-        // 本地引擎不再 App 进程直起（必吃 SecurityException 静默 false，旧根因）：
-        // 只做特权链路（搬运服先起，特权建连 + 首帧等待放后台，避免阻塞主线程 ANR）。
-        // Stream-Priv-2 解耦降级：HTTP 已在上方先起（UI/API/WS 可用），采集失败只记
-        // captureError 进状态流（videoRunning=false），绝不碰 server；后台重试一次
-        //（5s 后），仍失败就停等下次开关。
-        scope.launch {
+        val gen = captureGen.incrementAndGet()
+        captureJob = scope.launch {
             val okFirst = runCatching { runPrivilegedCaptureBlocking(params.vw, params.vh, params.bitrate, params.fps, gen) }.getOrDefault(false)
             runCatching { _status.value = snapshot() }
             Log.i(TAG, "[CaptureRoute] boot privileged done ok=$okFirst mode=$captureMode " +
@@ -872,6 +869,8 @@ class BlindCastForegroundService : Service() {
      */
     private fun stopCaptureAsync() {
         captureGen.incrementAndGet()
+        captureJob?.cancel()
+        captureJob = null
         captureActive = false
         scope.launch {
             runCatching { stopPrivilegedCapture() }
@@ -897,6 +896,8 @@ class BlindCastForegroundService : Service() {
      *   避免“主动关”被记成“采集错”。
      */
     private fun runPrivilegedCaptureBlocking(vw: Int, vh: Int, bitrate: Int, fps: Int, gen: Int): Boolean {
+        // 先清孤儿采集 daemon，防残留进程持续持有 socket 导致 Address already in use
+        runCatching { killStaleCaptureDaemons() }
         // 1. 搬运服先起（App 进程 LocalServerSocket accept，特权侧 connect）。
         val linkOk = runCatching { CaptureSocketLink.start(vw, vh, bitrate, fps) }.getOrDefault(false)
         if (!linkOk) {
