@@ -1152,7 +1152,11 @@ class BlindCastForegroundService : Service() {
     }
 
     /**
-     * Fix-FGS-1：以 `dataSync` 类型前台化（仅需 `FOREGROUND_SERVICE_DATA_SYNC`）。
+     * Fix-FGS-1/2：前台化类型按系统版本分流。
+     * - Android 14+（API 34）：`specialUse`（Fix-FGS-2）。Android 15+ 对 `dataSync` 有 6h/24h
+     *   累计限额：跑满后系统抛 `ForegroundServiceDidNotStopInTimeException` 杀进程，且此后任何
+     *   启动都抛 `ForegroundServiceStartNotAllowedException`，常驻挂机场景永久不可用；
+     * - Android 12~13（API 31~33）：无 `specialUse` 类型，回退 `dataSync`（旧系统无超时限制）。
      * 不用 `connectedDevice`（缺 anyOf 蓝牙/网络状态权限即 SecurityException），
      * 不用 `mediaProjection`（无用户授权 token，错配）。
      *
@@ -1176,11 +1180,12 @@ class BlindCastForegroundService : Service() {
                 .setOngoing(true)
                 .build()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIF_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-                )
+                val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                }
+                startForeground(NOTIF_ID, notification, fgsType)
             } else {
                 @Suppress("DEPRECATION")
                 startForeground(NOTIF_ID, notification)
