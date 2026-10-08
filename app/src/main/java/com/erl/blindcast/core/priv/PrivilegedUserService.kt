@@ -43,6 +43,10 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass
 @Keep
 class PrivilegedUserService : IPrivilegedOps.Stub {
 
+    /** Phase C 探针用 base Context（@Keep 带参构造里留存；无参构造下为 null）。 */
+    @Volatile
+    private var serviceContext: Context? = null
+
     /** 老版本 Shizuku / Sui 使用的无参构造。 */
     constructor() : super()
 
@@ -57,6 +61,24 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
     @Keep
     constructor(context: Context) : super() {
         runCatching { PowerController.init(context) }
+        // Phase C 探针：留存 Shizuku 侧 Context 作 VirtualDeviceProbe 的 base context
+        // （该 Context 由 createPackageContextAsUser 创建，仅部分 API 可用，探针内自行兜底）。
+        runCatching { serviceContext = context.applicationContext ?: context }
+    }
+
+    /**
+     * Phase C 最小探针（Vdm-Probe-1 · 跑在特权进程内）：反射跑 VirtualDeviceManager 全链路，
+     * 返回多行逐步报文。无副作用（不建屏、不改设备状态），仅供 `/api/probe/vd` 汇总。
+     */
+    override fun probeVirtualDevice(): String {
+        val uid = runCatching { Process.myUid() }.getOrDefault(-1)
+        Log.i(TAG, "[PrivilegedUserService] probeVirtualDevice enter uid=$uid")
+        return try {
+            VirtualDeviceProbe.run(serviceContext, "ShizukuUserService")
+        } catch (t: Throwable) {
+            Log.e(TAG, "[PrivilegedUserService] probeVirtualDevice failed", t)
+            "probe threw ${t.javaClass.name}: ${t.message}\n"
+        }
     }
 
     /**
@@ -477,8 +499,8 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
         return x to y
     }
 
-    /** 经 `IWindowManager.getInitialDisplaySize(0)` 取真实主屏尺寸（特权身份可调）。 */
-    private fun realDisplaySize(): Pair<Int, Int>? {
+    /** 经 `IWindowManager.getInitialDisplaySize(displayId)` 取指定屏尺寸（特权身份可调）。 */
+    private fun displaySize(displayId: Int): Pair<Int, Int>? {
         return try {
             runCatching {
                 HiddenApiBypass.addHiddenApiExemptions(
@@ -498,13 +520,135 @@ class PrivilegedUserService : IPrivilegedOps.Stub {
                 "getInitialDisplaySize",
                 Int::class.javaPrimitiveType,
                 Point::class.java,
-            ).invoke(stub, 0, pt)
+            ).invoke(stub, displayId, pt)
             if (pt.x > 0 && pt.y > 0) pt.x to pt.y else null
         } catch (t: Throwable) {
-            Log.e(TAG, "[PrivilegedUserService] realDisplaySize failed", t)
+            Log.e(TAG, "[PrivilegedUserService] displaySize($displayId) failed", t)
             null
         }
     }
+
+    /** 物理主屏尺寸（旧语义不变：等价 `displaySize(0)`）。 */
+    private fun realDisplaySize(): Pair<Int, Int>? = displaySize(0)
+
+    // ------------------------------------------------------------------
+    // Phase C · 全链 displayId 路由（AIDL 15..18 + RootMain/RootInputMain 直调重载）
+    //
+    // 契约：displayId<=0 = 物理主屏（等价旧语义）；width/height<=0 = 由特权侧解析该屏尺寸。
+    // 每次注入都显式带目标屏与尺寸，键鼠/文本不再固定打主屏；副屏 setter 失败一律
+    // fail-closed（TouchInjector 侧抛错 → 这里返 false），绝不回落主屏。
+    // ------------------------------------------------------------------
+
+    /** 归一化坐标 → 目标屏物理像素；尺寸缺省时按 displayId 解析。 */
+    private fun resolvePxOn(
+        displayId: Int,
+        width: Int,
+        height: Int,
+        normX: Float,
+        normY: Float,
+    ): Pair<Float, Float>? {
+        var w = width
+        var h = height
+        if (w <= 0 || h <= 0) {
+            val size = displaySize(displayId)
+            if (size == null) {
+                if (inputError == null) inputError = "resolve display $displayId size failed (IWindowManager)"
+                return null
+            }
+            w = size.first
+            h = size.second
+        }
+        if (!TouchInjector.setTargetDisplay(displayId, w, h)) {
+            inputError = TouchInjector.lastError?.message ?: "setTargetDisplay($displayId) failed"
+            return null
+        }
+        return (normX.coerceIn(0f, 1f) * w) to (normY.coerceIn(0f, 1f) * h)
+    }
+
+    /** 指定屏轻点：Down+Up 原子。 */
+    override fun injectTapOnDisplay(normX: Float, normY: Float, displayId: Int, width: Int, height: Int): Boolean {
+        val (x, y) = resolvePxOn(displayId, width, height, normX, normY) ?: return false
+        return try {
+            val ok = TouchInjector.injectTouchDownPx(x, y, displayId) &&
+                TouchInjector.injectTouchUpPx(x, y, displayId)
+            inputError = if (ok) null else (TouchInjector.lastError?.message ?: "tap rejected by system")
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectTapOnDisplay failed", t)
+            false
+        }
+    }
+
+    /** 指定屏拖拽：Down+N插值Move+Up 单次调用内完成（松手执行；step 间 8ms）。 */
+    override fun injectDragOnDisplay(
+        x0: Float,
+        y0: Float,
+        x1: Float,
+        y1: Float,
+        displayId: Int,
+        width: Int,
+        height: Int,
+    ): Boolean {
+        val (px0, py0) = resolvePxOn(displayId, width, height, x0, y0) ?: return false
+        val (px1, py1) = resolvePxOn(displayId, width, height, x1, y1) ?: return false
+        return try {
+            var ok = TouchInjector.injectTouchDownPx(px0, py0, displayId)
+            val steps = 10
+            var i = 1
+            while (ok && i <= steps) {
+                val f = i.toFloat() / (steps + 1)
+                ok = TouchInjector.injectTouchMovePx(px0 + (px1 - px0) * f, py0 + (py1 - py0) * f, displayId)
+                if (ok) runCatching { Thread.sleep(8L) }
+                i++
+            }
+            ok = TouchInjector.injectTouchUpPx(px1, py1, displayId) && ok
+            inputError = if (ok) null else (TouchInjector.lastError?.message ?: "drag rejected by system")
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectDragOnDisplay failed", t)
+            false
+        }
+    }
+
+    /** 指定屏完整按键 Down+Up（无状态）。 */
+    override fun injectKeyOnDisplay(keyCode: Int, displayId: Int): Boolean {
+        return try {
+            val ok = TouchInjector.injectKey(keyCode, displayId)
+            inputError = if (ok) null else (TouchInjector.lastError?.message ?: "key rejected by system")
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectKeyOnDisplay failed", t)
+            false
+        }
+    }
+
+    /** 指定屏文本注入。 */
+    override fun injectTextOnDisplay(text: String?, displayId: Int): Boolean {
+        return try {
+            val ok = TouchInjector.injectText(text ?: "", displayId)
+            inputError = if (ok) null else (TouchInjector.lastError?.message ?: "text rejected by system")
+            ok
+        } catch (t: Throwable) {
+            inputError = t.message ?: t.toString()
+            Log.e(TAG, "[PrivilegedUserService] injectTextOnDisplay failed", t)
+            false
+        }
+    }
+
+    // ---- RootMain（单次 root app_process）直调重载：显示/尺寸显式随调用传入 ----
+
+    fun injectTap(normX: Float, normY: Float, displayId: Int, width: Int, height: Int): Boolean =
+        injectTapOnDisplay(normX, normY, displayId, width, height)
+
+    fun injectDrag(x0: Float, y0: Float, x1: Float, y1: Float, displayId: Int, width: Int, height: Int): Boolean =
+        injectDragOnDisplay(x0, y0, x1, y1, displayId, width, height)
+
+    fun injectKey(keyCode: Int, displayId: Int): Boolean = injectKeyOnDisplay(keyCode, displayId)
+
+    fun injectText(text: String, displayId: Int): Boolean = injectTextOnDisplay(text, displayId)
 
     companion object {
         /** 全链路统一 TAG（与 SurfaceControl / PowerController 一致，特权进程 logcat 可见）。 */

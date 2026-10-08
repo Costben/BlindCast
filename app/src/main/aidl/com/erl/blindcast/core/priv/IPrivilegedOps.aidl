@@ -57,4 +57,21 @@ interface IPrivilegedOps {
     boolean injectText(String text) = 12;
     // 取最近一次注入失败明细（同绑定内调用；成功时 null）。
     String getInputError() = 13;
+
+    // Phase C 全链 displayId 路由（旧编号 1..14 不动，新编号顺延 15..18）。
+    // 目标屏与尺寸**显式随调用传入**，杜绝“触摸改了副屏、按键仍打主屏”的错配：
+    // - displayId<=0 一律表示物理主屏（等价旧语义）；
+    // - width/height<=0 表示由特权侧解析该屏尺寸（主屏走 IWindowManager；虚拟屏尺寸
+    //   由 App 侧显式传入，因为 VDM 虚拟屏不一定进 IWindowManager 的 display 列表）；
+    // - 副屏注入 setter 失败一律 fail-closed（不回落主屏），明细经 getInputError 回读。
+    boolean injectTapOnDisplay(float normX, float normY, int displayId, int width, int height) = 15;
+    boolean injectDragOnDisplay(float x0, float y0, float x1, float y1, int displayId, int width, int height) = 16;
+    boolean injectKeyOnDisplay(int keyCode, int displayId) = 17;
+    boolean injectTextOnDisplay(String text, int displayId) = 18;
+
+    // Phase C 最小探针（Vdm-Probe-1）：特权进程内反射跑 VirtualDeviceManager 全链路
+    // （拿 manager → 建 VirtualDeviceParams → 逐方法探测 → createVirtualDevice → close），
+    // 返回多行逐步报文（含每步签名/参数/成功/错误），供 /api/probe/vd 汇总。
+    // 无副作用、不建屏、不改设备状态；旧编号 1..13 不动，新编号顺延 14。
+    String probeVirtualDevice() = 14;
 }

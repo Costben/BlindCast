@@ -60,7 +60,8 @@ object RootMain {
      *  `["input", "tap", x, y, "<resultFile>"]` /
      *  `["input", "drag", x0, y0, x1, y1, "<resultFile>"]` /
      *  `["input", "key", code, "<resultFile>"]` /
-     *  `["input", "text", b64, "<resultFile>"]`。
+     *  `["input", "text", b64, "<resultFile>"]` /
+     *  `["vdProbe", "<resultFile>"]`（Phase C 最小探针，报文写结果文件）。
      */
     @Keep
     @JvmStatic
@@ -68,6 +69,8 @@ object RootMain {
         var ok = false
         var errMsg: String = ""
         var resultFile: File? = null
+        // Phase C 最小探针报文（`vdProbe` 子操作写入；null 表示本次非探针调用）。
+        var vdReport: String? = null
         val pid = runCatching { Process.myPid() }.getOrDefault(-1)
         val uid = runCatching { Process.myUid() }.getOrDefault(-1)
         try {
@@ -89,6 +92,65 @@ object RootMain {
                 }
                 return
             }
+            // Phase C 最小探针（§4.7）：root 身份反射跑 VirtualDeviceManager 全链路，
+            // 报文写结果文件（首行仍 ok=/err=，RootExecutor 解析契约不变）。
+            if (op == "vdProbe") {
+                val rp = args.getOrNull(1)?.takeIf { it.isNotBlank() }
+                if (rp != null) resultFile = File(rp)
+                vdReport = runCatching { VirtualDeviceProbe.run(null, "RootMain") }
+                    .getOrElse { t -> "probe threw ${t.message ?: t}\n" }
+                ok = true
+                errMsg = ""
+                runCatching {
+                    Log.i(TAG, "[RootMain] pid=$pid uid=$uid vdProbe done len=${vdReport?.length ?: 0}")
+                }
+                return
+            }
+            // Phase C 虚拟桌面建屏探针（Vds-Probe-1）：shell 身份内建设备+虚拟屏，
+            // 观察 Home 是否被系统拉到该屏，再释放。
+            // args = ["vdCreate", holdSec, flags, vdmHome(0|1), resultFile]。
+            if (op == "vdCreate") {
+                val holdSec = args.getOrNull(1)?.toIntOrNull()?.coerceIn(1, 60) ?: 5
+                val flags = args.getOrNull(2)?.toIntOrNull() ?: VirtualDeviceBridge.defaultDesktopFlags()
+                val vdmHome = (args.getOrNull(3)?.toIntOrNull() ?: 1) != 0
+                val rp = args.getOrNull(4)?.takeIf { it.isNotBlank() }
+                if (rp != null && rp.startsWith("/")) resultFile = File(rp)
+                vdReport = runCatching { runVdCreate(holdSec, flags, vdmHome, pid, uid) }
+                    .getOrElse { t -> "vdCreate threw ${t.javaClass.simpleName}: ${t.message}\n" }
+                ok = vdReport!!.contains("[result] start=OK")
+                errMsg = if (ok) "" else "vdCreate 未成功建屏（见报文）"
+                runCatching { Log.i(TAG, "[RootMain] pid=$pid uid=$uid vdCreate done ok=$ok") }
+                return
+            }
+            // Dtc-Ipc-1：副屏任务查询。app 进程（uid 10xxx）无 DUMP 权限，必须由
+            // shell(uid 2000)/root 身份取 `dumpsys activity activities` 原文，正文写结果文件，
+            // 由 App 侧 DesktopTaskController 现有解析器消费。
+            // args = ["dumpsysActs", <resultFile>]。
+            if (op == "dumpsysActs") {
+                val rp = args.getOrNull(1)?.takeIf { it.isNotBlank() }
+                if (rp != null && rp.startsWith("/")) resultFile = File(rp)
+                vdReport = runCatching { runDumpsysActivities(pid, uid) }
+                    .getOrElse { t -> "dumpsysActs threw ${t.javaClass.simpleName}: ${t.message}\n" }
+                ok = !vdReport.isNullOrBlank()
+                errMsg = if (ok) "" else "dumpsysActs 无输出"
+                return
+            }
+            // Dtc-Ipc-1：副屏任务恢复。在 shell/root 身份内**先校验 taskId 真实所属 displayId**，
+            // 不属于目标副屏一律拒绝（绝不移动物理主屏 display 0 的 Task），通过后反射
+            // IActivityTaskManager.moveTaskToFront(taskId, 0)。
+            // args = ["taskFront", taskId, displayId, <resultFile>]。
+            if (op == "taskFront") {
+                val taskId = args.getOrNull(1)?.toIntOrNull() ?: -1
+                val displayId = args.getOrNull(2)?.toIntOrNull() ?: -1
+                val rp = args.getOrNull(3)?.takeIf { it.isNotBlank() }
+                if (rp != null && rp.startsWith("/")) resultFile = File(rp)
+                val r = runCatching { runTaskFront(taskId, displayId, pid, uid) }
+                    .getOrElse { t -> false to "taskFront threw ${t.javaClass.simpleName}: ${t.message}" }
+                ok = r.first
+                errMsg = if (ok) "" else r.second
+                vdReport = "taskFront task=$taskId did=$displayId ok=${r.first} note=${r.second}\n"
+                return
+            }
             // Universal-1：input 单次反控（Root→Shizuku 两段之 Root 段，无 Shizuku 依赖）。
             if (op == "input") {
                 val (inputOk, inputErr, inputFile) = runCatching { doInput(args) }.getOrElse { t ->
@@ -102,7 +164,7 @@ object RootMain {
             val onOff = args.getOrNull(1)
             val resultPath = args.getOrNull(2)
             if (op != "displayPower") {
-                errMsg = "未知操作：${op ?: "null"}（仅支持 displayPower/input/startCapture）"
+                errMsg = "未知操作：${op ?: "null"}（仅支持 displayPower/input/startCapture/vdProbe）"
                 return
             }
             val on: Boolean = when (onOff) {
@@ -162,7 +224,11 @@ object RootMain {
                     runCatching { f.parentFile?.mkdirs() }.getOrDefault(false)
                     // 单行 err（去换行，防解析歧义，截断防超长）。
                     val singleLineErr = errMsg.replace("\n", " ").replace("\r", " ").take(500)
-                    f.writeText("ok=$ok\nerr=$singleLineErr\n")
+                    val body = buildString {
+                        append("ok=$ok\nerr=$singleLineErr\n")
+                        vdReport?.let { append(it) }
+                    }
+                    f.writeText(body)
                     // 尽力放行给 App 进程读（/data/local/tmp 默认可读，但 root 建文件可能 0600）。
                     runCatching { f.setReadable(true, false) }.getOrDefault(false)
                 } else {
@@ -184,6 +250,195 @@ object RootMain {
                 }
             }
         }
+    }
+
+    /**
+     * Dtc-Ipc-1：以当前（shell/root）身份取 `dumpsys activity activities` 原文。
+     *
+     * 不用 `Runtime.exec` 拼串，直接 [ProcessBuilder] 三段参数，避免 shell 注入歧义。
+     * 输出原样返回（含换行），由调用方写入结果文件正文。
+     */
+    private fun runDumpsysActivities(pid: Int, uid: Int): String {
+        val pb = ProcessBuilder("/system/bin/dumpsys", "activity", "activities")
+        pb.redirectErrorStream(true)
+        val p = pb.start()
+        val text = p.inputStream.bufferedReader().use { it.readText() }
+        val code = runCatching { p.waitFor() }.getOrDefault(-1)
+        runCatching {
+            Log.i(TAG, "[RootMain] pid=$pid uid=$uid dumpsysActs exit=$code len=${text.length}")
+        }
+        return text
+    }
+
+    /**
+     * Dtc-Ipc-1：副屏任务恢复。**先校验归属再动**：
+     * 1. 取 `dumpsys activity activities` 解析 `taskId -> displayId`；
+     * 2. taskId 不在 [displayId] 上（含落在物理主屏 0）→ 直接拒绝，不动任何任务；
+     * 3. 通过后反射 `IActivityTaskManager.moveTaskToFront(taskId, 0)`。
+     *
+     * @return first=ok；second=说明/错误文案。
+     */
+    private fun runTaskFront(taskId: Int, displayId: Int, pid: Int, uid: Int): Pair<Boolean, String> {
+        if (taskId <= 0) return false to "taskId<=0 非法"
+        if (displayId <= 0) return false to "displayId<=0 非法（拒绝触碰物理主屏）"
+        val dump = runCatching { runDumpsysActivities(pid, uid) }.getOrDefault("")
+        if (dump.isBlank()) return false to "dumpsys 为空，无法校验任务归属"
+        val map = taskDisplayMap(dump)
+        val actual = map[taskId]
+        if (actual == null) return false to "task $taskId 不存在（dumpsys 未列出）"
+        if (actual != displayId) {
+            return false to "task $taskId 实际在 display $actual，不在 $displayId，拒绝移动"
+        }
+        return runCatching {
+            VirtualDeviceBridge.addHiddenApiExemptions()
+            val atmClass = Class.forName("android.app.ActivityTaskManager")
+            val atm = atmClass.getMethod("getService").invoke(null)
+                ?: return@runCatching false to "ActivityTaskManager.getService() 返回 null"
+            val all = atm.javaClass.methods
+            val sigDump = all.filter { m ->
+                m.name.contains("TaskToFront") || m.name.contains("FromRecents") || m.name.contains("moveTask")
+            }.joinToString("; ") { m ->
+                m.name + "(" + m.parameterTypes.joinToString(",") { it.simpleName } + ")"
+            }
+            val bundleCls = Class.forName("android.os.Bundle")
+            val cands = all.filter { m ->
+                m.name == "moveTaskToFront" &&
+                    m.parameterTypes.size >= 2 &&
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                    m.parameterTypes[1] == Int::class.javaPrimitiveType
+            }.sortedBy { it.parameterTypes.size }
+            val errors = StringBuilder()
+            for (m in cands) {
+                val callArgs = arrayOfNulls<Any?>(m.parameterTypes.size)
+                callArgs[0] = taskId
+                callArgs[1] = 0
+                var unsupported = false
+                for (i in 2 until m.parameterTypes.size) {
+                    if (m.parameterTypes[i] == bundleCls) callArgs[i] = null else unsupported = true
+                }
+                if (unsupported) {
+                    errors.append("skip/${m.parameterTypes.size}; ")
+                    continue
+                }
+                val r = runCatching { m.invoke(atm, *callArgs) }
+                if (r.isSuccess) {
+                    runCatching { Log.i(TAG, "[RootMain] pid=$pid uid=$uid taskFront ok task=$taskId did=$displayId via moveTaskToFront/${m.parameterTypes.size}") }
+                    return@runCatching true to "ok via moveTaskToFront/${m.parameterTypes.size}"
+                }
+                errors.append("invoke/${m.parameterTypes.size}:").append(r.exceptionOrNull()?.message).append("; ")
+            }
+            val sar = all.firstOrNull { m ->
+                m.name == "startActivityFromRecents" &&
+                    m.parameterTypes.size == 2 &&
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType
+            }
+            if (sar != null) {
+                val r = runCatching { sar.invoke(atm, taskId, null) }
+                if (r.isSuccess) {
+                    runCatching { Log.i(TAG, "[RootMain] pid=$pid uid=$uid taskFront ok task=$taskId did=$displayId via startActivityFromRecents") }
+                    return@runCatching true to "ok via startActivityFromRecents"
+                }
+                errors.append("startActivityFromRecents:").append(r.exceptionOrNull()?.message).append("; ")
+            }
+            false to "无可用 moveTaskToFront sigs=[$sigDump] errs=[$errors]"
+        }.getOrElse { t -> false to "taskFront 抛异常：${t.javaClass.simpleName}: ${t.message}" }
+    }
+
+    /** 解析 `dumpsys activity activities` 的 `taskId -> displayId`（只认 `Display #N` 段落内的 Task 行）。 */
+    private fun taskDisplayMap(dump: String): Map<Int, Int> {
+        val displayRe = Regex("""Display\s+#(\d+)""")
+        val taskRe = Regex("""Task\{[0-9a-fA-F]+\s+#(\d+)""")
+        val map = mutableMapOf<Int, Int>()
+        var cur = -1
+        for (line in dump.lineSequence()) {
+            val t = line.trim()
+            displayRe.find(t)?.let { cur = it.groupValues[1].toIntOrNull() ?: -1 }
+            if (cur <= 0) continue
+            taskRe.find(t)?.groupValues?.get(1)?.toIntOrNull()?.let { map[it] = cur }
+        }
+        return map
+    }
+
+    /**
+     * Phase C 虚拟桌面建屏探针（`vdCreate` 子操作，shell 身份内跑）。
+     *
+     * 顺序：找自己的关联 → [VirtualDesktopSession.start]（建设备 + 建虚拟屏，
+     * Home 组件指向 `FusionHomeActivity`）→ 报 deviceId/displayId → 观察系统是否把
+     * Home 拉到该屏（`dumpsys activity`/`dumpsys display`）→ [VirtualDesktopSession.stop]。
+     *
+     * 全程不抛（异常由调用方 `runCatching` 兜），报文写结果文件供 App 侧解析。
+     */
+    private fun runVdCreate(holdSec: Int, flags: Int, vdmHome: Boolean, pid: Int, uid: Int): String {
+        val sb = StringBuilder()
+        fun rec(s: String) {
+            sb.append(s).append('\n')
+            runCatching { Log.i(TAG, "[RootMain][VdCreate] $s") }
+        }
+        rec("[env] pid=$pid uid=$uid sdk=${android.os.Build.VERSION.SDK_INT} flags=$flags")
+        VirtualDeviceBridge.addHiddenApiExemptions()
+        rec("[dmflags] ${VirtualDeviceBridge.dumpFlags()}")
+        val assocId = VirtualDesktopSession.findOwnAssociationId(0)
+        rec("[assoc] ownId=$assocId")
+        if (assocId <= 0) {
+            rec("[result] start=FAIL reason=no own association (mac=${VirtualDeviceAssociation.OWN_MAC})")
+            return sb.toString()
+        }
+        val pkg = com.erl.blindcast.BuildConfig.APPLICATION_ID
+        val home = android.content.ComponentName(pkg, "$pkg.FusionHomeActivity")
+        rec("[home] $home")
+
+        // 关键（findings 口径）：虚拟屏要挂**真实输出 Surface**才会进入 ON；
+        // 用 MediaCodec 的 inputSurface（也正是生产采集要用的那个面）。
+        var codec: android.media.MediaCodec? = null
+        var inputSurface: android.view.Surface? = null
+        try {
+            val enc = android.media.MediaCodec.createEncoderByType("video/avc")
+            val fmt = android.media.MediaFormat.createVideoFormat("video/avc", 720, 1280)
+            fmt.setInteger(android.media.MediaFormat.KEY_BIT_RATE, 4_000_000)
+            fmt.setInteger(android.media.MediaFormat.KEY_FRAME_RATE, 30)
+            fmt.setInteger(android.media.MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            fmt.setInteger(
+                android.media.MediaFormat.KEY_COLOR_FORMAT,
+                android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
+            )
+            enc.configure(fmt, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE)
+            inputSurface = enc.createInputSurface()
+            enc.start()
+            codec = enc
+            rec("[surface] encoder=${enc.name} inputSurface=${inputSurface != null}")
+        } catch (t: Throwable) {
+            rec("[surface] FAILED ${t.javaClass.simpleName}: ${t.message}")
+        }
+
+        val started = VirtualDesktopSession.start(
+            associationId = assocId,
+            name = "BlindCastDesktop",
+            width = 720, height = 1280, densityDpi = 320,
+            flags = flags,
+            home = if (vdmHome) home else null,
+            ime = null,
+            surface = inputSurface,
+        )
+        rec("[result] start=${if (started) "OK" else "FAIL"} error=${VirtualDesktopSession.lastError ?: ""}")
+        if (!started) return sb.toString()
+        val did = VirtualDesktopSession.displayId
+        rec("[ids] deviceId=${VirtualDesktopSession.deviceId} displayId=$did")
+        rec("[dinfo] ${VirtualDesktopSession.displayInfo()}")
+        // 显式把我们的 Home 拉上副屏（VDM 的 setHomeComponent 会被 ROM 自带
+        // SecondaryDisplayLauncher 抢走，实证见 logcat ActivityStartInterceptor/ShellTaskOrganizer）。
+        rec("[launch.home] ${VirtualDesktopSession.shellOut("am start -W --display $did -n $pkg/.FusionHomeActivity").replace("\n", " | ")}")
+        Thread.sleep(2000L)
+        rec("[tasks] ${VirtualDesktopSession.shellOut("dumpsys activity activities | grep -A6 'Display #$did' | grep -E 'Task\\{|Hist |ActivityRecord' | head -8").replace("\n", " | ")}")
+        rec("[check.display] ${VirtualDesktopSession.shellOut("dumpsys display | grep -oE 'BlindCastDesktop\\\", displayId [0-9]+.*state [A-Z]+' | head -1")}")
+        rec("[hold] ${holdSec}s")
+        runCatching { Thread.sleep(holdSec * 1000L) }
+        rec("[check.activity2] ${VirtualDesktopSession.shellOut("dumpsys activity activities | grep -i -m 6 'fusionhome'").replace("\n", " | ")}")
+        rec("[check.display2] ${VirtualDesktopSession.shellOut("dumpsys display | grep -oE 'BlindCastDesktop\\\", displayId [0-9]+' | head -2")}")
+        VirtualDesktopSession.stop()
+        runCatching { codec?.stop() }
+        runCatching { codec?.release() }
+        rec("[stop] done (displayId released, codec released)")
+        return sb.toString()
     }
 
     /**
@@ -223,6 +478,10 @@ object RootMain {
         }
         return try {
             val svc = PrivilegedUserService()
+            // Phase C：尾部可选 [displayId] [width] [height]（排在 <resultFile> **之后**，
+            // 与 RootExecutor 拼命令行时一致），缺省 0 = 物理主屏 + 由特权侧解析尺寸；
+            // 旧调用（只到 resultFile）逐字不变。
+            fun optInt(index: Int, def: Int): Int = args.getOrNull(index)?.toIntOrNull() ?: def
             when (sub) {
                 "tap" -> {
                     if (args.size < 5) return Triple(false, "tap 缺参（期望 input tap x y <resultFile>）", args.lastOrNull()?.takeIf { it.startsWith("/") }?.let { File(it) })
@@ -233,12 +492,15 @@ object RootMain {
                     if (x == null || y == null || !x.isFinite() || !y.isFinite()) {
                         return Triple(false, "tap 非法坐标：${args[2]},${args[3]}（期望 0..1 浮点）", rf)
                     }
-                    val ok = runCatching { svc.injectTap(x, y) }.getOrElse { t ->
+                    val displayId = optInt(5, 0)
+                    val width = optInt(6, 0)
+                    val height = optInt(7, 0)
+                    val ok = runCatching { svc.injectTap(x, y, displayId, width, height) }.getOrElse { t ->
                         runCatching { Log.e(TAG, "[RootMain] input tap threw", t) }
                         return Triple(false, "tap抛异常：${t.message ?: t}", rf)
                     }
                     if (ok) {
-                        runCatching { Log.d(TAG, "[RootMain] input tap ok x=$x y=$y") }
+                        runCatching { Log.d(TAG, "[RootMain] input tap ok x=$x y=$y display=$displayId ${width}x$height") }
                         Triple(true, "", rf)
                     } else {
                         val e = runCatching { svc.inputError }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: "tap rejected by system"
@@ -256,12 +518,15 @@ object RootMain {
                     if (listOf(x0, y0, x1, y1).any { it == null || !it.isFinite() }) {
                         return Triple(false, "drag 非法坐标（期望 0..1 浮点 x4）", rf)
                     }
-                    val ok = runCatching { svc.injectDrag(x0!!, y0!!, x1!!, y1!!) }.getOrElse { t ->
+                    val displayId = optInt(7, 0)
+                    val width = optInt(8, 0)
+                    val height = optInt(9, 0)
+                    val ok = runCatching { svc.injectDrag(x0!!, y0!!, x1!!, y1!!, displayId, width, height) }.getOrElse { t ->
                         runCatching { Log.e(TAG, "[RootMain] input drag threw", t) }
                         return Triple(false, "drag抛异常：${t.message ?: t}", rf)
                     }
                     if (ok) {
-                        runCatching { Log.d(TAG, "[RootMain] input drag ok") }
+                        runCatching { Log.d(TAG, "[RootMain] input drag ok display=$displayId ${width}x$height") }
                         Triple(true, "", rf)
                     } else {
                         val e = runCatching { svc.inputError }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: "drag rejected by system"
@@ -274,12 +539,13 @@ object RootMain {
                     val rf = args[3].takeIf { it.isNotBlank() }?.let { File(it) }
                     if (rf == null) return Triple(false, "key 缺结果文件路径（args[3] 为空）", null)
                     if (code == null) return Triple(false, "key 非法键码：${args[2]}（期望 int）", rf)
-                    val ok = runCatching { svc.injectKey(code) }.getOrElse { t ->
+                    val displayId = optInt(4, 0)
+                    val ok = runCatching { svc.injectKey(code, displayId) }.getOrElse { t ->
                         runCatching { Log.e(TAG, "[RootMain] input key threw", t) }
                         return Triple(false, "key抛异常：${t.message ?: t}", rf)
                     }
                     if (ok) {
-                        runCatching { Log.d(TAG, "[RootMain] input key ok code=$code") }
+                        runCatching { Log.d(TAG, "[RootMain] input key ok code=$code display=$displayId") }
                         Triple(true, "", rf)
                     } else {
                         val e = runCatching { svc.inputError }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: "key rejected by system"
@@ -299,12 +565,13 @@ object RootMain {
                             return Triple(false, "text 非法b64：${t.message ?: t}", rf)
                         }
                     }
-                    val ok = runCatching { svc.injectText(text) }.getOrElse { t ->
+                    val displayId = optInt(4, 0)
+                    val ok = runCatching { svc.injectText(text, displayId) }.getOrElse { t ->
                         runCatching { Log.e(TAG, "[RootMain] input text threw", t) }
                         return Triple(false, "text抛异常：${t.message ?: t}", rf)
                     }
                     if (ok) {
-                        runCatching { Log.d(TAG, "[RootMain] input text ok len=${text.length}") }
+                        runCatching { Log.d(TAG, "[RootMain] input text ok len=${text.length} display=$displayId") }
                         Triple(true, "", rf)
                     } else {
                         val e = runCatching { svc.inputError }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: "text rejected by system"

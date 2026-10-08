@@ -2,11 +2,16 @@ package com.erl.blindcast.core.scrcpy
 
 import android.net.LocalServerSocket
 import android.net.LocalSocket
+import android.net.LocalSocketAddress
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import java.io.DataInputStream
+import java.io.FileDescriptor
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * 特权帧搬运链（Stream-Priv-1 · 跑在 App 进程，只做搬运）。
@@ -70,9 +75,27 @@ object CaptureSocketLink {
     @Volatile private var firstFrameLatch = CountDownLatch(1)
 
     private val lock = Any()
+
+    /**
+     * 生命周期串行锁：start/stop 互斥。
+     * **绝不在持锁时 join accept 线程**：accept 线程退出路径要拿 [lock]，
+     * 持锁 join 会互等，进而把 socket 拖成孤儿（见 [teardownLocked]）。
+     */
+    private val lifecycle = ReentrantLock()
+
     private var server: LocalServerSocket? = null
     private var client: LocalSocket? = null
     private var acceptThread: Thread? = null
+
+    /**
+     * 代际令牌：每次成功 start / 每次 teardown 自增。
+     * 旧 accept/read 线程据此自弃——stop 后又 start 时，上一代线程**不得**
+     * 把陈旧连接写成新 client，也不得在退出前关掉新 client。
+     */
+    @Volatile private var generation: Int = 0
+
+    /** join 上界：唤醒（shutdown + 自连）后正常应在数十 ms 内退出。 */
+    private val JOIN_TIMEOUT_MS = 1_000L
 
     /**
      * 启动搬运服（幂等，同步返回，不阻塞等帧）。
@@ -81,44 +104,50 @@ object CaptureSocketLink {
      * Stream-Priv-2 加固：
      * - 加锁幂等：已在运行重复 start 直接返回 true（不再先停再起，避免
      *   onCreate/onStartCommand 双路并发抢绑自残）；
-     * - 抢绑自愈：bind 遇 EADDRINUSE/BindException 先关残留再重试（间隔 500ms，
-     *   最多 3 次），仍失败才抛（调用方经 runCatching 收敛为 captureError）。
+     * - 抢绑自愈：bind 遇 EADDRINUSE/BindException 先真拆残留（唤醒在途 accept 再关 fd）
+     *   再重试（间隔 500ms，最多 3 次），仍失败才抛（调用方经 runCatching 收敛为 captureError）。
      */
     fun start(width: Int, height: Int, bitrate: Int, fps: Int): Boolean {
-        synchronized(lock) {
+        lifecycle.lock()
+        try {
             if (isRunning) {
                 Log.i(TAG, "[CaptureSocketLink] start skipped (already running) abstract:$SOCKET_NAME")
                 return true
             }
-            // 先清残留引用（上次崩溃/旧实例未释放），再进重试循环。
-            releaseLocked()
+            // 先彻底拆上一代：阻塞在内核 accept/read 的线程持 socket 引用，
+            // 只 close fd 不释放抽象名（fd 没了名字还在 → 下一次 bind 必撞 EADDRINUSE）。
+            teardownLocked("start")
             var last: Throwable? = null
             for (attempt in 1..3) {
                 try {
                     val srv = LocalServerSocket(SOCKET_NAME)
-                    server = srv
-                    currentWidth = width
-                    currentHeight = height
-                    currentBitrate = bitrate
-                    currentFps = fps
-                    hasVideo = false
-                    hasAudio = false
-                    videoFrames.set(0)
-                    audioFrames.set(0)
-                    firstFrameLatch = CountDownLatch(1)
-                    lastError = null
-                    isRunning = true
-                    val t = Thread(::acceptLoop, "BlindCast-CaptureLink")
-                    t.isDaemon = true
-                    acceptThread = t
-                    t.start()
+                    synchronized(lock) {
+                        val gen = generation + 1
+                        generation = gen
+                        server = srv
+                        currentWidth = width
+                        currentHeight = height
+                        currentBitrate = bitrate
+                        currentFps = fps
+                        hasVideo = false
+                        hasAudio = false
+                        videoFrames.set(0)
+                        audioFrames.set(0)
+                        firstFrameLatch = CountDownLatch(1)
+                        lastError = null
+                        isRunning = true
+                        val t = Thread({ acceptLoop(gen) }, "BlindCast-CaptureLink")
+                        t.isDaemon = true
+                        acceptThread = t
+                        t.start()
+                    }
                     Log.i(TAG, "[CaptureSocketLink] listen ok abstract:$SOCKET_NAME ${width}x${height} attempt=$attempt")
                     return true
                 } catch (t: Throwable) {
                     last = t
                     lastError = t
-                    // 残留 fd 必须先关，否则抽象名持续被占重试必撞。
-                    releaseLocked()
+                    // 残留 fd/在途 accept 必须先真相拆干净，否则抽象名持续被占重试必撞。
+                    teardownLocked("start-retry")
                     if (!isBindConflict(t)) {
                         Log.e(TAG, "[CaptureSocketLink] listen failed (non-bind) abstract:$SOCKET_NAME", t)
                         throw t
@@ -131,7 +160,7 @@ object CaptureSocketLink {
                             Thread.currentThread().interrupt()
                             break
                         }
-                        releaseLocked()
+                        teardownLocked("start-retry-2")
                     }
                 }
             }
@@ -139,8 +168,10 @@ object CaptureSocketLink {
                 ?: IllegalStateException("CaptureSocketLink: bind failed after 3 retries")
             lastError = err
             Log.e(TAG, "[CaptureSocketLink] listen failed after 3 retries abstract:$SOCKET_NAME", err)
-            releaseLocked()
+            teardownLocked("start-failed")
             throw err
+        } finally {
+            lifecycle.unlock()
         }
     }
 
@@ -158,11 +189,16 @@ object CaptureSocketLink {
         }
     }
 
-    /** 停止搬运（幂等）：先停 socket（逆序收第一步），不 close 引擎复用 Channel。重复 stop 无害。 */
+    /**
+     * 停止搬运（幂等）：真唤醒在途 accept/read 再关 fd，抽象名当次真正释放。
+     * 不 close 引擎复用 Channel。重复 stop 无害。
+     */
     fun stop() {
-        synchronized(lock) {
-            if (!isRunning && server == null && client == null && acceptThread == null) return
-            stopLocked()
+        lifecycle.lock()
+        try {
+            teardownLocked("stop")
+        } finally {
+            lifecycle.unlock()
         }
     }
 
@@ -173,16 +209,91 @@ object CaptureSocketLink {
     // 内部
     // ------------------------------------------------------------------
 
-    private fun stopLocked() {
-        isRunning = false
-        // 首帧门闩同步清零：停后 `isRunning || hasVideo` 即回到 false，
-        // 状态流/UI/API 不粘旧 true（等帧方持旧 latch 引用不受影响，见 awaitFirstFrame）。
-        hasVideo = false
-        hasAudio = false
-        acceptThread?.interrupt()
-        try { acceptThread?.join(1_000L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
-        acceptThread = null
-        releaseLocked()
+    /**
+     * 拆掉当前一代（幂等）：锁内摘引用 + 自增代际 + 清运行态，锁外唤醒/join/关 fd。
+     *
+     * 顺序不可换（真机实证）：Linux 上 close 一个 fd **不会**唤醒阻塞在 `accept()`
+     * 的线程，在途 accept 仍持 socket 引用 → socket 不 destroy → 抽象名继续 LISTEN，
+     * 但 /proc 里已查不到 owner（ss 显示无 users）。因此必须
+     * `shutdown` + 自连唤醒 → 锁外 join 等线程退净 → 最后才关 fd。
+     *
+     * 调用方**必须**持有 [lifecycle]；本函数绝不持 [lock] 做 join。
+     */
+    private fun teardownLocked(reason: String) {
+        var thread: Thread? = null
+        var srv: LocalServerSocket? = null
+        var cli: LocalSocket? = null
+        synchronized(lock) {
+            if (!isRunning && server == null && client == null && acceptThread == null) {
+                return
+            }
+            generation++
+            isRunning = false
+            // 首帧门闩同步清零：停后 `isRunning || hasVideo` 即回到 false，
+            // 状态流/UI/API 不粘旧 true（等帧方持旧 latch 引用不受影响，见 awaitFirstFrame）。
+            hasVideo = false
+            hasAudio = false
+            thread = acceptThread
+            srv = server
+            cli = client
+            acceptThread = null
+            server = null
+            client = null
+            currentWidth = -1
+            currentHeight = -1
+            currentBitrate = -1
+            currentFps = -1
+        }
+        thread?.interrupt()
+        // 1) read 阻塞：对已连接端 shutdown 必定唤醒（读到 EOF）。
+        shutdownQuietly(cli?.fileDescriptor)
+        // 2) accept 阻塞：先试 listen fd shutdown；AF_UNIX 上未必唤醒，故补自连。
+        shutdownQuietly(srv?.fileDescriptor)
+        wakeAccept()
+        // 3) 锁外 join：accept 线程退出路径要拿 lock，持 lock join 会互等。
+        if (thread != null) {
+            try {
+                thread.join(JOIN_TIMEOUT_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            if (thread.isAlive) {
+                Log.w(TAG, "[CaptureSocketLink] accept thread alive after ${JOIN_TIMEOUT_MS}ms " +
+                    "($reason) abstract:$SOCKET_NAME")
+            }
+        }
+        // 4) 线程退净后才关 fd：在途 accept 持引用时 close 只会把 socket 变孤儿。
+        runCatching { cli?.close() }
+        runCatching { srv?.close() }
+        Log.i(TAG, "[CaptureSocketLink] teardown done ($reason) gen=$generation " +
+            "threadAlive=${thread?.isAlive == true}")
+    }
+
+    /** 对 fd 做 SHUT_RDWR 唤醒阻塞调用；失败只记 debug（未连接/已关闭均属常态）。 */
+    private fun shutdownQuietly(fd: FileDescriptor?) {
+        if (fd == null || !fd.valid()) return
+        try {
+            Os.shutdown(fd, OsConstants.SHUT_RDWR)
+        } catch (t: Throwable) {
+            Log.d(TAG, "[CaptureSocketLink] shutdown skipped: ${t.message}")
+        }
+    }
+
+    /**
+     * 自连唤醒：向本抽象名 connect 一次。
+     * 这是让 `accept()` 确定性返回的手段（close 不唤醒阻塞 accept），
+     * 使 accept 线程及时退出、socket 引用计数归零、抽象名随 close 释放。
+     */
+    private fun wakeAccept() {
+        var s: LocalSocket? = null
+        try {
+            s = LocalSocket()
+            s.connect(LocalSocketAddress(SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT))
+        } catch (t: Throwable) {
+            Log.d(TAG, "[CaptureSocketLink] wake accept connect skipped: ${t.message}")
+        } finally {
+            runCatching { s?.close() }
+        }
     }
 
     /** 抢绑判定：BindException 或链上 message 含 Address already in use / EADDRINUSE。 */
@@ -199,40 +310,40 @@ object CaptureSocketLink {
         return false
     }
 
-    private fun releaseLocked() {
-        runCatching { client?.close() }
-        client = null
-        runCatching { server?.close() }
-        server = null
-        currentWidth = -1
-        currentHeight = -1
-        currentBitrate = -1
-        currentFps = -1
-    }
-
-    private fun acceptLoop() {
-        while (isRunning && !Thread.currentThread().isInterrupted) {
-            val srv = synchronized(lock) { server } ?: break
-            // accept 前快照（stop 关闭 server 会抛异常退出循环）。
+    private fun acceptLoop(gen: Int) {
+        while (isRunning && generation == gen && !Thread.currentThread().isInterrupted) {
+            val srv = synchronized(lock) { if (generation == gen) server else null } ?: break
+            // accept 前快照（stop 关闭 server / 自连唤醒都会让 accept 返回）。
             val sock: LocalSocket = try {
                 srv.accept()
             } catch (_: InterruptedException) {
                 break
             } catch (t: Throwable) {
-                if (isRunning) {
+                if (isRunning && generation == gen) {
                     lastError = t
                     Log.e(TAG, "[CaptureSocketLink] accept failed", t)
                     runCatching { Thread.sleep(200L) }
                     continue
                 } else break
             }
-            synchronized(lock) {
-                runCatching { client?.close() }
-                client = sock
+            // 代际校验：stop 后又 start 时本线程属旧代，丢弃连接，绝不写新代际的 client。
+            val stale = synchronized(lock) {
+                if (generation != gen) {
+                    true
+                } else {
+                    runCatching { client?.close() }
+                    client = sock
+                    false
+                }
+            }
+            if (stale) {
+                runCatching { sock.close() }
+                Log.i(TAG, "[CaptureSocketLink] drop stale client gen=$gen cur=$generation")
+                break
             }
             Log.i(TAG, "[CaptureSocketLink] client connected")
             try {
-                readLoop(sock)
+                readLoop(sock, gen)
             } finally {
                 runCatching { sock.close() }
                 synchronized(lock) { if (client === sock) client = null }
@@ -241,9 +352,9 @@ object CaptureSocketLink {
         }
     }
 
-    private fun readLoop(sock: LocalSocket) {
+    private fun readLoop(sock: LocalSocket, gen: Int) {
         val input = DataInputStream(sock.inputStream)
-        while (isRunning && !Thread.currentThread().isInterrupted) {
+        while (isRunning && generation == gen && !Thread.currentThread().isInterrupted) {
             val channel: Byte
             val len: Int
             try {

@@ -242,6 +242,70 @@ object PrivilegedBridge {
         }
 
     /**
+     * Phase C 最小探针（Vdm-Probe-1 · Shizuku 段）：按次绑定 [PrivilegedUserService]
+     * 并在特权进程内反射跑 VirtualDeviceManager 全链路，返回多行逐步报文。
+     *
+     * 未运行/未授权时抛 [IllegalStateException]（引导文案原样透出，不静默吞错）；
+     * 调用方（[com.erl.blindcast.core.server.routes.DeviceApiRoute]）负责捕获并记入汇总报文。
+     */
+    suspend fun probeVirtualDevice(packageName: String): String =
+        withPrivileged(packageName) { ops -> ops.probeVirtualDevice() }
+
+    /**
+     * Dtc-Ipc-1-a：经特权通道取 `dumpsys activity activities` 原文。
+     *
+     * app 进程（uid 10xxx）既无 `DUMP` 权限也无 root，`Shell.cmd("dumpsys ...")` 在 App 进程内
+     * 拿不到内容（真机实测空串 → 副屏任务列表恒空）；本入口走既有 root 通道派生 uid2000
+     * `app_process` 子进程执行。**不是 Shizuku 授权路径**，Shizuku 未运行也不影响。
+     *
+     * @param packageName 调用方包名（仅用于取 APK 路径）；缺省取本应用。
+     * @return dumpsys 原文；失败/无输出返回 null（调用方按“查不到”处理，不硬编成功）。
+     */
+    suspend fun dumpActivities(packageName: String = BuildConfig.APPLICATION_ID): String? {
+        val apkPath = runCatching { PowerController.resolveApkPath(packageName) }.getOrNull()
+        if (apkPath.isNullOrBlank()) {
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} dumpActivities skip no apkPath pkg=$packageName")
+            return null
+        }
+        val (ok, body) = runCatching {
+            RootExecutor.runAsShellDumpsysActivities(packageName, apkPath)
+        }.getOrElse { false to (it.message ?: it.toString()) }
+        Log.i(TAG, "[PrivilegedBridge] ${tid()} dumpActivities ok=$ok len=${body?.length ?: 0}")
+        return if (ok) body else null
+    }
+
+    /**
+     * Dtc-Ipc-1-b：经特权通道把副屏已有 Task 拉回前台（同 taskId 恢复，不新建）。
+     *
+     * 特权侧先按 taskId 反查真实 `displayId`，**不属于该副屏一律拒绝**（物理主屏 display 0 的
+     * Task 绝不移动），通过后才 `moveTaskToFront`。
+     *
+     * @return first=是否成功切换；second=失败文案（成功时 null）。
+     */
+    suspend fun moveTaskToFront(
+        taskId: Int,
+        displayId: Int,
+        packageName: String = BuildConfig.APPLICATION_ID,
+    ): Pair<Boolean, String?> {
+        if (taskId <= 0 || displayId <= 0) {
+            return false to "taskId/displayId 非法（拒绝触碰物理主屏）"
+        }
+        val apkPath = runCatching { PowerController.resolveApkPath(packageName) }.getOrNull()
+        if (apkPath.isNullOrBlank()) {
+            Log.d(TAG, "[PrivilegedBridge] ${tid()} moveTaskToFront skip no apkPath pkg=$packageName")
+            return false to "取 APK 路径失败"
+        }
+        val (ok, body) = runCatching {
+            RootExecutor.runAsShellTaskFront(packageName, apkPath, taskId, displayId)
+        }.getOrElse { false to (it.message ?: it.toString()) }
+        Log.i(
+            TAG,
+            "[PrivilegedBridge] ${tid()} moveTaskToFront task=$taskId did=$displayId ok=$ok note=${body?.take(160)}",
+        )
+        return ok to (if (ok) null else body)
+    }
+
+    /**
      * 特权熄屏/点亮快捷入口（[withPrivileged] 特化，包名由调用方传入）。
      *
      * Priv-Bridge-7：服务端已含验效 + 按键兜底，返回值即验效后最终结果。
@@ -384,20 +448,47 @@ object PrivilegedBridge {
      * 试常驻 daemon 段单次 input（失败不抛，只记文案供组合；成功含 ack 延迟）。
      * @return Triple(ok, err, latencyMs)：latencyMs 为发→ack 回包耗时（daemon 不可用时 -1）。
      */
+    /**
+     * 目标屏参数尾部编码（Phase C 全链 displayId 路由）。
+     * 全 0/负数时不追加，既有命令逐字不变（向下兼容）；有值时按 daemon/RootMain
+     * 约定的尾部顺序追加（tap/drag：displayId,width,height；key/text：displayId）。
+     */
+    private fun displayParams(
+        displayId: Int,
+        width: Int,
+        height: Int,
+        withSize: Boolean,
+    ): List<String> =
+        if (displayId > 0 || width > 0 || height > 0) {
+            if (withSize) {
+                listOf(displayId.toString(), width.toString(), height.toString())
+            } else {
+                listOf(displayId.toString())
+            }
+        } else {
+            emptyList()
+        }
+
     private suspend fun tryDaemonInput(
         packageName: String,
         subOp: String,
         params: List<String>,
     ): Triple<Boolean, String?, Long> = withContext(Dispatchers.IO) {
         try {
+            // 尾部可选 displayId/width/height 由 [displayParams] 决定，缺省即旧命令。
+            fun optInt(i: Int): Int = params.getOrNull(i)?.toIntOrNull() ?: 0
             val res = when (subOp) {
-                "tap" -> RootInputDaemon.tap(packageName, params[0].toFloat(), params[1].toFloat())
+                "tap" -> RootInputDaemon.tap(
+                    packageName, params[0].toFloat(), params[1].toFloat(),
+                    optInt(2), optInt(3), optInt(4),
+                )
                 "drag" -> RootInputDaemon.drag(
                     packageName,
                     params[0].toFloat(), params[1].toFloat(), params[2].toFloat(), params[3].toFloat(),
+                    optInt(4), optInt(5), optInt(6),
                 )
-                "key" -> RootInputDaemon.key(packageName, params[0].toInt())
-                "text" -> RootInputDaemon.text(packageName, params[0])
+                "key" -> RootInputDaemon.key(packageName, params[0].toInt(), optInt(1))
+                "text" -> RootInputDaemon.text(packageName, params[0], optInt(1))
                 else -> return@withContext Triple(false, "非法 input 子操作：$subOp", -1L)
             }
             Triple(res.first, res.second, res.third)
@@ -457,13 +548,29 @@ object PrivilegedBridge {
     }
 
     /**
-     * 特权轻点（Down+Up 原子；归一化坐标相对真实主屏）。
+     * 特权轻点（Down+Up 原子）。
+     * @param displayId 目标屏（<=0 = 物理主屏；>0 = 虚拟屏，**不回落主屏**）。
+     * @param width/height 目标屏尺寸；<=0 时由特权侧解析。
      * @return first=是否成功；second=失败明细（成功时 null）。
      */
-    suspend fun injectTap(packageName: String, x: Float, y: Float): Pair<Boolean, String?> =
-        injectRouted(packageName, "tap", listOf(x.toString(), y.toString())) {
+    suspend fun injectTap(
+        packageName: String,
+        x: Float,
+        y: Float,
+        displayId: Int = 0,
+        width: Int = 0,
+        height: Int = 0,
+    ): Pair<Boolean, String?> =
+        injectRouted(
+            packageName, "tap",
+            listOf(x.toString(), y.toString()) + displayParams(displayId, width, height, true),
+        ) {
             withPrivileged(packageName) { ops ->
-                val ok = ops.injectTap(x, y)
+                val ok = if (displayId > 0 || width > 0 || height > 0) {
+                    ops.injectTapOnDisplay(x, y, displayId, width, height)
+                } else {
+                    ops.injectTap(x, y)
+                }
                 ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
             }
         }
@@ -475,33 +582,50 @@ object PrivilegedBridge {
     suspend fun injectDrag(
         packageName: String,
         x0: Float, y0: Float, x1: Float, y1: Float,
+        displayId: Int = 0,
+        width: Int = 0,
+        height: Int = 0,
     ): Pair<Boolean, String?> =
-        injectRouted(packageName, "drag", listOf(x0.toString(), y0.toString(), x1.toString(), y1.toString())) {
+        injectRouted(
+            packageName, "drag",
+            listOf(x0.toString(), y0.toString(), x1.toString(), y1.toString()) +
+                displayParams(displayId, width, height, true),
+        ) {
             withPrivileged(packageName) { ops ->
-                val ok = ops.injectDrag(x0, y0, x1, y1)
+                val ok = if (displayId > 0 || width > 0 || height > 0) {
+                    ops.injectDragOnDisplay(x0, y0, x1, y1, displayId, width, height)
+                } else {
+                    ops.injectDrag(x0, y0, x1, y1)
+                }
                 ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
             }
         }
 
-    /** 特权完整按键 Down+Up（无状态）。@return 同 [injectTap]。 */
-    suspend fun injectKey(packageName: String, keyCode: Int): Pair<Boolean, String?> =
-        injectRouted(packageName, "key", listOf(keyCode.toString())) {
+    /** 特权完整按键 Down+Up（无状态；displayId 显式路由，键不再固定打主屏）。@return 同 [injectTap]。 */
+    suspend fun injectKey(packageName: String, keyCode: Int, displayId: Int = 0): Pair<Boolean, String?> =
+        injectRouted(
+            packageName, "key",
+            listOf(keyCode.toString()) + displayParams(displayId, 0, 0, false),
+        ) {
             withPrivileged(packageName) { ops ->
-                val ok = ops.injectKey(keyCode)
+                val ok = if (displayId > 0) ops.injectKeyOnDisplay(keyCode, displayId) else ops.injectKey(keyCode)
                 ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
             }
         }
 
     /** 特权文本注入（虚拟键盘映射；无状态）。@return 同 [injectTap]。 */
-    suspend fun injectText(packageName: String, text: String): Pair<Boolean, String?> {
+    suspend fun injectText(packageName: String, text: String, displayId: Int = 0): Pair<Boolean, String?> {
         val b64 = try {
             android.util.Base64.encodeToString(text.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
         } catch (_: Throwable) {
             ""
         }
-        return injectRouted(packageName, "text", listOf(b64)) {
+        return injectRouted(
+            packageName, "text",
+            listOf(b64) + displayParams(displayId, 0, 0, false),
+        ) {
             withPrivileged(packageName) { ops ->
-                val ok = ops.injectText(text)
+                val ok = if (displayId > 0) ops.injectTextOnDisplay(text, displayId) else ops.injectText(text)
                 ok to (if (!ok) runCatching { ops.inputError }.getOrNull() else null)
             }
         }
@@ -511,14 +635,22 @@ object PrivilegedBridge {
     // 实时跟手三件套（Smooth-1 · 常驻 daemon 直透，无单次/Shizuku 回退；
     // Shizuku 按次绑定无状态、无 AIDL down/move/up 编号，故 daemon 不可用时
     // 调用方（ControlWsRoute）回退 pending 缓存 + up 时原子 tap/drag）。
+    // Phase C：每条指令都显式带目标屏与尺寸，手势不会跨屏串味。
     // ------------------------------------------------------------------
 
     /** 实时按下（常驻 daemon down，跨指令保持手势；失败调用方回退批量）。 */
-    suspend fun injectDown(packageName: String, x: Float, y: Float): Pair<Boolean, String?> =
+    suspend fun injectDown(
+        packageName: String,
+        x: Float,
+        y: Float,
+        displayId: Int = 0,
+        width: Int = 0,
+        height: Int = 0,
+    ): Pair<Boolean, String?> =
         withContext(Dispatchers.IO) {
             try {
-                val (ok, err, latencyMs) = RootInputDaemon.down(packageName, x, y)
-                Log.d(TAG, "[PrivilegedBridge] ${tid()} injectDown ok=$ok latencyMs=$latencyMs err=${err?.take(200)}")
+                val (ok, err, latencyMs) = RootInputDaemon.down(packageName, x, y, displayId, width, height)
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} injectDown ok=$ok latencyMs=$latencyMs display=$displayId err=${err?.take(200)}")
                 if (ok) true to null else false to err
             } catch (t: Throwable) {
                 Log.e(TAG, "[PrivilegedBridge] ${tid()} injectDown threw", t)
@@ -527,12 +659,19 @@ object PrivilegedBridge {
         }
 
     /** 实时移动（常驻 daemon move 直透；失败调用方降级批量 + cancel 解卡）。 */
-    suspend fun injectMove(packageName: String, x: Float, y: Float): Pair<Boolean, String?> =
+    suspend fun injectMove(
+        packageName: String,
+        x: Float,
+        y: Float,
+        displayId: Int = 0,
+        width: Int = 0,
+        height: Int = 0,
+    ): Pair<Boolean, String?> =
         withContext(Dispatchers.IO) {
             try {
-                val (ok, err, _) = RootInputDaemon.move(packageName, x, y)
+                val (ok, err, _) = RootInputDaemon.move(packageName, x, y, displayId, width, height)
                 if (!ok) {
-                    Log.d(TAG, "[PrivilegedBridge] ${tid()} injectMove miss err=${err?.take(200)}")
+                    Log.d(TAG, "[PrivilegedBridge] ${tid()} injectMove miss display=$displayId err=${err?.take(200)}")
                 }
                 if (ok) true to null else false to err
             } catch (t: Throwable) {
@@ -542,11 +681,18 @@ object PrivilegedBridge {
         }
 
     /** 实时抬起（常驻 daemon up 结束手势）。 */
-    suspend fun injectUp(packageName: String, x: Float, y: Float): Pair<Boolean, String?> =
+    suspend fun injectUp(
+        packageName: String,
+        x: Float,
+        y: Float,
+        displayId: Int = 0,
+        width: Int = 0,
+        height: Int = 0,
+    ): Pair<Boolean, String?> =
         withContext(Dispatchers.IO) {
             try {
-                val (ok, err, latencyMs) = RootInputDaemon.up(packageName, x, y)
-                Log.d(TAG, "[PrivilegedBridge] ${tid()} injectUp ok=$ok latencyMs=$latencyMs err=${err?.take(200)}")
+                val (ok, err, latencyMs) = RootInputDaemon.up(packageName, x, y, displayId, width, height)
+                Log.d(TAG, "[PrivilegedBridge] ${tid()} injectUp ok=$ok latencyMs=$latencyMs display=$displayId err=${err?.take(200)}")
                 if (ok) true to null else false to err
             } catch (t: Throwable) {
                 Log.e(TAG, "[PrivilegedBridge] ${tid()} injectUp threw", t)
@@ -554,11 +700,15 @@ object PrivilegedBridge {
             }
         }
 
-    /** 解卡（常驻 daemon cancel，best-effort 恒 true；断连/降级时调）。 */
-    suspend fun cancelInput(): Pair<Boolean, String?> =
+    /**
+     * 解卡（常驻 daemon cancel，best-effort 恒 true；断连/降级/切源时调）。
+     * @param displayId 手势原目标屏：补的 Up 必须落在同一屏，否则会往物理主屏
+     *  补一发错屏 Up（切回镜像前尤其致命，故由调用方记住最后注入屏）。
+     */
+    suspend fun cancelInput(displayId: Int = 0): Pair<Boolean, String?> =
         withContext(Dispatchers.IO) {
             try {
-                RootInputDaemon.cancel()
+                RootInputDaemon.cancel(displayId)
             } catch (t: Throwable) {
                 Log.e(TAG, "[PrivilegedBridge] cancelInput threw", t)
                 true to null

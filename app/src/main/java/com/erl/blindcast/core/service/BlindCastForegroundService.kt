@@ -252,6 +252,109 @@ class BlindCastForegroundService : Service() {
             context.startService(intent)
         }
 
+        // ------------------------------------------------------------------
+        // Phase C 虚拟桌面源（Vdm-Desktop-1）
+        //
+        // 桌面源与物理镜像源**共用同一个** `abstract:blindcast_capture` LocalServerSocket
+        // （[CaptureSocketLink] 单服、单客户端）。因此桌面模式只起搬运服，
+        // 绝不拉物理镜像采集（Shizuku UserService / RootCaptureMain 常驻）——
+        // 两者同时起会互相顶掉客户端，桌面宿主连上却读不到帧。
+        // ------------------------------------------------------------------
+
+        /** 进入桌面源：只起搬运服，随后特权宿主 `FusionDesktopMain` 接入。 */
+        private const val ACTION_START_DESKTOP = "com.erl.blindcast.action.DESKTOP_START"
+
+        /** 退出桌面源：停搬运服，回落「端口在线 · 采集按需」。 */
+        private const val ACTION_STOP_DESKTOP = "com.erl.blindcast.action.DESKTOP_STOP"
+
+        /**
+         * 桌面源期望态（内存态）：true 时 [ensureCaptureStarted] 直接返回，
+         * 物理镜像采集一律不拉（理由见上）。
+         */
+        @Volatile
+        var desktopWanted: Boolean = false
+            private set
+
+        /**
+         * 桌面搬运服就绪时刻（ms；0 = 未就绪）。
+         * 实例内 ACTION_START_DESKTOP 起好 socket 后置位；[ensureDesktopSocket] 轮询它，
+         * 故「物理镜像本来就在跑」不会被误判成「桌面已就绪」。
+         */
+        @Volatile
+        private var desktopSocketReadyAt: Long = 0L
+
+        /**
+         * 进入桌面源并等搬运服**真正**就绪（阻塞，务必从 IO 线程调）。
+         *
+         * 顺序：落期望态 → 起服务（ACTION_START_DESKTOP 内先停物理镜像采集腾 socket，
+         * 再只起搬运服）→ 轮询 [desktopSocketReadyAt] 确认新服已监听。
+         * 返回 false 时调用方**必须按失败处理**（回落物理镜像并报错，不得静默成功）。
+         *
+         * @param timeoutMs 等待上限（默认 10s：含 1.5s root 常驻停服宽限 + 起服）
+         * @return true = 搬运服已在线，特权宿主此时接入才安全
+         */
+        fun ensureDesktopSocket(context: Context, timeoutMs: Long = 10_000L): Boolean {
+            val mark = System.currentTimeMillis()
+            desktopWanted = true
+            setHttpWanted(context, true)
+            setStreamWanted(context, true)
+            streamWanted = true
+            val intent = Intent(context, BlindCastForegroundService::class.java)
+                .setAction(ACTION_START_DESKTOP)
+            runCatching { ContextCompat.startForegroundService(context, intent) }
+            val deadline = mark + timeoutMs
+            while (System.currentTimeMillis() < deadline) {
+                if (desktopSocketReadyAt >= mark && CaptureSocketLink.isRunning) return true
+                try {
+                    Thread.sleep(150L)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
+                }
+            }
+            Log.w(TAG, "[DesktopRoute] ensureDesktopSocket timeout after ${timeoutMs}ms " +
+                "readyAt=$desktopSocketReadyAt linkRunning=${CaptureSocketLink.isRunning}")
+            return false
+        }
+
+        /** 退出桌面源：停搬运服（端口保持在线，采集回落按需）。幂等、不阻塞。 */
+        fun stopDesktop(context: Context) {
+            desktopWanted = false
+            desktopSocketReadyAt = 0L
+            val intent = Intent(context, BlindCastForegroundService::class.java)
+                .setAction(ACTION_STOP_DESKTOP)
+            // 必须用 startForegroundService 下发：后台 App 调 startService 会被后台启动限制
+            // 抛 IllegalStateException，被 runCatching 吞掉后表现为「关了但搬运服还挂着、
+            // 抽象名仍被占，下一次 on 直接 EADDRINUSE」——真机实证（16:49/16:51 两轮）。
+            val err = runCatching { ContextCompat.startForegroundService(context, intent) }.exceptionOrNull()
+            Log.i(TAG, "[DesktopRoute] stopDesktop dispatched err=${err?.javaClass?.simpleName ?: "none"}")
+        }
+
+        /**
+         * 退出桌面源并等搬运服**真正释放**（阻塞，IO 线程调）。
+         *
+         * 对外承诺「已切回物理镜像」必须有据：只看 ACTION 是否下发不算，
+         * 必须等到 `CaptureSocketLink` 不再监听（抽象名释放）。
+         *
+         * @return true = 搬运服已释放
+         */
+        fun stopDesktopBlocking(context: Context, timeoutMs: Long = 8_000L): Boolean {
+            stopDesktop(context)
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (System.currentTimeMillis() < deadline) {
+                if (!CaptureSocketLink.isRunning) return true
+                try {
+                    Thread.sleep(120L)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return !CaptureSocketLink.isRunning
+                }
+            }
+            Log.w(TAG, "[DesktopRoute] stopDesktopBlocking timeout ${timeoutMs}ms " +
+                "linkRunning=${CaptureSocketLink.isRunning}")
+            return !CaptureSocketLink.isRunning
+        }
+
         private fun readStreamWanted(context: Context): Boolean = runCatching {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getBoolean(KEY_STREAM_ENABLED, false)
@@ -465,6 +568,83 @@ class BlindCastForegroundService : Service() {
                 // 只停串流：端口保持在线（异步停，不卡主线程）。
                 streamWanted = false
                 setStreamWanted(this, false)
+                return try {
+                    stopCaptureAsync()
+                    _status.value = snapshot()
+                    START_STICKY
+                } catch (se: SecurityException) {
+                    recordError(se)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                } catch (t: Exception) {
+                    recordError(t)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                }
+            }
+            ACTION_START_DESKTOP -> {
+                // Phase C：桌面源——只起搬运服，不拉物理镜像采集（两者共用同一 socket）。
+                setHttpWanted(this, true)
+                setStreamWanted(this, true)
+                streamWanted = true
+                desktopWanted = true
+                return try {
+                    ensureServerStarted()
+                    if (desktopSocketReadyAt > 0L && CaptureSocketLink.isRunning) {
+                        // 已在桌面源：幂等，不重启 socket（重启会踢掉正在推流的桌面宿主）。
+                        Log.i(TAG, "[DesktopRoute] already in desktop source, no-op")
+                        desktopSocketReadyAt = System.currentTimeMillis()
+                    } else {
+                        // 先停物理镜像采集腾出 socket（root 常驻停服含宽限，丢后台做），
+                        // 再只起搬运服；就绪后置 desktopSocketReadyAt 供 ensureDesktopSocket 轮询。
+                        captureGen.incrementAndGet()
+                        captureJob?.cancel()
+                        captureJob = null
+                        captureActive = false
+                        desktopSocketReadyAt = 0L
+                        scope.launch {
+                            runCatching { stopPrivilegedCapture() }
+                            // 等旧监听真正释放再绑（同抽象名单实例：stop 与 start 跨线程竞态
+                            // 会直接 EADDRINUSE，真机实证 16:49 那轮）。
+                            val t0 = System.currentTimeMillis()
+                            while (CaptureSocketLink.isRunning && System.currentTimeMillis() - t0 < 5_000L) {
+                                runCatching { Thread.sleep(100L) }
+                            }
+                            val dc = com.erl.blindcast.core.priv.DesktopController
+                            val vw = dc.DEFAULT_WIDTH
+                            val vh = dc.DEFAULT_HEIGHT
+                            val ok = runCatching {
+                                CaptureSocketLink.start(vw, vh, dc.DEFAULT_BITRATE, dc.DEFAULT_FPS)
+                            }.getOrDefault(false)
+                            if (ok) {
+                                desktopSocketReadyAt = System.currentTimeMillis()
+                                lastSessionSeenAt = System.currentTimeMillis()
+                                Log.i(TAG, "[DesktopRoute] socket-only ready ${vw}x${vh} mirrorCapture=off")
+                            } else {
+                                Log.e(TAG, "[DesktopRoute] socket-only start failed " +
+                                    "err=${CaptureSocketLink.errorMessage()}")
+                            }
+                            runCatching { _status.value = snapshot() }
+                        }
+                    }
+                    ensureInputDaemon()
+                    syncKeeper()
+                    _status.value = snapshot()
+                    START_STICKY
+                } catch (se: SecurityException) {
+                    recordError(se)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                } catch (t: Exception) {
+                    recordError(t)
+                    runCatching { stopSelf() }
+                    START_NOT_STICKY
+                }
+            }
+            ACTION_STOP_DESKTOP -> {
+                // 退出桌面源：停搬运服，端口保持在线（采集回落按需）。
+                desktopWanted = false
+                desktopSocketReadyAt = 0L
                 return try {
                     stopCaptureAsync()
                     _status.value = snapshot()
@@ -808,11 +988,36 @@ class BlindCastForegroundService : Service() {
      * 显式停（[ACTION_STOP_STREAM]）仍走原路径，本回收只覆盖「没人看」这一种。
      * 这里不做自动重开——重开是接入方的事（[requestCapture] / 控制台唤醒），
      * 否则会跟控制台的「停止投屏」打架。
+     *
+     * Phase C 桌面源同理但多一步：虚拟屏与 VDM 设备活在特权宿主进程里，
+     * 只关搬运服会让宿主对着死 socket 白写，故先 [DesktopController.off] 让宿主
+     * **自拆屏 + 关设备 + 清自己的关联**，再收搬运服；下一次接入自动重新拉起。
      */
     private fun recycleIdleCapture() {
         val now = System.currentTimeMillis()
         if (StreamWsRoute.sessionCount > 0) {
             lastSessionSeenAt = now
+            return
+        }
+        if (desktopWanted) {
+            if (desktopSocketReadyAt == 0L) return
+            val idleMs = now - lastSessionSeenAt
+            if (idleMs < IDLE_STOP_MS) return
+            Log.i(TAG, "[CaptureRoute] desktop idle ${idleMs}ms without stream client, recycle desktop")
+            desktopSocketReadyAt = 0L
+            desktopWanted = false
+            scope.launch {
+                runCatching { com.erl.blindcast.core.priv.DesktopController.off(packageName) }
+                runCatching { stopPrivilegedCapture() }
+                runCatching { _status.value = snapshot() }
+                // 回收窗口内若还有人在看：立刻回落物理镜像，保证「切回镜像」不是空屏。
+                if (streamWanted && StreamWsRoute.sessionCount > 0) {
+                    Log.i(TAG, "[CaptureRoute] session present after desktop recycle, fall back to mirror")
+                    runCatching { ensureCaptureStarted() }
+                } else {
+                    Log.i(TAG, "[CaptureRoute] desktop recycled, next access falls back to mirror")
+                }
+            }
             return
         }
         // 采集可能不是本实例起的（服务重建时残留的 root 常驻 daemon），故用链路实际态判据。
@@ -827,9 +1032,17 @@ class BlindCastForegroundService : Service() {
      * 起串流采集（主线程调用，幂等）。
      * [captureActive]/链路运行中重复进入直接返回，避免同代际双任务抢绑；
      * 停串流由 [captureGen] 自增 + [stopPrivilegedCapture] 使旧任务自弃。
+     *
+     * 桌面源（[desktopWanted]）下**必须**直接返回：物理镜像采集与桌面宿主共用同一个
+     * `blindcast_capture` socket，这里若照常起镜像采集会把桌面客户端的连接顶掉。
+     * 桌面搬运服由 [ACTION_START_DESKTOP] 单独拉起。
      */
     private fun ensureCaptureStarted() {
         lastSessionSeenAt = System.currentTimeMillis()
+        if (desktopWanted) {
+            Log.i(TAG, "[CaptureRoute] desktop source active, skip physical mirror capture")
+            return
+        }
         if (CaptureSocketLink.isRunning && CaptureSocketLink.hasVideo) {
             Log.i(TAG, "[CaptureRoute] ensureCapture skipped (already streaming)")
             return

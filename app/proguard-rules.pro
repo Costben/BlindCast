@@ -23,3 +23,6 @@
     public static void main(java.lang.String[]);
 }
 -keep class com.erl.blindcast.core.priv.RootInputDaemon { *; }
+# Vdm-Probe-1：Phase C 探针反射访问 android.companion.virtual.* 隐藏成员，R8 下保留，
+# 避免字段/方法名被改导致反射寻址失败（RootMain/PrivilegedUserService 均已整类 keep）。
+-keep class com.erl.blindcast.core.priv.VirtualDeviceProbe { *; }

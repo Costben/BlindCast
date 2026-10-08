@@ -2,6 +2,7 @@ package com.erl.blindcast.core.server.routes
 
 import android.util.Log
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
+import com.erl.blindcast.core.scrcpy.CaptureSocketLink
 import com.erl.blindcast.core.scrcpy.JpegTranscoder
 import com.erl.blindcast.core.scrcpy.ScreenCaptureEngine
 import java.net.SocketTimeoutException
@@ -57,7 +58,29 @@ object StreamWsRoute {
     /** 零会话时空转步长 50ms（采集侧 Channel 自带 64/128 缓冲丢最旧，不堆积）。 */
     private const val NO_SESSION_IDLE_MS = 50L
 
-    private val sessions = CopyOnWriteArraySet<WsConnection>()
+    /**
+     * 推流会话：包一层 [WsConnection] 记「视频是否已起头」。
+     * 半路接入的客户端若先收到 P 帧，WebCodecs `VideoDecoder` 未 configure 会直接报错，
+     * 画面恒黑（真机实证：控制台 ● 已连接、streamClients=2、canvas 采样全 0）。
+     * 故每条会话的视频必须从关键帧（内联 SPS/PPS 的 IDR）开始。
+     */
+    private class Session(val conn: WsConnection) {
+        @Volatile
+        var videoPrimed: Boolean = false
+    }
+
+    private val sessions = CopyOnWriteArraySet<Session>()
+
+    /**
+     * 最近一个关键帧视频包（内联 SPS/PPS 的 IDR）+ 其所属尺寸。
+     * 用途：新会话接入时补发一次，保证「首包即 IDR」——桌面源在客户端连上之前
+     * 就已开编，客户端必然错过开局那个 IDR。
+     */
+    @Volatile
+    private var lastKeyFrame: ByteArray? = null
+
+    @Volatile
+    private var lastKeyFrameSize: String = ""
 
     @Volatile
     private var pumpRunning = false
@@ -86,7 +109,8 @@ object StreamWsRoute {
         // 0→1：有人接入才需要采集（开关下线后的按需语义，收尾见 BlindCastForegroundService.recycleIdleCapture）。
         // 并发下可能重复触发，requestCapture 幂等，无害。
         if (sessions.isEmpty()) runCatching { onFirstSession?.invoke() }
-        sessions.add(conn)
+        val session = Session(conn)
+        sessions.add(session)
         try {
             ensurePump()
             try {
@@ -105,7 +129,7 @@ object StreamWsRoute {
                 }
             }
         } finally {
-            sessions.remove(conn)
+            sessions.remove(session)
             runCatching { conn.close() }
         }
     }
@@ -119,7 +143,7 @@ object StreamWsRoute {
             videoPump = null
             audioPump = null
         }
-        for (s in sessions) runCatching { s.close(1001, "server stopping") }
+        for (s in sessions) runCatching { s.conn.close(1001, "server stopping") }
         sessions.clear()
     }
 
@@ -148,7 +172,12 @@ object StreamWsRoute {
                 sleep(POLL_IDLE_MS)
                 continue
             }
-            broadcast(KIND_VIDEO, pkt.payload)
+            if (pkt.isKeyFrame) {
+                // 只缓存一个关键帧（含内联 SPS/PPS 的 IDR），供后来者补发。
+                lastKeyFrameSize = currentSizeTag()
+                lastKeyFrame = pkt.payload
+            }
+            broadcast(KIND_VIDEO, pkt.payload, pkt.isKeyFrame)
         }
     }
 
@@ -167,15 +196,40 @@ object StreamWsRoute {
         }
     }
 
-    private fun broadcast(kind: Byte, payload: ByteArray) {
+    /** 当前采集尺寸标签（"WxH"；停采为 "-1x-1"）——缓存关键帧按它判是否过期。 */
+    private fun currentSizeTag(): String =
+        "${CaptureSocketLink.currentWidth}x${CaptureSocketLink.currentHeight}"
+
+    /** 缓存关键帧，尺寸不符（换源/换分辨率）一律不补，避免过期 SPS 把解码器带偏。 */
+    private fun cachedKeyFrame(): ByteArray? {
+        val kf = lastKeyFrame ?: return null
+        return if (lastKeyFrameSize == currentSizeTag()) kf else null
+    }
+
+    /**
+     * 广播一帧。
+     *
+     * 视频会话**必须从关键帧起头**：未起头的会话先补发缓存关键帧（或当前这帧本身就是
+     * 关键帧），补发成功后才开始收后续帧；缓存缺失就本帧跳过、等下一个关键帧——
+     * 宁可不发，也不让 P 帧先到（P 帧先到 = 解码器未 configure = 画面恒黑）。
+     */
+    private fun broadcast(kind: Byte, payload: ByteArray, isKeyFrame: Boolean = false) {
         if (payload.isEmpty()) return
         for (s in sessions) {
             try {
-                s.sendBinaryWithPrefix(kind, payload)
+                if (kind == KIND_VIDEO && !s.videoPrimed) {
+                    val prime: ByteArray? = if (isKeyFrame) payload else cachedKeyFrame()
+                    if (prime == null) continue
+                    s.conn.sendBinaryWithPrefix(KIND_VIDEO, prime)
+                    s.videoPrimed = true
+                    if (prime !== payload) s.conn.sendBinaryWithPrefix(KIND_VIDEO, payload)
+                    continue
+                }
+                s.conn.sendBinaryWithPrefix(kind, payload)
             } catch (t: Exception) {
                 sessions.remove(s)
-                runCatching { s.close() }
-                Log.d(TAG, "drop dead session ${s.remoteAddress}: ${t.message}")
+                runCatching { s.conn.close() }
+                Log.d(TAG, "drop dead session ${s.conn.remoteAddress}: ${t.message}")
             }
         }
     }

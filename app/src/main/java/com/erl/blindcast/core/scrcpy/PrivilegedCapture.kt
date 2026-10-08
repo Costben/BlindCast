@@ -19,6 +19,7 @@ import android.os.IBinder
 import android.util.Log
 import android.view.Surface
 import com.erl.blindcast.BuildConfig
+import com.erl.blindcast.core.priv.VirtualDesktopSession
 import java.io.BufferedOutputStream
 import java.io.OutputStream
 import java.lang.reflect.Proxy
@@ -186,6 +187,84 @@ object PrivilegedCapture {
     private var audioDrainThread: Thread? = null
 
     private val stopped = AtomicBoolean(true)
+
+    // ------------------------------------------------------------------
+    // Phase C 虚拟桌面源（Vdm-Source-1）
+    // ------------------------------------------------------------------
+    /**
+     * 桌面源模式（true 时 [startVideoEncoderLockedEx] 不建镜像屏，改为经
+     * [VirtualDesktopSession] 建 VDM 虚拟屏并把编码器 inputSurface 挂上去）。
+     *
+     * **进程约束**：`VirtualDesktopSession` 是进程内单例，故桌面源必须在
+     * **与建设备同一个特权进程**内跑（[RootCaptureMain] / `su 2000` 派生的
+     * `FusionDesktopMain` 常驻进程），绝不跨进程引用。
+     */
+    @Volatile
+    private var desktopSource = false
+
+    /** 桌面源参数（仅 [desktopSource]=true 时有意义）。 */
+    @Volatile
+    private var desktopAssocId = -1
+
+    @Volatile
+    private var desktopDisplayName = "BlindCastDesktop"
+
+    @Volatile
+    private var desktopDensityDpi = 320
+
+    @Volatile
+    private var desktopFlags = 0
+
+    @Volatile
+    private var desktopHome: android.content.ComponentName? = null
+
+    /** 桌面源是否在跑（供宿主/探针读）。 */
+    @Volatile
+    var desktopRunning: Boolean = false
+        private set
+
+    /**
+     * 以「VDM 虚拟桌面」为采集源启动（Phase C 主路径）。
+     *
+     * 与 [start] 的唯一差别：不建物理镜像屏，而是建设备 + 虚拟屏，编码器 output 仍走
+     * 同一 socket（H264 AnnexB + AAC、`/ws/stream` 协议**完全不变**）。
+     *
+     * @param associationId App 侧 root 建好的自管理关联 id（>0）。
+     */
+    @Synchronized
+    fun startDesktop(
+        width: Int, height: Int, bitrate: Int, fps: Int,
+        associationId: Int,
+        displayName: String = "BlindCastDesktop",
+        densityDpi: Int = 320,
+        flags: Int = 0,
+        home: android.content.ComponentName? = null,
+        socketName: String = SOCKET_NAME,
+    ): Boolean {
+        if (associationId <= 0) {
+            lastError = IllegalArgumentException("startDesktop: associationId=$associationId 非法")
+            return false
+        }
+        desktopSource = true
+        desktopAssocId = associationId
+        desktopDisplayName = displayName
+        desktopDensityDpi = densityDpi
+        desktopFlags = flags
+        desktopHome = home
+        val ok = startInternal(width, height, bitrate, fps, socketName)
+        if (!ok) {
+            desktopSource = false
+            desktopRunning = false
+        } else {
+            desktopRunning = true
+        }
+        Log.i(TAG, "[PrivilegedCapture] startDesktop ok=$ok assocId=$associationId " +
+            "display=${VirtualDesktopSession.displayId} route=${displayRoute}")
+        return ok
+    }
+
+    /** 当前采集源：`virtualDisplay`（VDM 虚拟屏）或 `mirror`（物理镜像）。 */
+    val sourceName: String get() = if (desktopSource) "virtualDisplay" else "mirror"
 
     // ------------------------------------------------------------------
     // 对外入口
@@ -587,6 +666,41 @@ object PrivilegedCapture {
         // ② SurfaceControl.createDisplay scrcpy 路线（SDK36 已删，保留逐个试）。
         var globalHandle: GlobalDisplayHandle? = null
         var globalErr: Throwable? = null
+        // Phase C 桌面源：直接把编码器 inputSurface 挂到 VDM 虚拟屏（不建镜像屏）。
+        if (desktopSource) {
+            val ok = VirtualDesktopSession.start(
+                associationId = desktopAssocId,
+                name = desktopDisplayName,
+                width = width,
+                height = height,
+                densityDpi = desktopDensityDpi,
+                flags = desktopFlags,
+                home = desktopHome,
+                ime = null,
+                surface = surface,
+            )
+            if (!ok) {
+                runCatching { surface.release() }
+                videoSurface = null
+                runCatching { encoder.release() }
+                throw IllegalStateException("VDM 虚拟桌面建屏失败：${VirtualDesktopSession.lastError}")
+            }
+            displayRoute = "VdmDesktop"
+            Log.i(TAG, "[PrivilegedCapture] display route=VdmDesktop ok ${width}x${height} " +
+                "displayId=${VirtualDesktopSession.displayId} deviceId=${VirtualDesktopSession.deviceId}")
+            videoCodec = encoder
+            encoder.start()
+            cachedSps = null
+            cachedPps = null
+            firstKeyFrameEmitted = false
+            spsMissingWarned = false
+            videoRunning = true
+            val t = Thread(::videoDrainLoop, "BlindCast-PrivVideo")
+            t.isDaemon = true
+            videoDrain = t
+            t.start()
+            return
+        }
         try {
             globalHandle = createVirtualDisplayViaGlobalEx(surface, width, height, fps, mirrorDisplay, refreshRate, wmMirror)
         } catch (t: Throwable) {
@@ -654,6 +768,14 @@ object PrivilegedCapture {
 
     private fun releaseVideoLocked() {
         videoRunning = false
+        // Phase C 桌面源：拆虚拟屏 + 关设备（同进程内，直接调）。
+        if (desktopSource) {
+            desktopSource = false
+            desktopRunning = false
+            desktopAssocId = -1
+            runCatching { VirtualDesktopSession.stop() }
+            Log.d(TAG, "[PrivilegedCapture] desktop session stopped route=$displayRoute")
+        }
         // Smooth-1 DisplayGlobal 路由：经 releaseVirtualDisplay 释放（callback 原样回传）。
         val gcb = globalDisplayCallback
         globalDisplayCallback = null

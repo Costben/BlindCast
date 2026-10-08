@@ -140,6 +140,15 @@ footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,23
 .wp-box p{margin:0 0 14px;font-size:13px;line-height:1.8}
 .wp-box .row{display:flex;gap:10px}
 .wp-box .row .wp-btn{flex:1;height:34px;font-size:13px}
+/* ---- 副屏任务切换浮层 ---- */
+#deskTaskMenu{position:absolute;bottom:68px;left:50%;transform:translateX(-50%);z-index:7;min-width:220px;max-width:320px;padding:8px;border-radius:12px;border:1px solid var(--line);background:rgba(20,24,33,.96);backdrop-filter:blur(14px);box-shadow:0 12px 40px rgba(0,0,0,.6)}
+#deskTaskMenu.hide{display:none}
+#deskTaskMenu .dt-title{font-size:11px;color:var(--dim);margin:2px 8px 6px;display:flex;justify-content:space-between;align-items:center}
+#deskTaskMenu .dt-list{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
+#deskTaskMenu .dt-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:transparent;color:var(--fg);font-size:12px;cursor:pointer;border:0;width:100%;text-align:left}
+#deskTaskMenu .dt-item:hover{background:rgba(255,255,255,.08)}
+#deskTaskMenu .dt-item.active{color:var(--neon);font-weight:700;background:rgba(52,211,153,.12)}
+#deskTaskMenu .dt-tag{margin-left:auto;font-size:10px;color:var(--dim);font-family:var(--mono)}
 </style>
 </head>
 <body>
@@ -147,6 +156,7 @@ footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,23
   <div class="logo"><b>BlindCast</b> <span class="sub" style="color:var(--dim);font-weight:400">隐播控制台</span></div>
   <div class="pills">
     <span class="pill" id="pillConn">○ 未连接</span>
+    <span class="pill" id="pillDesk" title="点击切换独立桌面 / 手机镜像" style="cursor:pointer">🖥 手机镜像</span>
     <span class="pill" id="pillFps">FPS --</span>
     <span class="pill" id="pillLat">延迟 --</span>
     <span class="pill" id="pillBat">电量 --</span>
@@ -188,8 +198,12 @@ footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,23
 
   <div id="dock">
     <button id="btnBack" title="返回 (Back)"><i>◀</i><span>返回</span></button>
-    <button id="btnHome" title="桌面 (Home)"><i>●</i><span>桌面</span></button>
+    <button id="btnHome" title="手机物理主屏 (Home)"><i>●</i><span>主屏</span></button>
     <button id="btnRecents" title="最近任务 (Recents)"><i>■</i><span>最近任务</span></button>
+    <span class="sep"></span>
+    <button id="btnDesktop" title="切换独立桌面 / 手机镜像"><i>🖥</i><span>独立桌面</span></button>
+    <button id="btnDeskHome" title="返回独立桌面主页" style="display:none"><i>🏠</i><span>桌面主页</span></button>
+    <button id="btnDeskTasks" title="副屏已开任务快速切换" style="display:none"><i>📋</i><span>已开任务</span></button>
     <span class="sep"></span>
     <button id="btnVolDown" title="音量 -"><i>🔉</i><span>音量-</span></button>
     <button id="btnVolUp" title="音量 +"><i>🔊</i><span>音量+</span></button>
@@ -243,6 +257,19 @@ footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,23
         <button class="btn" id="btnStreamOn" style="display:none">开启投屏</button>
       </div>
       <p style="font-size:11px">WebCodecs 硬解 · WebSocket 推流 · 零外部依赖</p>
+    </div>
+  </div>
+
+  <!-- 桌面任务管理浮层 (Phase C) -->
+  <div class="overlay hide" id="tasksOverlay">
+    <div class="card" style="max-width:440px">
+      <h1><b>副屏已开任务</b> · 独立桌面</h1>
+      <p id="tasksSub" style="font-size:12px;color:var(--muted);margin-bottom:12px"><span class="dot"></span>点击直接切回已有实例，避免重复开启</p>
+      <div id="tasksList" style="max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
+      <div class="row">
+        <button class="btn ghost" id="btnRefreshTasks">刷新</button>
+        <button class="btn" id="btnCloseTasks">关闭</button>
+      </div>
     </div>
   </div>
 </div>
@@ -375,6 +402,7 @@ const S = {
   fpsCount: 0, lastLat: -1, lastStatus: null,
   audioEnabled: true, dragging: false, lastMoveTs: 0, textBuf: "", textTimer: 0,
   videoMode: (typeof VideoDecoder === "undefined" ? "jpeg" : "h264"), jpegBusy: false,
+  desktop: null,
 };
 function setConn(on) {
   S.connected = on;
@@ -731,9 +759,211 @@ async function pollStatus() {
       }
     }
     if (typeof j.audioEnabled === "boolean" && j.audioEnabled !== S.audioEnabled) setAudioUI(j.audioEnabled);
+    pollDesktop();
   } catch (e) {}
 }
 function startStatusPoll() { if (!statusTimer) statusTimer = setInterval(pollStatus, 5000); }
+
+/* ---------------- Phase C: Fusion 独立虚拟桌面 ---------------- */
+async function queryDesktop() {
+  try {
+    const r = await fetch(apiUrl("api/desktop"), { cache: "no-store" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+function updateDesktopUI(info) {
+  if (!info) return;
+  S.desktop = info;
+  const isDesk = (info.mode === "desktop" && info.running === true);
+  const pill = $("pillDesk");
+  if (pill) {
+    if (info.error) {
+      pill.textContent = "🖥 " + (isDesk ? "桌面" : "镜像") + " (异常)";
+      pill.className = "pill bad";
+      pill.title = "桌面错误: " + info.error + (info.displayId > 0 ? " (D" + info.displayId + ")" : "");
+    } else if (isDesk) {
+      const dId = info.displayId > 0 ? info.displayId : "?";
+      pill.textContent = "🖥 桌面 D" + dId;
+      pill.className = "pill ok";
+      pill.title = "Fusion 独立桌面运行中 (Display " + dId + ", Device " + (info.deviceId != null ? info.deviceId : "-") + ")，点击切换镜像";
+    } else {
+      pill.textContent = "🖥 镜像";
+      pill.className = "pill";
+      pill.title = "当前为物理屏镜像模式，点击切换 Fusion 独立桌面";
+    }
+  }
+
+  const btnDesk = $("btnDesktop");
+  if (btnDesk) {
+    if (isDesk) {
+      btnDesk.classList.add("on");
+      btnDesk.title = "当前为独立桌面 (Display " + info.displayId + ")，点击切回物理屏镜像";
+    } else {
+      btnDesk.classList.remove("on");
+      btnDesk.title = "当前为物理屏镜像，点击开启 Fusion 独立桌面";
+    }
+  }
+
+  const btnDeskHome = $("btnDeskHome");
+  if (btnDeskHome) {
+    btnDeskHome.style.display = isDesk ? "" : "none";
+  }
+
+  const btnDeskTasks = $("btnDeskTasks");
+  if (btnDeskTasks) {
+    btnDeskTasks.style.display = isDesk ? "" : "none";
+  }
+
+  const footStat = $("footStat");
+  if (footStat) {
+    const modeTag = isDesk ? "Fusion桌面[D" + info.displayId + "]" : "物理镜像";
+    const errTag = info.error ? " · 异常: " + info.error : "";
+    footStat.textContent = " BlindCast WebConsole · " + modeTag + errTag + " · single-file · no CDN ·";
+  }
+}
+
+async function pollDesktop() {
+  const info = await queryDesktop();
+  if (info) updateDesktopUI(info);
+}
+
+async function toggleDesktop() {
+  const btn = $("btnDesktop");
+  if (btn) btn.disabled = true;
+  try {
+    toast("正在切换桌面模式…");
+    const r = await fetch(apiUrl("api/desktop"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "toggle" }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok !== false) {
+      const isDesk = (j.mode === "desktop" && j.running === true);
+      toast(isDesk ? "🖥 已开启 Fusion 独立桌面 (D" + j.displayId + ")" : "📱 已切回物理屏镜像");
+      updateDesktopUI(j);
+    } else {
+      toast("桌面切换失败: " + (j.error || r.status));
+      if (j) updateDesktopUI(j);
+    }
+    setTimeout(pollDesktop, 800);
+    setTimeout(pollDesktop, 1800);
+    setTimeout(pollDesktop, 3200);
+  } catch (e) {
+    toast("桌面切换请求失败");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function triggerDeskHome() {
+  const btn = $("btnDeskHome");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(apiUrl("api/desktop"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "home" }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok !== false) {
+      toast("🏠 已拉起副屏桌面主页 (FusionHome)");
+      updateDesktopUI(j);
+    } else {
+      toast("拉起副屏主页失败: " + (j.error || "未在桌面运行"));
+    }
+  } catch (e) {
+    toast("请求副屏主页失败");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/* ---------------- Phase C: 虚拟副屏任务管理与复用 ---------------- */
+async function fetchDeskTasks() {
+  try {
+    const r = await fetch(apiUrl("api/desktop/tasks"), { cache: "no-store" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+async function switchDeskTask(taskId) {
+  try {
+    toast("正在切回任务 #" + taskId + "…");
+    const r = await fetch(apiUrl("api/desktop/tasks"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "switch", taskId: taskId })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok !== false) {
+      toast("✔ 已切回副屏任务 #" + taskId);
+      const ov = $("tasksOverlay");
+      if (ov) ov.classList.add("hide");
+    } else {
+      toast("任务切换被拦截: " + (j.error || r.status));
+    }
+  } catch (e) {
+    toast("任务切换请求失败");
+  }
+}
+
+async function showDeskTasksModal() {
+  const overlay = $("tasksOverlay");
+  const listEl = $("tasksList");
+  if (!overlay || !listEl) return;
+  overlay.classList.remove("hide");
+  listEl.innerHTML = '<div style="color:var(--muted);text-align:center;padding:16px">正在加载副屏已开应用…</div>';
+
+  const res = await fetchDeskTasks();
+  if (!res || !res.ok) {
+    listEl.innerHTML = '<div style="color:var(--danger);text-align:center;padding:16px">' + ((res && res.error) || "获取失败：桌面未运行") + '</div>';
+    return;
+  }
+
+  const tasks = res.tasks || [];
+  if (tasks.length === 0) {
+    listEl.innerHTML = '<div style="color:var(--muted);text-align:center;padding:16px">副屏暂无已开应用</div>';
+    return;
+  }
+
+  listEl.innerHTML = "";
+  for (const t of tasks) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--card-bg, #1e2129);border-radius:8px;cursor:pointer;border:1px solid rgba(255,255,255,0.08)";
+    row.onmouseenter = () => row.style.borderColor = "var(--primary, #3b82f6)";
+    row.onmouseleave = () => row.style.borderColor = "rgba(255,255,255,0.08)";
+    row.onclick = () => switchDeskTask(t.taskId);
+
+    const left = document.createElement("div");
+    left.style.cssText = "display:flex;flex-direction:column;gap:2px;overflow:hidden";
+    const name = document.createElement("div");
+    name.style.cssText = "font-weight:600;font-size:13px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    name.textContent = t.packageName.split(".").pop() || t.packageName;
+    const detail = document.createElement("div");
+    detail.style.cssText = "font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    detail.textContent = t.packageName + " (Task #" + t.taskId + ")";
+    left.appendChild(name);
+    left.appendChild(detail);
+
+    const right = document.createElement("div");
+    right.style.cssText = "display:flex;align-items:center;gap:6px";
+    if (t.isTop) {
+      const topBadge = document.createElement("span");
+      topBadge.style.cssText = "font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(59,130,246,0.2);color:#60a5fa";
+      topBadge.textContent = "前台";
+      right.appendChild(topBadge);
+    }
+    const actBtn = document.createElement("span");
+    actBtn.style.cssText = "font-size:12px;color:var(--primary, #3b82f6)";
+    actBtn.textContent = "切回 ▶";
+    right.appendChild(actBtn);
+
+    row.appendChild(left);
+    row.appendChild(right);
+    listEl.appendChild(row);
+  }
+}
 
 /* FPS 统计 */
 setInterval(() => {
@@ -883,6 +1113,12 @@ async function toggleStream() {
 $("btnBack").onclick = () => sendCtl({ type: "click", button: "right" });
 $("btnHome").onclick = () => sendCtl({ type: "click", button: "middle" });
 $("btnRecents").onclick = () => sendCtl({ type: "key", keycode: 187 });
+$("btnDesktop").onclick = toggleDesktop;
+$("btnDeskHome").onclick = triggerDeskHome;
+$("btnDeskTasks").onclick = showDeskTasksModal;
+$("btnCloseTasks").onclick = () => $("tasksOverlay").classList.add("hide");
+$("btnRefreshTasks").onclick = showDeskTasksModal;
+$("pillDesk").onclick = toggleDesktop;
 $("btnVolUp").onclick = () => sendCtl({ type: "key", keycode: 24 });
 $("btnVolDown").onclick = () => sendCtl({ type: "key", keycode: 25 });
 $("btnMute").onclick = () => { const next = !S.audioEnabled; if (sendCtl({ type: "audio", enabled: next })) setAudioUI(next); else toast("控制通道未连接"); };

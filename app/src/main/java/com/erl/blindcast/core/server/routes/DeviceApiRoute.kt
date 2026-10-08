@@ -5,16 +5,24 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.display.DisplayManager
 import android.os.BatteryManager
+import android.util.Log
 import android.view.Display
 import com.erl.blindcast.BuildConfig
 import com.erl.blindcast.blindCastApp
 import com.erl.blindcast.core.blackout.PowerController
+import com.erl.blindcast.core.priv.PrivilegedBridge
+import com.erl.blindcast.core.priv.RootExecutor
+import com.erl.blindcast.core.priv.VirtualDeviceAssociation
+import com.erl.blindcast.core.priv.DesktopController
+import com.erl.blindcast.core.priv.DesktopTaskController
+import com.erl.blindcast.core.priv.VirtualDeviceBridge
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
 import com.erl.blindcast.core.scrcpy.AudioGate
 import com.erl.blindcast.core.scrcpy.CaptureSocketLink
 import com.erl.blindcast.core.scrcpy.ScreenCaptureEngine
 import com.erl.blindcast.core.server.auth.TokenAuthenticator
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -216,6 +224,337 @@ object DeviceApiRoute {
         "off", "stop", "false" -> false
         "toggle" -> !isStreamingNow()
         else -> null
+    }
+
+    /**
+     * Phase C 最小探针（Vdm-Probe-1 · 需鉴权）：`GET /api/probe/vd`。
+     *
+     * 在 root（`app_process` 单次）、shell（root→`su 2000` 派生子进程）、Shizuku
+     * （UserService，未运行/未授权时如实记明）三个身份各跑一次
+     * [com.erl.blindcast.core.priv.VirtualDeviceProbe]，返回逐步报文。
+     *
+     * shell 段需在**临时自管理关联**下进行：经
+     * [com.erl.blindcast.core.priv.VirtualDeviceAssociation] `ensure()` 建立只属自己的
+     * `FA:CE:FE:ED:BC:01` 关联，跑完立即 `release()`（只删自己那一条，不动他人关联）。
+     * root 段不建关联（root 身份与 `com.android.shell` 关联不匹配，注定被拒，如实记录）。
+     *
+     * 返回 `{"ok":true,"pkg","apkPath","shizukuState","rootOk","root","shellOk","shell",
+     * "assocOwnId","assocStateAfter"}`。
+     * 连接线程上 `runBlocking`（同 [handleScreen] 熄屏路径的先例），root 冷起通常 1-2s。
+     */
+    fun handleVdProbe(): Pair<Int, String> {
+        val ctx = appContextOverride ?: runCatching { blindCastApp.applicationContext }.getOrNull()
+        val pkg = ctx?.packageName ?: BuildConfig.APPLICATION_ID
+        val apkPath = runCatching { PowerController.resolveApkPath(pkg) }.getOrNull()
+
+        val rootOk: Boolean
+        val rootReport: String
+        if (apkPath.isNullOrBlank()) {
+            rootOk = false
+            rootReport = "root: skip（resolveApkPath 失败）"
+        } else {
+            val r = runCatching { runBlocking { RootExecutor.runAsRootVdProbe(pkg, apkPath) } }
+                .getOrElse { t -> false to "root 段异常：${t.javaClass.simpleName}: ${t.message ?: t}" }
+            rootOk = r.first
+            rootReport = r.second?.takeIf { it.isNotBlank() } ?: "(root 段无报文)"
+        }
+
+        // 桌面会话在跑时直接拒绝（409）：探针会建设备/建屏，与运行中的桌面抢 VDM 资源，
+        // 且此时诊断无意义（Vdm-Assoc-Own-1 的另一半防线；即便漏过，per-MAC 也不会误删）。
+        if (DesktopController.status().running) {
+            val d = DesktopController.status()
+            return 409 to JSONObject()
+                .put("ok", false)
+                .put("error", "desktop active; probe refused (stop desktop first)")
+                .put("displayId", d.displayId)
+                .toString()
+        }
+
+        // shell 段：临时自管理关联 → su 2000 子进程跑探针 → 立即清关联。
+        // **只清探针自己那条**（PROBE_MAC），绝不碰桌面会话的 OWN_MAC（Vdm-Assoc-Own-1）。
+        var shellOk = false
+        var shellReport: String
+        var assocOwnId = -1
+        var assocStateAfter = ""
+        if (apkPath.isNullOrBlank()) {
+            shellReport = "shell 段跳过（resolveApkPath 失败）"
+        } else {
+            assocOwnId = runCatching { VirtualDeviceAssociation.ensure(VirtualDeviceAssociation.PROBE_MAC) }
+                .getOrElse { t ->
+                    Log.w("BlindCast", "[DeviceApiRoute] vdProbe assoc ensure threw: ${t.message}")
+                    -1
+                }
+            shellReport = if (assocOwnId > 0) {
+                val r = runCatching { runBlocking { RootExecutor.runAsShellVdProbe(pkg, apkPath) } }
+                    .getOrElse { t -> false to "shell 段异常：${t.javaClass.simpleName}: ${t.message ?: t}" }
+                shellOk = r.first
+                r.second?.takeIf { it.isNotBlank() } ?: "(shell 段无报文)"
+            } else {
+                "shell 段未执行：自管理关联建立失败（见 logcat BlindCast-VDAssoc）"
+            }
+            // 无论成败都清掉本轮探针自己建立的关联（只删 PROBE_MAC 那条）。
+            runCatching { VirtualDeviceAssociation.release(VirtualDeviceAssociation.PROBE_MAC) }
+                .onFailure { Log.w("BlindCast", "[DeviceApiRoute] vdProbe assoc release threw: ${it.message}") }
+            assocStateAfter = runCatching {
+                VirtualDeviceAssociation.stateLine(VirtualDeviceAssociation.PROBE_MAC)
+            }.getOrDefault("")
+        }
+
+        var shizukuOk = false
+        var shizukuReport: String
+        try {
+            shizukuReport = runBlocking { PrivilegedBridge.probeVirtualDevice(pkg) }
+            shizukuOk = true
+        } catch (t: Throwable) {
+            shizukuReport = "shizuku 段未执行：${t.javaClass.simpleName}: ${t.message ?: t}"
+        }
+
+        val json = JSONObject()
+            .put("ok", true)
+            .put("pkg", pkg)
+            .put("apkPath", apkPath ?: "")
+            .put("shizukuState", runCatching { PrivilegedBridge.shizukuState().name }.getOrDefault("UNKNOWN"))
+            .put("rootOk", rootOk)
+            .put("root", rootReport)
+            .put("shellOk", shellOk)
+            .put("shell", shellReport)
+            .put("assocOwnId", assocOwnId)
+            .put("assocStateAfter", assocStateAfter)
+            .put("shizukuOk", shizukuOk)
+            .put("shizuku", shizukuReport)
+        return 200 to json.toString()
+    }
+
+    /**
+     * Phase C 虚拟桌面建屏探针（Vds-Probe-1 · 需鉴权）：`GET /api/probe/vdcreate[?hold=N]`。
+     *
+     * 在 App 生产路径上：root 建自管理关联 → `su 2000` 子进程 `RootMain vdCreate`
+     * （建设备 + 建虚拟屏，Home 组件 = `FusionHomeActivity`，观察系统是否把 Home 拉到该屏）
+     * → 立即清关联。用于在接采集/路由之前，先确证「虚拟屏真的存在、Home 真的被拉起」。
+     *
+     * 返回 `{"ok":true,"pkg","apkPath","holdSec","assocOwnId","assocStateAfter","createOk","create"}`。
+     */
+    fun handleVdCreate(rawQuery: String?): Pair<Int, String> {
+        val ctx = appContextOverride ?: runCatching { blindCastApp.applicationContext }.getOrNull()
+        val pkg = ctx?.packageName ?: BuildConfig.APPLICATION_ID
+        val apkPath = runCatching { PowerController.resolveApkPath(pkg) }.getOrNull()
+        val hold = rawQuery?.split('&')
+            ?.firstOrNull { it.startsWith("hold=") }
+            ?.substringAfter("hold=")
+            ?.toIntOrNull()
+            ?.coerceIn(1, 60)
+            ?: 5
+        // flags 可经 query 覆盖，便于真机上换 flag 组合验证而不必重编（默认 OWN_CONTENT_ONLY）。
+        val flags = rawQuery?.split('&')
+            ?.firstOrNull { it.startsWith("flags=") }
+            ?.substringAfter("flags=")
+            ?.toIntOrNull()
+            ?: VirtualDeviceBridge.defaultDesktopFlags()
+        // vdmHome=1 走 VDM setHomeComponent（实测被 ROM 自带 SecondaryDisplayLauncher 抢走）；
+        // 默认 0：不设 VDM home，改用特权侧显式 am start 把 FusionHomeActivity 拉上副屏。
+        val vdmHome = rawQuery?.split('&')
+            ?.firstOrNull { it.startsWith("vdmhome=") }
+            ?.substringAfter("vdmhome=")
+            ?.toIntOrNull() != 0
+
+        // 桌面会话在跑时直接拒绝（409）：同上，探针不得与运行中的桌面抢 VDM 资源。
+        if (DesktopController.status().running) {
+            val d = DesktopController.status()
+            return 409 to JSONObject()
+                .put("ok", false)
+                .put("error", "desktop active; probe refused (stop desktop first)")
+                .put("displayId", d.displayId)
+                .toString()
+        }
+
+        var createOk = false
+        var createReport: String
+        var assocOwnId = -1
+        var assocStateAfter = ""
+        if (apkPath.isNullOrBlank()) {
+            createReport = "跳过（resolveApkPath 失败）"
+        } else {
+            // **只建探针自己那条关联**（PROBE_MAC），与桌面会话的 OWN_MAC 分开（Vdm-Assoc-Own-1）。
+            assocOwnId = runCatching { VirtualDeviceAssociation.ensure(VirtualDeviceAssociation.PROBE_MAC) }
+                .getOrElse { t ->
+                    Log.w("BlindCast", "[DeviceApiRoute] vdCreate assoc ensure threw: ${t.message}")
+                    -1
+                }
+            createReport = if (assocOwnId > 0) {
+                val r = runCatching { runBlocking { RootExecutor.runAsShellVdCreate(pkg, apkPath, hold, flags, vdmHome) } }
+                    .getOrElse { t -> false to "shell 段异常：${t.javaClass.simpleName}: ${t.message ?: t}" }
+                createOk = r.first
+                r.second?.takeIf { it.isNotBlank() } ?: "(shell 段无报文)"
+            } else {
+                "未执行：自管理关联建立失败（见 logcat BlindCast-VDAssoc）"
+            }
+            // 只清探针自己那条。
+            runCatching { VirtualDeviceAssociation.release(VirtualDeviceAssociation.PROBE_MAC) }
+                .onFailure { Log.w("BlindCast", "[DeviceApiRoute] vdCreate assoc release threw: ${it.message}") }
+            assocStateAfter = runCatching {
+                VirtualDeviceAssociation.stateLine(VirtualDeviceAssociation.PROBE_MAC)
+            }.getOrDefault("")
+        }
+
+        val json = JSONObject()
+            .put("ok", true)
+            .put("pkg", pkg)
+            .put("apkPath", apkPath ?: "")
+            .put("holdSec", hold)
+            .put("assocOwnId", assocOwnId)
+            .put("assocStateAfter", assocStateAfter)
+            .put("createOk", createOk)
+            .put("create", createReport)
+        return 200 to json.toString()
+    }
+
+    /**
+     * Phase C 虚拟桌面（Vdm-Api-1 · 需鉴权）：
+     * - `GET /api/desktop` → 状态对象；
+     * - `POST /api/desktop` body `{"action":"on|off|home|toggle|status"}`（也接受 `?action=`）。
+     *
+     * 契约与前端冻结版一致（见 `assets/web/index.html`）：失败一律 `ok:false` + `error` 文案，
+     * 且 `mode` 已回落 `mirror`——**不静默成功**。
+     */
+    fun handleDesktop(method: String, rawQuery: String?, body: ByteArray): Pair<Int, String> {
+        val ctx = appContextOverride ?: runCatching { blindCastApp.applicationContext }.getOrNull()
+        val pkg = ctx?.packageName ?: BuildConfig.APPLICATION_ID
+        val apkPath = runCatching { PowerController.resolveApkPath(pkg) }.getOrNull() ?: ""
+
+        if (method == "GET") return 200 to desktopJson(DesktopController.status())
+        if (method != "POST") return 405 to err("method not allowed")
+
+        val action = runCatching {
+            val q = TokenAuthenticator.parseQuery(rawQuery)["action"]
+            if (!q.isNullOrBlank()) {
+                q
+            } else if (body.isEmpty()) {
+                null
+            } else {
+                JSONObject(body.toString(Charsets.UTF_8)).optString("action", "").takeIf { it.isNotBlank() }
+            }
+        }.getOrNull()
+        if (action.isNullOrBlank()) return 400 to err("missing action (on|off|home|toggle|status)")
+
+        // Phase C：进桌面源必须先确认 App 侧搬运服（`abstract:blindcast_capture`）已监听，
+        // 否则特权宿主 FusionDesktopMain 立刻 connect 会吃 Connection refused（真机实证）。
+        // 顺序：ensureDesktopSocket（停物理镜像采集 → 只起搬运服）→ DesktopController.on。
+        val onAction: suspend () -> DesktopController.Status = on@{
+            val c = ctx ?: return@on DesktopController.Status(
+                false, -1, -1, DesktopController.DEFAULT_WIDTH, DesktopController.DEFAULT_HEIGHT,
+                DesktopController.DEFAULT_DENSITY, "mirror", "无应用上下文，无法起桌面搬运服", -1,
+            )
+            val ready = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.erl.blindcast.core.service.BlindCastForegroundService.ensureDesktopSocket(c)
+            }
+            if (!ready) {
+                DesktopController.Status(
+                    false, -1, -1, DesktopController.DEFAULT_WIDTH, DesktopController.DEFAULT_HEIGHT,
+                    DesktopController.DEFAULT_DENSITY, "mirror",
+                    "桌面搬运服 10s 内未就绪（见 logcat BlindCast-FgService [DesktopRoute]）", -1,
+                )
+            } else {
+                // 切源前先解卡：镜像源残留的按下手势必须在 display 0 上补 Up，
+                // 否则会带到虚拟屏（此时 lastInjectDisplayId 仍为 0，正是镜像屏）。
+                ControlWsRoute.resetForSourceSwitch("desktop on")
+                DesktopController.on(pkg, apkPath)
+            }
+        }
+        val offAction: suspend () -> DesktopController.Status = off@{
+            val st = DesktopController.off(pkg)
+            // 切回镜像前解卡：桌面上的按下手势必须在**副屏**补 Up 后清掉，
+            // 否则残留触点跟着回到物理主屏（用户可见的“卡住”）。
+            ControlWsRoute.resetForSourceSwitch("desktop off")
+            // 关桌面必须等搬运服**真正释放**（抽象名回收），否则下一次 on 直接 EADDRINUSE。
+            ctx?.let { c ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    com.erl.blindcast.core.service.BlindCastForegroundService.stopDesktopBlocking(c)
+                }
+            }
+            st
+        }
+        val st: DesktopController.Status = when (action) {
+            "on" -> runBlocking { onAction() }
+            "off" -> runBlocking { offAction() }
+            "home" -> runBlocking { DesktopController.home(pkg, apkPath) }
+            "toggle" -> runBlocking {
+                if (DesktopController.status().running) offAction() else onAction()
+            }
+            "status" -> DesktopController.status()
+            else -> return 400 to err("unknown action: $action")
+        }
+        return 200 to desktopJson(st)
+    }
+
+    /** 状态对象序列化（GET/POST 同一形状，前端按此解析）。 */
+    private fun desktopJson(st: DesktopController.Status): String = JSONObject()
+        .put("ok", st.error.isBlank())
+        .put("mode", st.mode)
+        .put("running", st.running)
+        .put("displayId", st.displayId)
+        .put("deviceId", st.deviceId)
+        .put("width", st.width)
+        .put("height", st.height)
+        .put("densityDpi", st.densityDpi)
+        .put("source", st.source)
+        .put("streaming", isStreamingNow())
+        .put("homeComponent", "${BuildConfig.APPLICATION_ID}/${BuildConfig.APPLICATION_ID}.FusionHomeActivity")
+        .put("error", st.error)
+        .toString()
+
+    /**
+     * Phase C · 副屏任务管理（Vdm-Api-2，需鉴权）：
+     * - `GET /api/desktop/tasks` → 目标副屏 Task 列表（严格按 displayId 过滤）；
+     * - `POST /api/desktop/tasks` body `{"action":"switch","taskId":N}` → 复用副屏已有 Task 拉前台。
+     *
+     * Task 过滤与切换由 [DesktopTaskController] 实现：切换前按 taskId 反查其真实 displayId，
+     * 不属于当前副屏一律拒绝，**永不移动物理主屏 display 0 的 Task**。
+     */
+    fun handleDesktopTasks(method: String, body: ByteArray): Pair<Int, String> {
+        val st = DesktopController.status()
+        if (!st.running || st.displayId <= 0) {
+            return 200 to JSONObject()
+                .put("ok", false)
+                .put("displayId", -1)
+                .put("tasks", JSONArray())
+                .put("error", "桌面未运行")
+                .toString()
+        }
+        return when (method) {
+            "GET" -> {
+                val arr = JSONArray()
+                DesktopTaskController.listTasks(st.displayId).forEach { arr.put(it.toJson()) }
+                val json = JSONObject()
+                    .put("ok", true)
+                    .put("displayId", st.displayId)
+                    .put("tasks", arr)
+                    .put("error", "")
+                Log.i("BlindCast", "[ControlWs] desktop tasks did=${st.displayId} n=${arr.length()}")
+                200 to json.toString()
+            }
+            "POST" -> {
+                val obj = runCatching { JSONObject(body.toString(Charsets.UTF_8)) }.getOrNull()
+                    ?: return 400 to err("invalid json body")
+                when (val action = obj.optString("action", "")) {
+                    "switch" -> {
+                        val taskId = obj.optInt("taskId", -1)
+                        if (taskId <= 0) {
+                            400 to err("missing taskId")
+                        } else {
+                            val res = DesktopTaskController.switchTask(taskId, st.displayId)
+                            Log.i(
+                                "BlindCast",
+                                "[ControlWs] desktop switch taskId=$taskId did=${st.displayId} " +
+                                    "switched=${res.switched} actualDid=${res.displayId} ok=${res.ok} err=${res.error.take(120)}",
+                            )
+                            200 to res.toJson().toString()
+                        }
+                    }
+                    else -> 400 to err("unknown action: $action (switch)")
+                }
+            }
+            else -> 405 to err("method not allowed")
+        }
     }
 
     private data class Battery(val level: Int, val tempC: Float, val charging: Boolean)

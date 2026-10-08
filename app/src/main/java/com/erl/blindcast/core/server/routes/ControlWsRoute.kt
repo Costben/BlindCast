@@ -1,6 +1,8 @@
 package com.erl.blindcast.core.server.routes
 
 import com.erl.blindcast.BuildConfig
+import com.erl.blindcast.core.blackout.PowerController
+import com.erl.blindcast.core.priv.DesktopController
 import com.erl.blindcast.core.priv.PrivilegedBridge
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
 import com.erl.blindcast.core.scrcpy.JpegTranscoder
@@ -258,8 +260,27 @@ object ControlWsRoute {
                 reply(conn, ok, "click", err)
             }
             "middle" -> {
-                val (ok, err) = injectKeyPriv(TouchInjector.MOUSE_BUTTON_MIDDLE_KEYCODE)
-                reply(conn, ok, "click", err)
+                // 桌面源下的「Home」**必须显式启动我们自己的 Home**，不能注入 KEYCODE_HOME：
+                // 真机实证（displayId 219）KEYCODE_HOME 落在副屏也不会拉起 FusionHome
+                // （ROM 自带 SecondaryDisplayLauncher 抢注），且系统级 home 解析有回落到
+                // 物理主屏的风险。桌面模式 → `am start -W --display <id>` 显式拉起；
+                // 镜像模式 → 维持原 KEYCODE_HOME 注入（display 0）。
+                val dst = runCatching { DesktopController.status() }.getOrNull()
+                if (dst != null && dst.running && dst.displayId > 0) {
+                    val pkgName = pkg()
+                    val apk = runCatching { PowerController.resolveApkPath(pkgName) }.getOrNull().orEmpty()
+                    val res = runCatching { runBlocking { DesktopController.home(pkgName, apk) } }
+                        .getOrElse { dst.copy(error = it.message ?: it.toString()) }
+                    android.util.Log.i(
+                        "BlindCast",
+                        "[ControlWs] desktop home explicit did=${dst.displayId} ok=${res.error.isBlank()} " +
+                            "err=${res.error.take(120)}",
+                    )
+                    reply(conn, res.error.isBlank(), "click", res.error.ifBlank { null })
+                } else {
+                    val (ok, err) = injectKeyPriv(TouchInjector.MOUSE_BUTTON_MIDDLE_KEYCODE)
+                    reply(conn, ok, "click", err)
+                }
             }
             else -> {
                 // 左键点按 = down + up（无拖拽的轻量点击路径）。
@@ -282,39 +303,159 @@ object ControlWsRoute {
 
     private fun pkg(): String = BuildConfig.APPLICATION_ID
 
-    private fun injectTapPriv(x: Float, y: Float): Pair<Boolean, String?> =
-        runCatching { runBlocking { PrivilegedBridge.injectTap(pkg(), x, y) } }
-            .getOrElse { false to (it.message ?: it.toString()) }
+    /**
+     * 当前注入目标屏 `(displayId, width, height)`。
+     * 桌面源 = VDM 虚拟屏（必须带其真实尺寸：虚拟屏不一定进 IWindowManager 的
+     * display 列表，特权侧解析不到）；镜像源 = 物理主屏 0，同样**显式带物理尺寸**。
+     * **每次注入都重取**，故模式切换后下一条指令即落到新目标屏。
+     *
+     * 真机实证（R5）：镜像源若把尺寸留成 0（size=auto），实时三件套的 `down` 会直接失败
+     * `TouchInjector: unknown display size`（桌面会话把特权侧 targetDisplay 改成虚拟屏后，
+     * 回到 display 0 没人再 configure 过）。故这里对物理屏取真实像素尺寸一并下发。
+     */
+    private fun targetDisplay(): Triple<Int, Int, Int> {
+        val st = runCatching { com.erl.blindcast.core.priv.DesktopController.status() }.getOrNull()
+        if (st != null && st.running && st.displayId > 0) {
+            return Triple(st.displayId, st.width, st.height)
+        }
+        val (w, h) = physicalSize()
+        return Triple(0, w, h)
+    }
 
-    private fun injectDragPriv(x0: Float, y0: Float, x1: Float, y1: Float): Pair<Boolean, String?> =
-        runCatching { runBlocking { PrivilegedBridge.injectDrag(pkg(), x0, y0, x1, y1) } }
-            .getOrElse { false to (it.message ?: it.toString()) }
+    /** 物理主屏真实像素尺寸（app 进程可读，无需特权）；失败回落 0 交特权侧自解析。 */
+    private fun physicalSize(): Pair<Int, Int> {
+        val now = System.currentTimeMillis()
+        cachedPhysicalSize?.let { if (now - cachedPhysicalAt < 60_000) return it }
+        val p = runCatching {
+            val ctx = runCatching { com.erl.blindcast.blindCastApp.applicationContext }.getOrNull()
+                ?: return@runCatching null
+            val dm = ctx.getSystemService(android.hardware.display.DisplayManager::class.java)
+            val d = dm?.getDisplay(android.view.Display.DEFAULT_DISPLAY) ?: return@runCatching null
+            val pt = android.graphics.Point()
+            d.getRealSize(pt)
+            if (pt.x > 0 && pt.y > 0) pt.x to pt.y else null
+        }.getOrNull()
+        if (p != null) {
+            cachedPhysicalSize = p
+            cachedPhysicalAt = now
+        }
+        return p ?: (0 to 0)
+    }
 
-    private fun injectKeyPriv(keyCode: Int): Pair<Boolean, String?> =
-        runCatching { runBlocking { PrivilegedBridge.injectKey(pkg(), keyCode) } }
-            .getOrElse { false to (it.message ?: it.toString()) }
+    @Volatile private var cachedPhysicalSize: Pair<Int, Int>? = null
 
-    private fun injectTextPriv(text: String): Pair<Boolean, String?> =
-        runCatching { runBlocking { PrivilegedBridge.injectText(pkg(), text) } }
+    @Volatile private var cachedPhysicalAt: Long = 0L
+
+    /**
+     * 最近一次实际注入落到的屏：解卡 cancel 必须打在同一屏，
+     * 否则“桌面手势中断”会往物理主屏补一发 Up（错屏残留触点）。
+     */
+    @Volatile private var lastInjectDisplayId: Int = 0
+
+    /**
+     * 采集源切换（桌面 ↔ 镜像）时调用：丢弃全部待决手势并让特权侧在**原目标屏**补 Up 解卡，
+     * 防上一源的按下状态残留到新目标屏；切回镜像后目标屏语义回到 display 0。
+     */
+    fun resetForSourceSwitch(reason: String) {
+        val pending = pendingGestures.size
+        if (pending > 0) {
+            android.util.Log.i("BlindCast", "[ControlWs] source switch ($reason): drop $pending pending gesture(s)")
+        }
+        pendingGestures.clear()
+        runCatching { TouchInjector.cancelTouch() }
+        val (ok, err) = runCatching {
+            runBlocking { PrivilegedBridge.cancelInput(lastInjectDisplayId) }
+        }.getOrElse { true to (it.message ?: it.toString()) }
+        android.util.Log.i(
+            "BlindCast",
+            "[ControlWs] source switch ($reason) cancel display=$lastInjectDisplayId ok=$ok err=${err?.take(120)}",
+        )
+        lastInjectDisplayId = 0
+    }
+
+    /**
+     * 注入证据行：每条注入都打印**实际目标屏**与来源尺寸，供真机验收核对
+     * 「指令落在 displayId 几」而不是靠猜测。tag 固定 `BlindCast`。
+     */
+    private fun logInject(kind: String, did: Int, w: Int, h: Int, ok: Boolean, err: String?, detail: String = "") {
+        val size = if (w > 0 && h > 0) "size=${w}x$h" else "size=auto"
+        android.util.Log.i(
+            "BlindCast",
+            "[ControlWs] inject kind=$kind did=$did $size ok=$ok${if (detail.isEmpty()) "" else " $detail"} err=${err?.take(120)}",
+        )
+    }
+
+    private fun injectTapPriv(x: Float, y: Float): Pair<Boolean, String?> {
+        val (did, w, h) = targetDisplay()
+        lastInjectDisplayId = did
+        val r = runCatching { runBlocking { PrivilegedBridge.injectTap(pkg(), x, y, did, w, h) } }
             .getOrElse { false to (it.message ?: it.toString()) }
+        logInject("tap", did, w, h, r.first, r.second, detail = "x=$x y=$y")
+        return r
+    }
+
+    private fun injectDragPriv(x0: Float, y0: Float, x1: Float, y1: Float): Pair<Boolean, String?> {
+        val (did, w, h) = targetDisplay()
+        lastInjectDisplayId = did
+        val r = runCatching { runBlocking { PrivilegedBridge.injectDrag(pkg(), x0, y0, x1, y1, did, w, h) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
+        logInject("drag", did, w, h, r.first, r.second, detail = "from=$x0,$y0 to=$x1,$y1")
+        return r
+    }
+
+    private fun injectKeyPriv(keyCode: Int): Pair<Boolean, String?> {
+        val (did, _, _) = targetDisplay()
+        lastInjectDisplayId = did
+        val r = runCatching { runBlocking { PrivilegedBridge.injectKey(pkg(), keyCode, did) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
+        logInject("key", did, 0, 0, r.first, r.second, detail = "keycode=$keyCode")
+        return r
+    }
+
+    private fun injectTextPriv(text: String): Pair<Boolean, String?> {
+        val (did, _, _) = targetDisplay()
+        lastInjectDisplayId = did
+        val r = runCatching { runBlocking { PrivilegedBridge.injectText(pkg(), text, did) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
+        logInject("text", did, 0, 0, r.first, r.second, detail = "len=${text.length}")
+        return r
+    }
 
     // Smooth-1 实时三件套委托（常驻 daemon 直透，无单次/Shizuku 回退；
     // 失败由 handleTouch 降级批量 + up 原子兜底）。
-    private fun injectDownPriv(x: Float, y: Float): Pair<Boolean, String?> =
-        runCatching { runBlocking { PrivilegedBridge.injectDown(pkg(), x, y) } }
+    private fun injectDownPriv(x: Float, y: Float): Pair<Boolean, String?> {
+        val (did, w, h) = targetDisplay()
+        lastInjectDisplayId = did
+        val r = runCatching { runBlocking { PrivilegedBridge.injectDown(pkg(), x, y, did, w, h) } }
             .getOrElse { false to (it.message ?: it.toString()) }
+        logInject("down", did, w, h, r.first, r.second, detail = "x=$x y=$y")
+        return r
+    }
 
-    private fun injectMovePriv(x: Float, y: Float): Pair<Boolean, String?> =
-        runCatching { runBlocking { PrivilegedBridge.injectMove(pkg(), x, y) } }
+    private fun injectMovePriv(x: Float, y: Float): Pair<Boolean, String?> {
+        val (did, w, h) = targetDisplay()
+        lastInjectDisplayId = did
+        val r = runCatching { runBlocking { PrivilegedBridge.injectMove(pkg(), x, y, did, w, h) } }
             .getOrElse { false to (it.message ?: it.toString()) }
+        logInject("move", did, w, h, r.first, r.second, detail = "x=$x y=$y")
+        return r
+    }
 
-    private fun injectUpPriv(x: Float, y: Float): Pair<Boolean, String?> =
-        runCatching { runBlocking { PrivilegedBridge.injectUp(pkg(), x, y) } }
+    private fun injectUpPriv(x: Float, y: Float): Pair<Boolean, String?> {
+        val (did, w, h) = targetDisplay()
+        lastInjectDisplayId = did
+        val r = runCatching { runBlocking { PrivilegedBridge.injectUp(pkg(), x, y, did, w, h) } }
             .getOrElse { false to (it.message ?: it.toString()) }
+        logInject("up", did, w, h, r.first, r.second, detail = "x=$x y=$y")
+        return r
+    }
 
-    private fun cancelPriv(): Pair<Boolean, String?> =
-        runCatching { runBlocking { PrivilegedBridge.cancelInput() } }
+    private fun cancelPriv(): Pair<Boolean, String?> {
+        val r = runCatching { runBlocking { PrivilegedBridge.cancelInput(lastInjectDisplayId) } }
             .getOrElse { true to null }
+        logInject("cancel", lastInjectDisplayId, 0, 0, r.first, r.second)
+        return r
+    }
 
     private fun reply(conn: WsConnection, ok: Boolean, type: String?, error: String?) {
         val json = JSONObject().put("type", "ack").put("ok", ok)

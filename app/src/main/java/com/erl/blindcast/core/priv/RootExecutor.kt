@@ -46,6 +46,9 @@ object RootExecutor {
     /** 单次 root 调用超时约 20s（app_process 冷起 + binder→验效→按键兜底全链路留足余量）。 */
     private const val ROOT_TIMEOUT_MS = 20_000L
 
+    /** shell 段长任务超时约 90s（`vdCreate` 含建屏 + 观察 Home 拉起 + hold，见 RootMain.runVdCreate）。 */
+    private const val SHELL_LONG_TIMEOUT_MS = 90_000L
+
     /** 结果文件目录（与 RootMain 约定，nonce 由本侧生成防并发串扰）。 */
     private const val RESULT_DIR = "/data/local/tmp"
 
@@ -194,24 +197,30 @@ object RootExecutor {
                 return@withContext false to "Root段非法 input 子操作：$subOp"
             }
             // 参数个数校验（缺参不拉进程，直接失败省一次冷起）。
+            // Phase C：尾部最多 3 个可选 [displayId] [width] [height]（目标屏路由），上限放宽。
             val expectSizes = mapOf("tap" to 2, "drag" to 4, "key" to 1, "text" to 1)
-            if ((params.size) != (expectSizes[sub] ?: -1)) {
-                return@withContext false to "Root段 input 缺参（$sub 期望 ${expectSizes[sub]} 个，实 ${params.size} 个）"
+            val expect = expectSizes[sub] ?: -1
+            if (params.size < expect || params.size > expect + 3) {
+                return@withContext false to "Root段 input 参数个数非法（$sub 期望 $expect..${expect + 3} 个，实 ${params.size} 个）"
             }
+            val core = params.take(expect)
+            val extra = params.drop(expect)
             val nonce = runCatching {
                 UUID.randomUUID().toString().replace("-", "").take(8)
             }.getOrDefault(System.currentTimeMillis().toString())
             val resultFile = "$RESULT_DIR/${RESULT_PREFIX}${Process.myPid()}_${nonce}"
             // text 的 b64 单引号包裹（空串 `''` 防 shell 吞参；b64 字母表无单引号故安全）。
             val paramStr = if (sub == "text") {
-                val b64 = params[0]
+                val b64 = core[0]
                 "'$b64'"
             } else {
-                params.joinToString(" ")
+                core.joinToString(" ")
             }
+            // 目标屏参数必须排在 resultFile **之后**（RootMain 的 args 布局：core.. resultFile 可选屏参）。
+            val extraStr = if (extra.isEmpty()) "" else " " + extra.joinToString(" ")
             val cmd =
                 "CLASSPATH=$apkPath app_process /system/bin com.erl.blindcast.core.priv.RootMain " +
-                    "input $sub $paramStr $resultFile"
+                    "input $sub $paramStr $resultFile$extraStr"
             val shellResult: Shell.Result? = try {
                 withTimeoutOrNull(ROOT_TIMEOUT_MS) {
                     Shell.cmd(cmd).exec()
@@ -244,6 +253,212 @@ object RootExecutor {
             val (ok, errMsg) = parseOkErr(resultText)
             Log.d(TAG, "[RootExecutor] ${tid()} input exit pkg=$packageName sub=$sub ok=$ok err=${errMsg?.take(200)}")
             if (ok) true to null else false to (errMsg?.takeIf { it.isNotBlank() } ?: "Root段 input 失败（exit=$exitCode，见logcat [RootExecutor]/[RootMain]明细）")
+        }
+
+    /**
+     * 以 root 身份跑一次 Phase C 最小探针（Vdm-Probe-1 · 单次 `app_process` RootMain vdProbe）。
+     *
+     * @param packageName 调用方包名（仅日志/诊断用，勿硬编码）。
+     * @param apkPath 调用方 `applicationInfo.sourceDir`（拼 `CLASSPATH=` 用，勿硬编码；为空直接失败）。
+     * @return first=是否执行成功（结果文件 `ok=true`）；second=探针多行报文（成功/失败均有，
+     *  失败且无报文时为明细文案）。
+     */
+    suspend fun runAsRootVdProbe(packageName: String, apkPath: String): Pair<Boolean, String?> =
+        withContext(Dispatchers.IO) {
+            val myUid = runCatching { Process.myUid() }.getOrDefault(-1)
+            Log.d(TAG, "[RootExecutor] ${tid()} vdProbe enter pkg=$packageName myUid=$myUid")
+            if (apkPath.isBlank()) {
+                return@withContext false to "Root段跳过（取APK路径失败）"
+            }
+            val nonce = runCatching {
+                UUID.randomUUID().toString().replace("-", "").take(8)
+            }.getOrDefault(System.currentTimeMillis().toString())
+            val resultFile = "$RESULT_DIR/${RESULT_PREFIX}${Process.myPid()}_${nonce}"
+            val cmd =
+                "CLASSPATH=$apkPath app_process /system/bin com.erl.blindcast.core.priv.RootMain " +
+                    "vdProbe $resultFile"
+            val shellResult: Shell.Result? = try {
+                withTimeoutOrNull(ROOT_TIMEOUT_MS) { Shell.cmd(cmd).exec() }
+            } catch (t: Throwable) {
+                Log.e(TAG, "[RootExecutor] ${tid()} vdProbe exec threw pkg=$packageName", t)
+                null
+            }
+            if (shellResult == null) {
+                runCatching { Shell.cmd("rm -f $resultFile").exec() }
+                return@withContext false to "Root段 vdProbe 超时（约${ROOT_TIMEOUT_MS / 1000}s，见logcat [RootExecutor]/[RootMain]/[BlindCast-VDProbe]明细）"
+            }
+            val exitCode = runCatching { shellResult.code }.getOrDefault(-1)
+            val out = runCatching { shellResult.out }.getOrDefault(emptyList())
+            val err = runCatching { shellResult.err }.getOrDefault(emptyList())
+            Log.d(TAG, "[RootExecutor] ${tid()} vdProbe shell done pkg=$packageName " +
+                "exit=$exitCode out=${out.take(5)} err=${err.take(5)} resultFile=$resultFile")
+            val resultText: String? = try {
+                readResultText(resultFile)
+            } catch (t: Throwable) {
+                Log.d(TAG, "[RootExecutor] ${tid()} vdProbe read result threw ${t.message}")
+                null
+            }
+            runCatching { Shell.cmd("rm -f $resultFile").exec() }
+            runCatching { File(resultFile).delete() }
+            val ok = parseOk(resultText)
+            val report = resultText?.lineSequence()?.drop(2)?.joinToString("\n")?.trim()
+                ?.takeIf { it.isNotBlank() }
+            Log.d(TAG, "[RootExecutor] ${tid()} vdProbe exit pkg=$packageName ok=$ok " +
+                "reportLen=${report?.length ?: 0} exit=$exitCode")
+            if (ok) true to report else false to (report ?: "Root段 vdProbe 失败（exit=$exitCode，见logcat明细）")
+        }
+
+    /**
+     * 以 shell（uid 2000）身份跑一次 Phase C 最小探针（Vdm-Shell-1）。
+     *
+     * ## 为什么不是 root
+     * 真机实证（`outputs/probe/phase-c-probe.md` §3.1）：VDM `createVirtualDevice`
+     * 的服务端校验「关联包名必须属于调用 uid」，root（uid 0）持有
+     * `com.android.shell` 的关联时被拒 —— `SecurityException: Package name
+     * com.android.shell does not belong to calling uid 0`。shell（uid 2000）才是
+     * 关联/VDM 的正确身份（`cdv.call OK` / `deviceId=3` / `close OK` 均已在真机取得）。
+     *
+     * ## 执行方式
+     * 经既有 libsu root shell 下发 `su 2000 -c '<内层>'`，派生一个 shell 身份的
+     * `app_process` 子进程跑同一 [RootMain] `vdProbe` 入口；先跑一次
+     * `su 2000 -c id` 取实际 uid 记日志（**不硬编成功**：uid 不是 2000 即报失败）。
+     *
+     * ## 与 Shizuku 的区别
+     * 这是 root 通道内的进程派生，**不是 Shizuku 已授权**：Shizuku 仍为 NOT_RUNNING，
+     * 本方法不动其授权状态。
+     *
+     * @param packageName 调用方包名（仅日志/诊断用，勿硬编码）。
+     * @param apkPath 调用方 `applicationInfo.sourceDir`（拼 `CLASSPATH=` 用，勿硬编码；为空直接失败）。
+     * @return first=是否执行成功（结果文件 `ok=true`）；second=探针多行报文（含身份行）。
+     */
+    suspend fun runAsShellVdProbe(packageName: String, apkPath: String): Pair<Boolean, String?> =
+        runAsShellOp(packageName, apkPath, "vdProbe", emptyList(), "vdProbe")
+
+    /**
+     * 以 shell（uid 2000）身份跑一次 Phase C 虚拟桌面建屏探针（Vds-Shell-1）：
+     * `RootMain vdCreate <holdSec> <resultFile>`。身份/通道与 [runAsShellVdProbe] 完全一致。
+     */
+    suspend fun runAsShellVdCreate(
+        packageName: String,
+        apkPath: String,
+        holdSec: Int,
+        flags: Int,
+        vdmHome: Boolean,
+    ): Pair<Boolean, String?> =
+        runAsShellOp(
+            packageName, apkPath, "vdCreate",
+            listOf(holdSec.toString(), flags.toString(), if (vdmHome) "1" else "0"),
+            "vdCreate",
+        )
+
+    /**
+     * Dtc-Ipc-1-a：以 shell(uid 2000) 身份取 `dumpsys activity activities` 原文。
+     *
+     * app 进程（uid 10xxx）既无 `DUMP` 权限也无 root，`Shell.cmd("dumpsys ...")` 拿不到内容
+     * （真机实测返回空 → 副屏任务列表恒空）；必须经 root 通道派生 uid2000 子进程执行。
+     *
+     * @return first=是否成功；second=原始 dumpsys 文本（[RootExecutor.runAsShellOp] 的 body）。
+     */
+    suspend fun runAsShellDumpsysActivities(
+        packageName: String,
+        apkPath: String,
+    ): Pair<Boolean, String?> =
+        runAsShellOp(packageName, apkPath, "dumpsysActs", emptyList(), "dumpsysActs")
+
+    /**
+     * Dtc-Ipc-1-b：以 shell(uid 2000) 身份把副屏已有 Task 拉回前台。
+     *
+     * 特权侧先按 taskId 反查其真实 displayId，不属于 [displayId] 一律拒绝
+     * （**绝不移动物理主屏 display 0 的 Task**），通过后反射
+     * `IActivityTaskManager.moveTaskToFront(taskId, 0)`。
+     *
+     * @return first=是否切换成功；second=说明/错误文案。
+     */
+    suspend fun runAsShellTaskFront(
+        packageName: String,
+        apkPath: String,
+        taskId: Int,
+        displayId: Int,
+    ): Pair<Boolean, String?> =
+        runAsShellOp(
+            packageName, apkPath, "taskFront",
+            listOf(taskId.toString(), displayId.toString()),
+            "taskFront",
+        )
+
+    /**
+     * 通用：以 shell（uid 2000）身份跑一次 [RootMain] 子操作。
+     *
+     * 经既有 libsu root shell 下发 `su 2000 -c '<内层>'`，派生 shell 身份 `app_process`
+     * 子进程；先跑 `su 2000 -c id` 核实 uid（**不硬编成功**：非 2000 即报失败）。
+     * 这是 root 通道内的进程派生，**不是 Shizuku 已授权**。
+     *
+     * @param op [RootMain] 子操作名（`vdProbe` / `vdCreate` / …）。
+     * @param extraArgs 子操作参数（结果文件名由本方法补在末尾）。
+     * @param label 日志/报文用的入口标签。
+     */
+    suspend fun runAsShellOp(
+        packageName: String,
+        apkPath: String,
+        op: String,
+        extraArgs: List<String>,
+        label: String,
+    ): Pair<Boolean, String?> =
+        withContext(Dispatchers.IO) {
+            val myUid = runCatching { Process.myUid() }.getOrDefault(-1)
+            Log.d(TAG, "[RootExecutor] ${tid()} shellOp enter label=$label op=$op pkg=$packageName myUid=$myUid")
+            if (apkPath.isBlank()) {
+                return@withContext false to "shell 段跳过（取APK路径失败）"
+            }
+            val idOut = runCatching {
+                val r = withTimeoutOrNull(ROOT_TIMEOUT_MS) { Shell.cmd("su 2000 -c id").exec() }
+                (r?.out.orEmpty() + r?.err.orEmpty()).joinToString(" ").trim()
+            }.getOrElse { "EXC ${it.javaClass.simpleName}: ${it.message}" }
+            val isUid2000 = idOut.contains("uid=2000")
+            Log.d(TAG, "[RootExecutor] ${tid()} shellOp su2000id=$idOut isUid2000=$isUid2000")
+            val nonce = runCatching {
+                UUID.randomUUID().toString().replace("-", "").take(8)
+            }.getOrDefault(System.currentTimeMillis().toString())
+            val resultFile = "$RESULT_DIR/${RESULT_PREFIX}${Process.myPid()}_${nonce}"
+            val argStr = (listOf(op) + extraArgs + resultFile).joinToString(" ")
+            val inner = "CLASSPATH=$apkPath app_process /system/bin com.erl.blindcast.core.priv.RootMain $argStr"
+            val cmd = "su 2000 -c '$inner'"
+            val timeoutMs = if (op == "vdCreate") SHELL_LONG_TIMEOUT_MS else ROOT_TIMEOUT_MS
+            val shellResult: Shell.Result? = try {
+                withTimeoutOrNull(timeoutMs) { Shell.cmd(cmd).exec() }
+            } catch (t: Throwable) {
+                Log.e(TAG, "[RootExecutor] ${tid()} shellOp exec threw label=$label", t)
+                null
+            }
+            if (shellResult == null) {
+                runCatching { Shell.cmd("rm -f $resultFile").exec() }
+                return@withContext false to
+                    "shell 段 $label 超时（约${timeoutMs / 1000}s，su2000id=$idOut，见logcat明细）"
+            }
+            val exitCode = runCatching { shellResult.code }.getOrDefault(-1)
+            val out = runCatching { shellResult.out }.getOrDefault(emptyList())
+            val err = runCatching { shellResult.err }.getOrDefault(emptyList())
+            Log.d(TAG, "[RootExecutor] ${tid()} shellOp done label=$label exit=$exitCode " +
+                "out=${out.take(5)} err=${err.take(5)} resultFile=$resultFile")
+            val resultText: String? = try {
+                readResultText(resultFile)
+            } catch (t: Throwable) {
+                Log.d(TAG, "[RootExecutor] ${tid()} shellOp read result threw ${t.message}")
+                null
+            }
+            runCatching { Shell.cmd("rm -f $resultFile").exec() }
+            runCatching { File(resultFile).delete() }
+            val ok = parseOk(resultText)
+            val body = resultText?.lineSequence()?.drop(2)?.joinToString("\n")?.trim()
+                ?.takeIf { it.isNotBlank() }
+            val report = ("[identity] su2000id=$idOut isUid2000=$isUid2000\n" +
+                (body ?: "(shell 段无报文)")).trim()
+            Log.d(TAG, "[RootExecutor] ${tid()} shellOp exit label=$label ok=$ok isUid2000=$isUid2000 exit=$exitCode")
+            when {
+                !isUid2000 -> false to "shell 段未取得 uid 2000（$idOut）\n$report"
+                ok -> true to report
+                else -> false to report
+            }
         }
 
     /**

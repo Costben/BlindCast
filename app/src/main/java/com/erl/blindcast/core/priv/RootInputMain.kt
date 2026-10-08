@@ -5,6 +5,7 @@ import android.net.LocalSocket
 import android.os.Process
 import android.util.Log
 import androidx.annotation.Keep
+import com.erl.blindcast.core.scrcpy.TouchInjector
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -218,65 +219,83 @@ object RootInputMain {
                 if (ok) true to "warmed" else false to (svc.inputError ?: "warmup rejected")
             }
             "cancel" -> {
-                val ok = svc.cancelInput()
-                if (ok) true to null else false to (svc.inputError ?: "cancel rejected")
+                val displayId = parts.getOrNull(1)?.toIntOrNull() ?: TouchInjector.targetDisplayId
+                val ok = TouchInjector.cancelTouch(displayId)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "cancel rejected")
             }
             "tap" -> {
-                if (parts.size != 3) return false to "tap need x y"
+                if (parts.size < 3) return false to "tap need x y [displayId] [width] [height]"
                 val x = parts[1].toFloatOrNull()
                 val y = parts[2].toFloatOrNull()
                 if (x == null || y == null || !x.isFinite() || !y.isFinite()) {
                     return false to "tap bad coord"
                 }
-                val ok = svc.injectTap(x, y)
-                if (ok) true to null else false to (svc.inputError ?: "tap rejected")
+                val displayId = parts.getOrNull(3)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
+                val width = parts.getOrNull(4)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val height = parts.getOrNull(5)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val ok = TouchInjector.injectTap(x, y, displayId, width, height)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "tap rejected")
             }
             "down" -> {
-                if (parts.size != 3) return false to "down need x y"
+                if (parts.size < 3) return false to "down need x y [displayId] [width] [height]"
                 val x = parts[1].toFloatOrNull()
                 val y = parts[2].toFloatOrNull()
                 if (x == null || y == null || !x.isFinite() || !y.isFinite()) {
                     return false to "down bad coord"
                 }
-                val ok = svc.injectDown(x, y)
-                if (ok) true to null else false to (svc.inputError ?: "down rejected")
+                val displayId = parts.getOrNull(3)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
+                val width = parts.getOrNull(4)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val height = parts.getOrNull(5)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val ok = TouchInjector.injectTouchDown(x, y, displayId, width, height)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "down rejected")
             }
             "move" -> {
-                if (parts.size != 3) return false to "move need x y"
+                if (parts.size < 3) return false to "move need x y [displayId] [width] [height]"
                 val x = parts[1].toFloatOrNull()
                 val y = parts[2].toFloatOrNull()
                 if (x == null || y == null || !x.isFinite() || !y.isFinite()) {
                     return false to "move bad coord"
                 }
-                val ok = svc.injectMove(x, y)
-                if (ok) true to null else false to (svc.inputError ?: "move rejected")
+                val displayId = parts.getOrNull(3)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
+                val width = parts.getOrNull(4)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val height = parts.getOrNull(5)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val ok = TouchInjector.injectTouchMove(x, y, displayId, width, height)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "move rejected")
             }
             "up" -> {
-                if (parts.size != 3) return false to "up need x y"
+                if (parts.size < 3) return false to "up need x y [displayId] [width] [height]"
                 val x = parts[1].toFloatOrNull()
                 val y = parts[2].toFloatOrNull()
                 if (x == null || y == null || !x.isFinite() || !y.isFinite()) {
                     return false to "up bad coord"
                 }
-                val ok = svc.injectUp(x, y)
-                if (ok) true to null else false to (svc.inputError ?: "up rejected")
+                val displayId = parts.getOrNull(3)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
+                val width = parts.getOrNull(4)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val height = parts.getOrNull(5)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val ok = TouchInjector.injectTouchUp(x, y, displayId, width, height)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "up rejected")
             }
             "drag" -> {
-                if (parts.size != 5) return false to "drag need x0 y0 x1 y1"
+                if (parts.size < 5) return false to "drag need x0 y0 x1 y1 [displayId] [width] [height]"
                 val f = parts.subList(1, 5).map { it.toFloatOrNull() }
                 if (f.any { it == null || !it.isFinite() }) return false to "drag bad coord"
-                val ok = svc.injectDrag(f[0]!!, f[1]!!, f[2]!!, f[3]!!)
-                if (ok) true to null else false to (svc.inputError ?: "drag rejected")
+                val displayId = parts.getOrNull(5)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
+                val width = parts.getOrNull(6)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val height = parts.getOrNull(7)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val ok = TouchInjector.injectDrag(f[0]!!, f[1]!!, f[2]!!, f[3]!!, displayId, width, height)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "drag rejected")
             }
             "key" -> {
-                if (parts.size != 2) return false to "key need code"
+                if (parts.size < 2) return false to "key need code [displayId]"
                 val code = parts[1].toIntOrNull() ?: return false to "key bad code"
-                val ok = svc.injectKey(code)
-                if (ok) true to null else false to (svc.inputError ?: "key rejected")
+                val displayId = parts.getOrNull(2)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
+                val ok = TouchInjector.injectKey(code, displayId)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "key rejected")
             }
             "text" -> {
-                // `text <b64>`（`-`/缺参=空串；b64 字母表无空格故单 token 安全）。
+                // `text <b64> [displayId]`（`-`/缺参=空串；b64 字母表无空格故单 token 安全）。
                 val b64 = parts.getOrNull(1).orEmpty()
+                val displayId = parts.getOrNull(2)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
                 val text = if (b64.isEmpty() || b64 == "-") {
                     ""
                 } else {
@@ -286,8 +305,8 @@ object RootInputMain {
                         return false to "text bad b64: ${t.message ?: t}"
                     }
                 }
-                val ok = svc.injectText(text)
-                if (ok) true to null else false to (svc.inputError ?: "text rejected")
+                val ok = TouchInjector.injectText(text, displayId)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "text rejected")
             }
             else -> false to "unknown op ${parts[0]}"
         }

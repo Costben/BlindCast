@@ -141,57 +141,103 @@ object RootInputDaemon {
 
     // ---- 类型化便捷入口（ensure + send，失败回退由调用方 PrivilegedBridge 决定） ----
 
-    suspend fun tap(packageName: String, x: Float, y: Float): Triple<Boolean, String?, Long> {
-        if (!ensureStarted(packageName)) {
-            return Triple(false, "常驻输入daemon不可用（无su/拉起失败）", -1L)
-        }
-        return send("tap $x $y")
-    }
-
-    suspend fun down(packageName: String, x: Float, y: Float): Triple<Boolean, String?, Long> {
-        if (!ensureStarted(packageName)) {
-            return Triple(false, "常驻输入daemon不可用（无su/拉起失败）", -1L)
-        }
-        return send("down $x $y")
-    }
-
-    suspend fun move(packageName: String, x: Float, y: Float): Triple<Boolean, String?, Long> {
-        // move 高频（~60Hz）：跳过 ensure 的 ping（省一次往返），直发；
-        // daemon 死了则本发失败，调用方降级（ensure 只在 down/tap 时做）。
-        return send("move $x $y")
-    }
-
-    suspend fun up(packageName: String, x: Float, y: Float): Triple<Boolean, String?, Long> {
-        return send("up $x $y")
-    }
-
-    suspend fun drag(
+    suspend fun tap(
         packageName: String,
-        x0: Float, y0: Float, x1: Float, y1: Float,
+        x: Float,
+        y: Float,
+        displayId: Int = 0,
+        width: Int = -1,
+        height: Int = -1,
     ): Triple<Boolean, String?, Long> {
         if (!ensureStarted(packageName)) {
             return Triple(false, "常驻输入daemon不可用（无su/拉起失败）", -1L)
         }
-        return send("drag $x0 $y0 $x1 $y1")
+        val cmd = if (displayId > 0 || width > 0 || height > 0) "tap $x $y $displayId $width $height" else "tap $x $y"
+        return send(cmd)
     }
 
-    suspend fun key(packageName: String, keyCode: Int): Triple<Boolean, String?, Long> {
+    suspend fun down(
+        packageName: String,
+        x: Float,
+        y: Float,
+        displayId: Int = 0,
+        width: Int = -1,
+        height: Int = -1,
+    ): Triple<Boolean, String?, Long> {
         if (!ensureStarted(packageName)) {
             return Triple(false, "常驻输入daemon不可用（无su/拉起失败）", -1L)
         }
-        return send("key $keyCode")
+        val cmd = if (displayId > 0 || width > 0 || height > 0) "down $x $y $displayId $width $height" else "down $x $y"
+        return send(cmd)
     }
 
-    suspend fun text(packageName: String, b64: String): Triple<Boolean, String?, Long> {
+    suspend fun move(
+        packageName: String,
+        x: Float,
+        y: Float,
+        displayId: Int = 0,
+        width: Int = -1,
+        height: Int = -1,
+    ): Triple<Boolean, String?, Long> {
+        // move 高频（~60Hz）：跳过 ensure 的 ping（省一次往返），直发；
+        // daemon 死了则本发失败，调用方降级（ensure 只在 down/tap 时做）。
+        val cmd = if (displayId > 0 || width > 0 || height > 0) "move $x $y $displayId $width $height" else "move $x $y"
+        return send(cmd)
+    }
+
+    suspend fun up(
+        packageName: String,
+        x: Float,
+        y: Float,
+        displayId: Int = 0,
+        width: Int = -1,
+        height: Int = -1,
+    ): Triple<Boolean, String?, Long> {
+        val cmd = if (displayId > 0 || width > 0 || height > 0) "up $x $y $displayId $width $height" else "up $x $y"
+        return send(cmd)
+    }
+
+    suspend fun drag(
+        packageName: String,
+        x0: Float,
+        y0: Float,
+        x1: Float,
+        y1: Float,
+        displayId: Int = 0,
+        width: Int = -1,
+        height: Int = -1,
+    ): Triple<Boolean, String?, Long> {
         if (!ensureStarted(packageName)) {
             return Triple(false, "常驻输入daemon不可用（无su/拉起失败）", -1L)
         }
-        return send("text $b64")
+        val cmd = if (displayId > 0 || width > 0 || height > 0) {
+            "drag $x0 $y0 $x1 $y1 $displayId $width $height"
+        } else {
+            "drag $x0 $y0 $x1 $y1"
+        }
+        return send(cmd)
     }
 
-    suspend fun cancel(): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
+    suspend fun key(packageName: String, keyCode: Int, displayId: Int = 0): Triple<Boolean, String?, Long> {
+        if (!ensureStarted(packageName)) {
+            return Triple(false, "常驻输入daemon不可用（无su/拉起失败）", -1L)
+        }
+        val cmd = if (displayId > 0) "key $keyCode $displayId" else "key $keyCode"
+        return send(cmd)
+    }
+
+    suspend fun text(packageName: String, b64: String, displayId: Int = 0): Triple<Boolean, String?, Long> {
+        if (!ensureStarted(packageName)) {
+            return Triple(false, "常驻输入daemon不可用（无su/拉起失败）", -1L)
+        }
+        val cmd = if (displayId > 0) "text $b64 $displayId" else "text $b64"
+        return send(cmd)
+    }
+
+    suspend fun cancel(displayId: Int = 0): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
         // 解卡 best-effort：不 ensure（daemon 死了则无手势可卡，直接视成功）。
-        val (ok, err) = sendBlocking("cancel", PING_TIMEOUT_MS)
+        val cmd = if (displayId > 0) "cancel $displayId" else "cancel"
+        val (ok, err) = sendBlocking(cmd, PING_TIMEOUT_MS)
         if (!ok) {
             Log.d(TAG, "[RootInputDaemon] cancel best-effort miss err=${err?.take(120)}")
         }

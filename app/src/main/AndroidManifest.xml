@@ -98,6 +98,24 @@
             android:label="@string/blindcast_pairing_title"
             android:theme="@style/Theme.BlindCast" />
 
+        <!-- Phase C Fusion 虚拟桌面专属宿主 Home (SECONDARY_HOME)。
+             独立进程 (:fusionhome)、独立 taskAffinity、singleTask，防止与主界面或物理屏任务栈纠缠。 -->
+        <activity
+            android:name=".FusionHomeActivity"
+            android:process=":fusionhome"
+            android:taskAffinity="com.erl.blindcast.fusionhome"
+            android:launchMode="singleTask"
+            android:exported="true"
+            android:enabled="true"
+            android:theme="@style/Theme.BlindCast"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.SECONDARY_HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

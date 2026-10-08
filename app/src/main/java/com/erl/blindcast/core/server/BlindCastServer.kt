@@ -47,6 +47,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * - `POST /api/pair` → [PairRoute]（**公开**，本就为取得凭据而存在，靠 per-IP 退避约束）；
  * - `GET /api/clients`、`POST /api/clients/revoke` → [PairRoute]（需鉴权）；
  * - `GET|POST /api/screen`、`GET /api/status`、`GET|POST /api/stream` → [DeviceApiRoute]（需鉴权）；
+ * - `GET /api/probe/vd` → [DeviceApiRoute]（需鉴权，Phase C VDM 最小探针，root + Shizuku 双侧报文）；
  * - 其余 → 404；鉴权失败 → 401 JSON（WS 升级前同样先验，失败直接 401 不升级）。
  *
  * ## 线程模型
@@ -302,6 +303,38 @@ object BlindCastServer {
                     } else {
                         serveJson(output, req.method, DeviceApiRoute.handleStatus())
                     }
+                }
+            }
+            path == "/api/desktop" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveJson(output, req.method, DeviceApiRoute.handleDesktop(req.method, req.rawQuery, req.body))
+                }
+            }
+            path == "/api/desktop/tasks" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveJson(output, req.method, DeviceApiRoute.handleDesktopTasks(req.method, req.body))
+                }
+            }
+            path == "/api/probe/vd" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else if (req.method != "GET") {
+                    serveJson(output, req.method, 405 to """{"ok":false,"error":"method not allowed"}""")
+                } else {
+                    serveJson(output, req.method, DeviceApiRoute.handleVdProbe())
+                }
+            }
+            path == "/api/probe/vdcreate" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else if (req.method != "GET") {
+                    serveJson(output, req.method, 405 to """{"ok":false,"error":"method not allowed"}""")
+                } else {
+                    serveJson(output, req.method, DeviceApiRoute.handleVdCreate(req.rawQuery))
                 }
             }
             else -> serveJson(output, req.method, 404 to """{"ok":false,"error":"not found"}""")

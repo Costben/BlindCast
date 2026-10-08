@@ -78,6 +78,17 @@ object TouchInjector {
     /** 未配置显示尺寸哨兵（[displayWidth] / [displayHeight] 初始值）。 */
     const val UNSET_DISPLAY_SIZE: Int = -1
 
+    /** 当前目标显示屏（Phase C 桌面多屏路由，默认主屏 0）。 */
+    @Volatile
+    var targetDisplayId: Int = DEFAULT_DISPLAY_ID
+        private set
+
+    val targetWidth: Int
+        get() = displayWidth
+
+    val targetHeight: Int
+        get() = displayHeight
+
     /** 是否有活跃触控手势（volatile，跨线程可见；状态翻转只发生在注入成功时）。 */
     @Volatile
     var isTouching: Boolean = false
@@ -91,7 +102,7 @@ object TouchInjector {
     var lastError: Throwable? = null
         private set
 
-    /** 当前显示宽（物理像素；-1 = 未配置，见 [configure] / [init]）。 */
+    /** 当前显示宽（物理像素；-1 = 未配置，见 [configure] / [setTargetDisplay] / [init]）。 */
     @Volatile
     var displayWidth: Int = UNSET_DISPLAY_SIZE
         private set
@@ -118,6 +129,7 @@ object TouchInjector {
     private var gestureDownTime: Long = 0L
     private var lastX: Float = 0f
     private var lastY: Float = 0f
+    private var activeGestureDisplayId: Int = DEFAULT_DISPLAY_ID
 
     /** 本设备 SDK 是否满足注入前置（minSdk 31，恒为 true，保留供 ROM 黑名单扩展）。 */
     val isSupported: Boolean
@@ -132,20 +144,34 @@ object TouchInjector {
     }
 
     /**
-     * 显式配置目标显示尺寸（物理像素，Slice 4.1 按实际分辨率传入时调）。
+     * 显式配置目标显示尺寸与 displayId（Phase C 桌面多屏路由）。
+     */
+    fun setTargetDisplay(displayId: Int, width: Int, height: Int): Boolean {
+        if (displayId < 0) {
+            recordFailure(IllegalArgumentException("TouchInjector: invalid displayId $displayId"))
+            return false
+        }
+        if (width !in 1..7680 || height !in 1..7680) {
+            recordFailure(IllegalArgumentException("TouchInjector: invalid display size ${width}x${height}"))
+            return false
+        }
+        synchronized(lock) {
+            targetDisplayId = displayId
+            displayWidth = width
+            displayHeight = height
+        }
+        return true
+    }
+
+    /**
+     * 显式配置主屏显示尺寸（兼容旧接口）。
      *
      * @param width 显示宽（1..7680）
      * @param height 显示高（1..7680）
      * @return 参数合法 true；非法返回 false 且原因记 [lastError]（旧配置保持不变）。
      */
     fun configure(width: Int, height: Int): Boolean {
-        if (width !in 1..7680 || height !in 1..7680) {
-            recordFailure(IllegalArgumentException("TouchInjector: invalid display size ${width}x${height}"))
-            return false
-        }
-        displayWidth = width
-        displayHeight = height
-        return true
+        return setTargetDisplay(DEFAULT_DISPLAY_ID, width, height)
     }
 
     // ------------------------------------------------------------------
@@ -157,22 +183,40 @@ object TouchInjector {
      *
      * @param normX 归一化 X（0..1，越界自动钳制，兼容 Web 浮点舍入）。
      * @param normY 归一化 Y（同上）。
+     * @param displayId 目标屏 ID（默认当前 [targetDisplayId]）。
+     * @param width 目标屏宽（<=0 时回退全局尺寸）。
+     * @param height 目标屏高（<=0 时回退全局尺寸）。
      * @return 注入成功 true；无尺寸 / 无提权 / 反射失败返回 false（原因记 [lastError]）。
      */
     @WorkerThread
-    fun injectTouchDown(normX: Float, normY: Float): Boolean {
+    fun injectTouchDown(
+        normX: Float,
+        normY: Float,
+        displayId: Int = targetDisplayId,
+        width: Int = targetWidth,
+        height: Int = targetHeight,
+    ): Boolean {
         synchronized(lock) {
-            val (x, y) = toPixelsOrRecord(normX, normY) ?: return false
+            val (x, y) = toPixelsOrRecord(normX, normY, width, height) ?: return false
             // 悬 finger 自愈：旧手势未收尾时先补 Up，防止屏幕残留卡死触点。
             if (isTouching) {
-                injectLocked(InputControlUtils.obtainTouchUp(gestureDownTime, now(), lastX, lastY))
+                runCatching {
+                    injectLocked(InputControlUtils.obtainTouchUp(gestureDownTime, now(), lastX, lastY, activeGestureDisplayId))
+                }
             }
             val downTime = now()
-            val ok = injectLocked(InputControlUtils.obtainTouchDown(downTime, downTime, x, y))
+            val event = try {
+                InputControlUtils.obtainTouchDown(downTime, downTime, x, y, displayId)
+            } catch (t: Throwable) {
+                recordFailure(t)
+                return false
+            }
+            val ok = injectLocked(event)
             if (ok) {
                 gestureDownTime = downTime
                 lastX = x
                 lastY = y
+                activeGestureDisplayId = displayId
                 isTouching = true
             }
             return ok
@@ -187,14 +231,26 @@ object TouchInjector {
      * @return 同 [injectTouchDown]；无活跃手势时返回 false。
      */
     @WorkerThread
-    fun injectTouchMove(normX: Float, normY: Float): Boolean {
+    fun injectTouchMove(
+        normX: Float,
+        normY: Float,
+        displayId: Int = activeGestureDisplayId,
+        width: Int = targetWidth,
+        height: Int = targetHeight,
+    ): Boolean {
         synchronized(lock) {
             if (!isTouching) {
                 recordFailure(IllegalStateException("TouchInjector: move without active down"))
                 return false
             }
-            val (x, y) = toPixelsOrRecord(normX, normY) ?: return false
-            val ok = injectLocked(InputControlUtils.obtainTouchMove(gestureDownTime, now(), x, y))
+            val (x, y) = toPixelsOrRecord(normX, normY, width, height) ?: return false
+            val event = try {
+                InputControlUtils.obtainTouchMove(gestureDownTime, now(), x, y, displayId)
+            } catch (t: Throwable) {
+                recordFailure(t)
+                return false
+            }
+            val ok = injectLocked(event)
             if (ok) {
                 lastX = x
                 lastY = y
@@ -214,16 +270,122 @@ object TouchInjector {
      * @return 同 [injectTouchDown]；成功后手势状态复位。
      */
     @WorkerThread
-    fun injectTouchUp(normX: Float, normY: Float): Boolean {
+    fun injectTouchUp(
+        normX: Float,
+        normY: Float,
+        displayId: Int = activeGestureDisplayId,
+        width: Int = targetWidth,
+        height: Int = targetHeight,
+    ): Boolean {
         synchronized(lock) {
             if (!isTouching) {
                 recordFailure(IllegalStateException("TouchInjector: up without active down"))
                 return false
             }
-            val (x, y) = toPixelsOrRecord(normX, normY) ?: return false
-            val ok = injectLocked(InputControlUtils.obtainTouchUp(gestureDownTime, now(), x, y))
+            val (x, y) = toPixelsOrRecord(normX, normY, width, height) ?: return false
+            val event = try {
+                InputControlUtils.obtainTouchUp(gestureDownTime, now(), x, y, displayId)
+            } catch (t: Throwable) {
+                recordFailure(t)
+                return false
+            }
+            val ok = injectLocked(event)
             isTouching = false
             return ok
+        }
+    }
+
+    /**
+     * 原子单点轻触（Down+Up 原子完成，专供松手点击与单次调用）。
+     */
+    @WorkerThread
+    fun injectTap(
+        normX: Float,
+        normY: Float,
+        displayId: Int = targetDisplayId,
+        width: Int = targetWidth,
+        height: Int = targetHeight,
+    ): Boolean {
+        synchronized(lock) {
+            val (x, y) = toPixelsOrRecord(normX, normY, width, height) ?: return false
+            if (isTouching) {
+                runCatching {
+                    injectLocked(InputControlUtils.obtainTouchUp(gestureDownTime, now(), lastX, lastY, activeGestureDisplayId))
+                }
+                isTouching = false
+            }
+            val downTime = now()
+            val downEvent = try {
+                InputControlUtils.obtainTouchDown(downTime, downTime, x, y, displayId)
+            } catch (t: Throwable) {
+                recordFailure(t)
+                return false
+            }
+            val okDown = injectLocked(downEvent)
+            if (!okDown) return false
+            val upEvent = try {
+                InputControlUtils.obtainTouchUp(downTime, now(), x, y, displayId)
+            } catch (t: Throwable) {
+                recordFailure(t)
+                return false
+            }
+            val okUp = injectLocked(upEvent)
+            return okUp
+        }
+    }
+
+    /**
+     * 原子拖拽（Down + N步插值Move + Up，单次调用内完成）。
+     */
+    @WorkerThread
+    fun injectDrag(
+        x0: Float,
+        y0: Float,
+        x1: Float,
+        y1: Float,
+        displayId: Int = targetDisplayId,
+        width: Int = targetWidth,
+        height: Int = targetHeight,
+    ): Boolean {
+        synchronized(lock) {
+            val (px0, py0) = toPixelsOrRecord(x0, y0, width, height) ?: return false
+            val (px1, py1) = toPixelsOrRecord(x1, y1, width, height) ?: return false
+            if (isTouching) {
+                runCatching {
+                    injectLocked(InputControlUtils.obtainTouchUp(gestureDownTime, now(), lastX, lastY, activeGestureDisplayId))
+                }
+                isTouching = false
+            }
+            val downTime = now()
+            val downEvent = try {
+                InputControlUtils.obtainTouchDown(downTime, downTime, px0, py0, displayId)
+            } catch (t: Throwable) {
+                recordFailure(t)
+                return false
+            }
+            var ok = injectLocked(downEvent)
+            if (!ok) return false
+            val steps = 10
+            for (i in 1..steps) {
+                val f = i.toFloat() / (steps + 1)
+                val moveEvent = try {
+                    InputControlUtils.obtainTouchMove(downTime, now(), px0 + (px1 - px0) * f, py0 + (py1 - py0) * f, displayId)
+                } catch (t: Throwable) {
+                    recordFailure(t)
+                    return false
+                }
+                ok = injectLocked(moveEvent)
+                if (!ok) break
+                runCatching { Thread.sleep(8L) }
+            }
+            val upEvent = try {
+                InputControlUtils.obtainTouchUp(downTime, now(), px1, py1, displayId)
+            } catch (t: Throwable) {
+                recordFailure(t)
+                return false
+            }
+            val upOk = injectLocked(upEvent)
+            return ok && upOk
         }
     }
 
@@ -231,19 +393,20 @@ object TouchInjector {
     // 触控注入（物理像素入口：调用方已自行换算时用）
     // ------------------------------------------------------------------
 
-    /** [injectTouchDown] 的物理像素版本（跳过归一化换算，其余语义一致）。 */
+    /** [injectTouchDown] 的物理像素版本（跳过归一化换算，支持 displayId）。 */
     @WorkerThread
-    fun injectTouchDownPx(x: Float, y: Float): Boolean {
+    fun injectTouchDownPx(x: Float, y: Float, displayId: Int = targetDisplayId): Boolean {
         synchronized(lock) {
             if (isTouching) {
-                injectLocked(InputControlUtils.obtainTouchUp(gestureDownTime, now(), lastX, lastY))
+                injectLocked(InputControlUtils.obtainTouchUp(gestureDownTime, now(), lastX, lastY, activeGestureDisplayId))
             }
             val downTime = now()
-            val ok = injectLocked(InputControlUtils.obtainTouchDown(downTime, downTime, x, y))
+            val ok = injectLocked(InputControlUtils.obtainTouchDown(downTime, downTime, x, y, displayId))
             if (ok) {
                 gestureDownTime = downTime
                 lastX = x
                 lastY = y
+                activeGestureDisplayId = displayId
                 isTouching = true
             }
             return ok
@@ -252,13 +415,13 @@ object TouchInjector {
 
     /** [injectTouchMove] 的物理像素版本。 */
     @WorkerThread
-    fun injectTouchMovePx(x: Float, y: Float): Boolean {
+    fun injectTouchMovePx(x: Float, y: Float, displayId: Int = activeGestureDisplayId): Boolean {
         synchronized(lock) {
             if (!isTouching) {
                 recordFailure(IllegalStateException("TouchInjector: move without active down"))
                 return false
             }
-            val ok = injectLocked(InputControlUtils.obtainTouchMove(gestureDownTime, now(), x, y))
+            val ok = injectLocked(InputControlUtils.obtainTouchMove(gestureDownTime, now(), x, y, displayId))
             if (ok) {
                 lastX = x
                 lastY = y
@@ -271,13 +434,13 @@ object TouchInjector {
 
     /** [injectTouchUp] 的物理像素版本。 */
     @WorkerThread
-    fun injectTouchUpPx(x: Float, y: Float): Boolean {
+    fun injectTouchUpPx(x: Float, y: Float, displayId: Int = activeGestureDisplayId): Boolean {
         synchronized(lock) {
             if (!isTouching) {
                 recordFailure(IllegalStateException("TouchInjector: up without active down"))
                 return false
             }
-            val ok = injectLocked(InputControlUtils.obtainTouchUp(gestureDownTime, now(), x, y))
+            val ok = injectLocked(InputControlUtils.obtainTouchUp(gestureDownTime, now(), x, y, displayId))
             isTouching = false
             return ok
         }
@@ -290,10 +453,10 @@ object TouchInjector {
      * @return 同 [injectTouchDown]。
      */
     @WorkerThread
-    fun cancelTouch(): Boolean {
+    fun cancelTouch(displayId: Int = activeGestureDisplayId): Boolean {
         synchronized(lock) {
             if (!isTouching) return true
-            val ok = injectLocked(InputControlUtils.obtainTouchCancel(gestureDownTime, now(), lastX, lastY))
+            val ok = injectLocked(InputControlUtils.obtainTouchCancel(gestureDownTime, now(), lastX, lastY, displayId))
             isTouching = false
             return ok
         }
@@ -308,13 +471,14 @@ object TouchInjector {
      *
      * @param action [KeyEvent.ACTION_DOWN] / [KeyEvent.ACTION_UP] 之一。
      * @param keyCode Android 按键码（如右键预留的 [MOUSE_BUTTON_RIGHT_KEYCODE]）。
+     * @param displayId 目标显示屏。
      * @return 注入成功 true，否则 false（原因记 [lastError]）。
      */
     @WorkerThread
-    fun injectKeyAction(action: Int, keyCode: Int): Boolean {
+    fun injectKeyAction(action: Int, keyCode: Int, displayId: Int = targetDisplayId): Boolean {
         synchronized(lock) {
             val event = try {
-                InputControlUtils.obtainKeyEvent(action, keyCode)
+                InputControlUtils.obtainKeyEvent(action, keyCode, displayId)
             } catch (t: Throwable) {
                 recordFailure(t)
                 return false
@@ -327,13 +491,14 @@ object TouchInjector {
      * 注入一次完整按键（Down + Up 事件对；两半程任一失败即整体 false）。
      *
      * @param keyCode Android 按键码。
+     * @param displayId 目标显示屏。
      * @return 两半程均成功 true，否则 false。
      */
     @WorkerThread
-    fun injectKey(keyCode: Int): Boolean {
+    fun injectKey(keyCode: Int, displayId: Int = targetDisplayId): Boolean {
         synchronized(lock) {
             val pair = try {
-                InputControlUtils.obtainKeyPress(keyCode)
+                InputControlUtils.obtainKeyPress(keyCode, displayId)
             } catch (t: Throwable) {
                 recordFailure(t)
                 return false
@@ -354,11 +519,12 @@ object TouchInjector {
      * - 空串视为无操作成功（返回 true）。
      *
      * @param text 待注入文本（非 null）。
+     * @param displayId 目标显示屏。
      * @return 全部字符可映射且注入成功 true；有跳过或任一注入失败 false
      *  （跳过数字可查 log，原因记 [lastError]）。
      */
     @WorkerThread
-    fun injectText(text: String): Boolean {
+    fun injectText(text: String, displayId: Int = targetDisplayId): Boolean {
         synchronized(lock) {
             if (text.isEmpty()) return true
             ensureHiddenApiExempted()
@@ -366,6 +532,9 @@ object TouchInjector {
             // 整串优先（大小写 Shift 组合由映射表一次产出，事件顺序天然正确）。
             val whole = runCatching { keyMap.getEvents(text.toCharArray()) }.getOrNull()
             if (whole != null) {
+                for (ev in whole) {
+                    InputControlUtils.applyKeyDisplayId(ev, displayId)
+                }
                 return injectKeyEvents(whole, text.length, text.length)
             }
             // 整串不可映射（含 CJK 混排）：逐字尽力注入，可映射的先生效。
@@ -375,6 +544,9 @@ object TouchInjector {
                 val perChar = runCatching { keyMap.getEvents(charArrayOf(ch)) }.getOrNull()
                 if (perChar == null) continue
                 mapped++
+                for (ev in perChar) {
+                    InputControlUtils.applyKeyDisplayId(ev, displayId)
+                }
                 allOk = injectKeyEvents(perChar, 1, 1) && allOk
             }
             if (mapped < text.length) {
@@ -396,6 +568,7 @@ object TouchInjector {
         synchronized(lock) {
             isTouching = false
             lastError = null
+            targetDisplayId = DEFAULT_DISPLAY_ID
             displayWidth = UNSET_DISPLAY_SIZE
             displayHeight = UNSET_DISPLAY_SIZE
             successCount = 0L
@@ -403,6 +576,7 @@ object TouchInjector {
             gestureDownTime = 0L
             lastX = 0f
             lastY = 0f
+            activeGestureDisplayId = DEFAULT_DISPLAY_ID
             appContextRef = null
         }
         InputManagerWrapper.resetCacheForTest()
@@ -417,12 +591,17 @@ object TouchInjector {
     private fun clamp01(v: Float): Float = v.coerceIn(0f, 1f)
 
     /**
-     * 归一化坐标→物理像素换算。尺寸按 configure > displayMetrics 顺序解析；
+     * 归一化坐标→物理像素换算。尺寸按显式传入 > target/display 尺寸 > displayMetrics 顺序解析；
      * 无可用尺寸时记错并返回 null。
      */
-    private fun toPixelsOrRecord(normX: Float, normY: Float): Pair<Float, Float>? {
-        var w = displayWidth
-        var h = displayHeight
+    private fun toPixelsOrRecord(
+        normX: Float,
+        normY: Float,
+        overrideW: Int = targetWidth,
+        overrideH: Int = targetHeight,
+    ): Pair<Float, Float>? {
+        var w = if (overrideW in 1..7680) overrideW else displayWidth
+        var h = if (overrideH in 1..7680) overrideH else displayHeight
         if (w <= 0 || h <= 0) {
             val metrics = appContextRef?.get()?.resources?.displayMetrics
             if (metrics != null && metrics.widthPixels > 0 && metrics.heightPixels > 0) {
@@ -435,7 +614,7 @@ object TouchInjector {
         if (w <= 0 || h <= 0) {
             recordFailure(
                 IllegalStateException(
-                    "TouchInjector: unknown display size, call configure(w, h) or init(context) first",
+                    "TouchInjector: unknown display size, call setTargetDisplay/configure or init(context) first",
                 ),
             )
             return null
