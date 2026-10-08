@@ -111,6 +111,7 @@ object DeviceApiRoute {
             .put("streaming", isStreamingNow())
             .put("streamClients", StreamWsRoute.sessionCount)
             .put("controlClients", ControlWsRoute.sessionCount)
+            .put("widgetClients", WidgetWsRoute.sessionCount)
         return 200 to json.toString()
     }
 
