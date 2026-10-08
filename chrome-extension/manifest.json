@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "BlindCast Console",
-  "version": "0.1.0.3",
-  "description": "BlindCast Fusion 桌面：默认进入独立桌面，同时显示多个应用窗口，支持逐窗硬件解码与触控。",
+  "name": "AndroMeld",
+  "version": "0.2.0",
+  "description": "AndroMeld 桌面：在同一浏览器里以独立窗口并行显示多个 Android 应用，逐窗硬件解码与触控。",
   "minimum_chrome_version": "94",
   "action": {
-    "default_title": "BlindCast Console",
+    "default_title": "AndroMeld",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
@@ -18,12 +18,6 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["sidePanel", "storage", "tabs"],
-  "side_panel": {
-    "default_path": "sidepanel.html"
-  },
-  "background": {
-    "service_worker": "background.js"
-  },
+  "permissions": ["storage"],
   "host_permissions": ["http://*/*", "https://*/*"]
 }

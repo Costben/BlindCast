@@ -507,6 +507,7 @@ object DeviceApiRoute {
      * Phase C · 副屏任务管理（Vdm-Api-2，需鉴权）：
      * - `GET /api/desktop/tasks` → 目标副屏 Task 列表（严格按 displayId 过滤）；
      * - `POST /api/desktop/tasks` body `{"action":"switch","taskId":N}` → 复用副屏已有 Task 拉前台。
+     * - `POST /api/desktop/tasks` body `{"action":"close","taskId":N}` → 移除该副屏 Task（原版「关闭应用」）。
      *
      * Task 过滤与切换由 [DesktopTaskController] 实现：切换前按 taskId 反查其真实 displayId，
      * 不属于当前副屏一律拒绝，**永不移动物理主屏 display 0 的 Task**。
@@ -551,7 +552,21 @@ object DeviceApiRoute {
                             200 to res.toJson().toString()
                         }
                     }
-                    else -> 400 to err("unknown action: $action (switch)")
+                    "close" -> {
+                        val taskId = obj.optInt("taskId", -1)
+                        if (taskId <= 0) {
+                            400 to err("missing taskId")
+                        } else {
+                            val res = DesktopTaskController.closeTask(taskId, st.displayId)
+                            Log.i(
+                                "BlindCast",
+                                "[ControlWs] desktop close taskId=$taskId did=${st.displayId} " +
+                                    "closed=${res.closed} ok=${res.ok} err=${res.error.take(120)}",
+                            )
+                            200 to res.toJson().toString()
+                        }
+                    }
+                    else -> 400 to err("unknown action: $action (switch|close)")
                 }
             }
             else -> 405 to err("method not allowed")
@@ -659,32 +674,51 @@ object DeviceApiRoute {
         .put("error", w.error)
 
     /**
-     * 可启动应用列表（「打开应用」选择器用）：`GET /api/apps` → `{ok, apps:[{package,label}]}`。
+     * 应用列表（「打开应用」选择器用）：`GET /api/apps[?all=1]`。
      *
-     * 只列**有 launcher activity** 的应用（与 [DesktopWindowController.resolveLauncherComponent]
-     * 同口径，保证列表里点开的包一定能起窗口），按 label 排序、按包名去重。
-     * 只读 PackageManager，无副作用。
+     * - 默认：只列**有 launcher activity** 的应用（与 [DesktopWindowController.resolveLauncherComponent]
+     *   同口径，保证列表里点开的包一定能起窗口），按 label 排序、按包名去重；
+     * - `?all=1`：列**全部已安装应用**（原版 `app-list` 的全量语义），含系统应用，附 `system` 标记。
+     *
+     * 返回 `{ok, apps:[{package,label,system,appCategory}], error}`（`appCategory` = Android
+     * `ApplicationInfo.category`，`0` 为游戏、`-1` 未分类；供面板如实上报 `game`）。只读 PackageManager，无副作用。
      */
-    fun handleApps(method: String): Pair<Int, String> {
+    fun handleApps(method: String, rawQuery: String? = null): Pair<Int, String> {
         if (method != "GET") return 405 to err("method not allowed")
         val ctx = runCatching { com.erl.blindcast.blindCastApp.applicationContext }.getOrNull()
             ?: return 500 to err("no context")
+        val all = rawQuery?.split('&')?.any { it == "all=1" || it == "all=true" } == true
         val arr = JSONArray()
         runCatching {
             val pm = ctx.packageManager
-            val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
-                .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
-            val list = pm.queryIntentActivities(intent, 0)
-            val seen = HashSet<String>()
-            val rows = ArrayList<Pair<String, String>>() // pkg to label
-            for (ri in list) {
-                val pkgName = ri.activityInfo?.packageName ?: continue
-                if (!seen.add(pkgName)) continue
-                val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(pkgName)
-                rows.add(pkgName to label)
+            data class AppRow(val pkg: String, val label: String, val system: Boolean, val category: Int)
+            val rows = ArrayList<AppRow>()
+            if (all) {
+                for (ai in pm.getInstalledApplications(0)) {
+                    val pkgName = ai.packageName ?: continue
+                    val label = runCatching { pm.getApplicationLabel(ai).toString() }.getOrDefault(pkgName)
+                    val system = (ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                    rows.add(AppRow(pkgName, label, system, ai.category))
+                }
+            } else {
+                val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
+                    .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                val seen = HashSet<String>()
+                for (ri in pm.queryIntentActivities(intent, 0)) {
+                    val pkgName = ri.activityInfo?.packageName ?: continue
+                    if (!seen.add(pkgName)) continue
+                    val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(pkgName)
+                    val category = ri.activityInfo?.applicationInfo?.category ?: -1
+                    rows.add(AppRow(pkgName, label, false, category))
+                }
             }
-            rows.sortBy { it.second.lowercase() }
-            for ((p, l) in rows) arr.put(JSONObject().put("package", p).put("label", l))
+            rows.sortBy { it.label.lowercase() }
+            for (r in rows) {
+                arr.put(
+                    JSONObject().put("package", r.pkg).put("label", r.label)
+                        .put("system", r.system).put("appCategory", r.category)
+                )
+            }
         }
         return 200 to JSONObject().put("ok", true).put("apps", arr).put("error", "").toString()
     }

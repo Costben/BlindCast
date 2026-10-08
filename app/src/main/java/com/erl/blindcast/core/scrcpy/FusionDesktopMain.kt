@@ -56,6 +56,12 @@ object FusionDesktopMain {
     /** 同步帧请求文件后缀（App 侧 touch → 宿主补一个 IDR，见 Request-Sync-1）。 */
     private const val SYNC_SUFFIX = ".sync"
 
+    /** 逐屏夜间模式请求文件后缀（App 侧写 `yes`/`no` → 宿主 `setDisplayUiMode`）。 */
+    private const val UIMODE_SUFFIX = ".uimode"
+
+    /** 逐屏夜间模式结果文件后缀（宿主回写 `on=`/`ok=`/`displayId=`）。 */
+    private const val UIMODE_STATE_SUFFIX = ".uimode.state"
+
     @Keep
     @JvmStatic
     fun main(args: Array<String>) {
@@ -65,6 +71,7 @@ object FusionDesktopMain {
         var stopFile: File? = null
         var statusFile: File? = null
         var syncFile: File? = null
+        var uimodeFile: File? = null
         try {
             runCatching {
                 Log.i(TAG, "[FusionDesktopMain] pid=$pid uid=$uid enter args=${args.toList().take(10)}")
@@ -96,11 +103,17 @@ object FusionDesktopMain {
             val status = File(stopPath + STATUS_SUFFIX)
             // Request-Sync-1：App 侧 touch 本文件即请求一个 IDR（IPC 落文件，宿主轮询消费）。
             val sync = File(stopPath + SYNC_SUFFIX)
+            // 逐屏夜间模式：App 侧写 yes/no → 宿主消费 → 回写结果状态文件（IPC 落文件，同 sync）。
+            val uimode = File(stopPath + UIMODE_SUFFIX)
+            val uimodeState = File(stopPath + UIMODE_STATE_SUFFIX)
             stopFile = stop
             statusFile = status
             syncFile = sync
+            uimodeFile = uimode
             runCatching { if (stop.exists()) stop.delete() }
             runCatching { if (sync.exists()) sync.delete() }
+            runCatching { if (uimode.exists()) uimode.delete() }
+            runCatching { if (uimodeState.exists()) uimodeState.delete() }
             runCatching { status.writeText("state=starting\n") }
 
             // 关联 id 兜底：args 没给就自己查（只认自己的 MAC）。
@@ -173,6 +186,19 @@ object FusionDesktopMain {
                     runCatching { sync.delete() }
                     runCatching { Log.i(TAG, "[FusionDesktopMain] sync request -> request IDR") }
                     runCatching { PrivilegedCapture.requestSyncFrame() }
+                }
+                if (uimode.exists()) {
+                    val want = runCatching { uimode.readText().trim() }.getOrDefault("")
+                    runCatching { uimode.delete() }
+                    val on = want.equals("yes", true) || want == "1"
+                    val ok = VirtualDesktopSession.setNightMode(on)
+                    runCatching {
+                        uimodeState.writeText(
+                            "on=${if (on) 1 else 0}\nok=${if (ok) 1 else 0}\n" +
+                                "displayId=${VirtualDesktopSession.displayId}\n",
+                        )
+                    }
+                    runCatching { Log.i(TAG, "[FusionDesktopMain] uimode want=$want on=$on ok=$ok") }
                 }
                 if (stopFile.exists()) {
                     runCatching { Log.i(TAG, "[FusionDesktopMain] stop file hit, exiting") }

@@ -161,8 +161,7 @@ object VirtualDesktopSession {
     }
 
     /** 摘掉采集 surface（挂回 null），虚拟屏与桌面应用继续存活。 */
-    fun detachSurface(): Boolean {
-        val vd = display ?: return false
+    fun detachSurface(): Boolean {        val vd = display ?: return false
         attachedSurface = null
         return runCatching {
             // 注意：Kotlin vararg 下必须显式给数组，直传 null 会被当成"整个参数数组为 null"。
@@ -174,6 +173,41 @@ object VirtualDesktopSession {
             Log.w(TAG, "[detachSurface] failed: ${VirtualDeviceBridge.unwrap(it).message}")
             false
         }
+    }
+
+    /** 本虚拟屏当前夜间模式（默认 false；仅由 [setNightMode] 成功时更新）。 */
+    @Volatile
+    var nightMode: Boolean = false
+        private set
+
+    /**
+     * 设置**本虚拟屏**的夜间模式（原版 `display-night-mode` 的逐屏实现）。
+     *
+     * 反射 `VirtualDevice.setDisplayUiMode(displayId, uiMode)`，`uiMode` 取
+     * [VirtualDeviceBridge.UI_MODE_NIGHT_YES]（32）/ [VirtualDeviceBridge.UI_MODE_NIGHT_NO]（16）——
+     * 与逆向参考 `MirrorServerMain.java:4115-4185` 完全一致（`z ? 32 : 16`）。
+     *
+     * **只作用于本虚拟屏**，不动设备全局 `cmd uimode night`（物理主屏不受影响）。
+     * 桌面未运行 / displayId 无效 / 反射失败 → false，并写 [lastError]（fail closed）。
+     */
+    fun setNightMode(on: Boolean): Boolean {
+        val dev = device ?: run {
+            lastError = "setNightMode: 桌面未运行"
+            return false
+        }
+        val did = displayId
+        if (did <= 0) {
+            lastError = "setNightMode: displayId=$did 无效"
+            return false
+        }
+        val ui = if (on) VirtualDeviceBridge.UI_MODE_NIGHT_YES else VirtualDeviceBridge.UI_MODE_NIGHT_NO
+        val ok = VirtualDeviceBridge.setDisplayUiMode(dev, did, ui)
+        if (ok) {
+            nightMode = on
+        } else {
+            lastError = "setDisplayUiMode(display=$did, ui=0x${Integer.toHexString(ui)}) 失败"
+        }
+        return ok
     }
 
     /** 释放虚拟屏 + 关设备（幂等；任一步失败只记日志，不抛）。 */

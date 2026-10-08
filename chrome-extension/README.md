@@ -1,35 +1,42 @@
-# BlindCast Console · Chrome 插件
+# AndroMeld · Chrome 插件
 
-插件控制台默认进入 Fusion 独立桌面，支持同时打开多个应用窗口，每窗独立画面与触控。设备侧需安装支持 Fusion 的 BlindCast。
+插件把 AndroMeld 原版面板（v130）打包为 Manifest V3 扩展：桌面、独立应用窗口（Fusion）、逐窗硬件解码与触控，界面与网页端共用同一份代码。
 
 ## 安装与更新
 
 1. 打开 `chrome://extensions`，启用开发者模式。
 2. 选择「加载已解压的扩展程序」，选中本目录 `chrome-extension/`。
-3. 在插件侧栏中选择手机，打开控制台；端口默认为 8888。
-4. 更新本目录后，在扩展管理页对 **BlindCast Console** 点击「重新加载」，再刷新已经打开的控制台。
+3. 点工具栏图标，输入设备地址（默认 `192.168.31.216:8888`）后打开面板；端口默认 8888。
+4. 更新本目录后，在扩展管理页对 **AndroMeld** 点击「重新加载」，再刷新已打开的面板。
 
-设了 Token 的设备使用 App 提供的链接或在插件中输入访问 Token。侧栏打开控制台时会带入已保存的设备和 Token。
+扩展页面是安全上下文，走原生 WebCodecs 硬解与原生剪贴板；普通局域网网页（`http://<设备>:8888/`）用同一面板，通过 MSE 播放 H.264。
 
-插件页面使用 Chrome 的 WebCodecs 硬件解码，无需更改浏览器的安全设置。普通局域网网页使用同一桌面界面，通过 MSE 播放 H.264。
+## 目录结构
 
-## 同步网页控制台
+面板镜像到扩展**根目录**（入口保持 `console.html?host=...`）：外壳用 `new URL("window/", document.baseURI)` 解析 Fusion 窗口路径，只有入口在根目录时才会落到镜像的 `window/`。
 
-网页界面与串流逻辑的唯一来源为 `app/src/main/assets/web/index.html` 和 `h264-player.js`。修改后，在仓库根目录执行：
+- `manifest.json`：MV3；入口 `popup.html`，权限 `storage`。
+- `popup.html` / `popup.js`：设备地址输入、最近记录与局域网发现。
+- `console.html`：面板入口（由 `assets/web/index.html` 生成）。
+- `window/index.html`：Fusion 逐应用窗口入口。
+- `css/`、`js/`、`img/`、`h264-player.js`、各 `icon-*.png` / `favicon-*.png`：与网页端 1:1。
+- `icons/`：扩展工具栏图标（由 `icon-512.png` 生成）。
+
+## 同步网页面板
+
+面板唯一来源是 `app/src/main/assets/web/`。改动后在本仓库根目录执行：
 
 ```sh
-python3 scripts/sync-chrome-console.py
+python3 scripts/patch-shell.py          # 应用原版 bundle 的本地化补丁（幂等）
+python3 scripts/sync-chrome-console.py  # 镜像到 chrome-extension/
 python3 scripts/sync-chrome-console.py --check
 ```
 
-生成器更新 `console.html`、`app.js` 与 `h264-player.js`。它将内联脚本导出为本地外部脚本以满足 Manifest V3 CSP，并为 REST、配对和 WebSocket 请求加上选中设备的地址。不要直接修改这三个生成文件。
+`sync-chrome-console.py` 只把根 `index.html` 改名为 `console.html`（`window/index.html` 保持不变），跳过 `manifest.webmanifest`/`sw.js`，清理范围仅限面板自有路径，不触碰 `manifest.json` / `popup.*` / `icons/`。`--check` 对未同步返回非零退出码。
 
-`--check` 对未同步的插件资源返回非零退出码。验证功能时同时检查手机网页和插件控制台，避免只更新网页端。
+## 自检
 
-## 文件
-
-- `manifest.json`：Manifest V3、局域网访问权限和侧栏入口。
-- `sidepanel.html` / `sidepanel.js`：设备库与连接入口。
-- `popup.html` / `popup.js`：设备连接与历史记录。
-- `console.html` / `app.js` / `h264-player.js`：由网页控制台生成的 Fusion 界面与播放器。
-- `background.js`：打开侧栏。
+```sh
+python3 scripts/check-web.py        # 资源/布局/CSP/能力集/同步
+node scripts/test-adapter.cjs       # local-adapter 逻辑（无浏览器）
+```

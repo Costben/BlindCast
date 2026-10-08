@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="color-scheme" content="light dark">
+    <meta name="application-name" content="AndroMeld Web">
+    <meta name="apple-mobile-web-app-title" content="AndroMeld">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="format-detection" content="telephone=no">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F5F5F7">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111113">
+    <!-- 标题必须以域根 manifest 的 `name` 开头（逐字节一致）：Chromium 只有这样才原样采用
+         document.title，否则拼成「应用名 - 标题」。同一约束见 js/shell.js。 -->
+    <title>AndroMeld Web</title>
+    <!-- 已安装形态的子窗口页：一扇会话 = 一个 OS 窗口，由主窗口（index.html / js/windows-host.js）
+         用 window.open 开出，经 opener.andromeldHub 取会话服务。manifest 与 index.html 同指域根，
+         这扇窗才归属同一个已安装应用。 -->
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" type="image/png" sizes="32x32" href="../favicon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="../favicon-16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="../apple-touch-icon.png">
+    <link rel="stylesheet" href="../css/panel.css">
+</head>
+<body>
+    <!-- 工具图标（js/tools.js）的渐变定义：与 index.html 同一份。 -->
+    <svg class="visually-hidden" id="toolIconDefs" aria-hidden="true" focusable="false">
+        <defs>
+            <linearGradient id="toolPhoneGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5AC8FA"/><stop offset="1" stop-color="#0A6CFF"/></linearGradient>
+            <linearGradient id="toolPhoneScreenGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1E3A8A"/><stop offset="1" stop-color="#0B1B4B"/></linearGradient>
+            <linearGradient id="toolFilesBackGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F5B21E"/><stop offset="1" stop-color="#D98A00"/></linearGradient>
+            <linearGradient id="toolFilesFrontGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE38A"/><stop offset="1" stop-color="#FFC233"/></linearGradient>
+            <linearGradient id="toolTerminalGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4B5163"/><stop offset="1" stop-color="#1B1E27"/></linearGradient>
+        </defs>
+    </svg>
+
+    <!-- 窗口模板：与 index.html 的 #winTemplate 逐字节相同（tests/web_panel/unit/windows-host.test.mjs 断言），
+         由 js/window-app.js 克隆一份铺满视口。 -->
+                <template id="winTemplate">
+                    <section class="win" hidden data-orientation="L" data-state="opening" data-focused="false" data-game="false">
+                        <!-- 阴影与玻璃/实时画面分层：阴影不能跟着 backdrop-filter 内容一起重绘。 -->
+                        <span class="win-shadow" aria-hidden="true"></span>
+                        <div class="win-surface">
+                        <header class="win-bar">
+                            <div class="win-bar-left">
+                                <!-- Mac 红绿灯：关闭带 App 名，由 win.js 逐窗填；最小化/缩放是静态可本地化文案。 -->
+                                <button class="win-btn win-close" type="button" aria-label="Close" title="Close">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                                </button>
+                                <button class="win-btn win-minimize" type="button" aria-label="Minimize" title="Minimize"
+                                        data-i18n-aria-label="panel.window.minimize" data-i18n-title="panel.window.minimize">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12"/></svg>
+                                </button>
+                                <button class="win-btn win-zoom" type="button" aria-label="Zoom" title="Zoom"
+                                        data-i18n-aria-label="panel.window.zoom" data-i18n-title="panel.window.zoom">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>
+                                </button>
+                            </div>
+                            <!-- 窄顶栏（已安装小窗）里标题让位给 App 图标，由 win.js 填、css/panel.css 按顶栏宽度切换。 -->
+                            <div class="win-bar-title"><img class="win-icon" alt="" draggable="false" hidden><span class="win-title"></span></div>
+                            <div class="win-bar-right">
+                                <!-- Android 返回键：图标与文案一起露出，恒在标题栏右段（本地窗由 shell.js 隐掉）。 -->
+                                <button class="win-btn win-back" type="button" aria-label="Back" title="Back"
+                                        data-i18n-aria-label="panel.window.back" data-i18n-title="panel.window.back">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+                                    <span data-i18n="panel.window.back">Back</span>
+                                </button>
+                                <!-- 多开钮：只有文件管理与终端有第二扇窗可开，由 shell.js 按窗口种类露出。 -->
+                                <button class="win-new" type="button" hidden
+                                        data-i18n-aria-label="panel.taskbar.new_window" data-i18n-title="panel.taskbar.new_window">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>
+                                </button>
+                                <!-- 竖向三点（Material Symbols more_vert）外套圆环；展开显示/功能两个分区，由 winmenu.js 填。 -->
+                                <button class="win-menu-btn" type="button" aria-expanded="false" aria-haspopup="true"
+                                        data-i18n-aria-label="panel.window.menu" data-i18n-title="panel.window.menu">
+                                    <svg viewBox="0 -960 960 960" aria-hidden="true"><path d="M480-160q-33 0-56.5-23.5T400-240q0-33 23.5-56.5T480-320q33 0 56.5 23.5T560-240q0 33-23.5 56.5T480-160Zm0-240q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400Zm0-240q-33 0-56.5-23.5T400-720q0-33 23.5-56.5T480-800q33 0 56.5 23.5T560-720q0 33-23.5 56.5T480-640Z"/></svg>
+                                </button>
+                            </div>
+                        </header>
+                        <span class="win-resize-handle" data-resize-edge="n" aria-hidden="true"></span>
+                        <span class="win-resize-handle" data-resize-edge="ne" aria-hidden="true"></span>
+                        <span class="win-resize-handle" data-resize-edge="e" aria-hidden="true"></span>
+                        <span class="win-resize-handle" data-resize-edge="se" aria-hidden="true"></span>
+                        <span class="win-resize-handle" data-resize-edge="s" aria-hidden="true"></span>
+                        <span class="win-resize-handle" data-resize-edge="sw" aria-hidden="true"></span>
+                        <span class="win-resize-handle" data-resize-edge="w" aria-hidden="true"></span>
+                        <span class="win-resize-handle" data-resize-edge="nw" aria-hidden="true"></span>
+                        <div class="win-menu" hidden role="menu"></div>
+                        <!-- 绿灯悬浮浮层（macOS「Move & Resize」同义）：四档半屏落位。指针离开绿灯与浮层即收，
+                             键盘经绿灯 focus 进入。图形由 css/panel.css 画，不引图标字体。 -->
+                        <div class="win-snap" hidden>
+                            <span class="win-snap-title" data-i18n="panel.window.snap_title">Move &amp; Resize</span>
+                            <div class="win-snap-tiles">
+                                <button type="button" data-snap="left"
+                                        data-i18n-aria-label="panel.window.snap_left" data-i18n-title="panel.window.snap_left"></button>
+                                <button type="button" data-snap="right"
+                                        data-i18n-aria-label="panel.window.snap_right" data-i18n-title="panel.window.snap_right"></button>
+                                <button type="button" data-snap="top"
+                                        data-i18n-aria-label="panel.window.snap_top" data-i18n-title="panel.window.snap_top"></button>
+                                <button type="button" data-snap="bottom"
+                                        data-i18n-aria-label="panel.window.snap_bottom" data-i18n-title="panel.window.snap_bottom"></button>
+                            </div>
+                        </div>
+                        <!-- 手机屏幕镜像窗（data-win-kind="phone"）专用工具栏：竖屏贴右、横屏贴底，方向只随
+                             视频宽高比（与 Mac Phone Screen 同构）。镜像窗/文件窗里恒 hidden；关闭按钮留在
+                             与其它窗口同一条 .win-bar 里（见 css/phone.css）。
+                             状态契约：screen 按钮用 aria-pressed 表达「已关屏」（文案/图标两态由 CSS 按它切换，
+                             aria-label/title 由 win.js 同步）；fusion 不可用时 disabled；nav 按钮按下由 win.js
+                             加 .is-active 约 180ms。几何与观感见 css/phone.css。DOM 顺序 power/back/home/recents，
+                             竖屏由 CSS 反转成 power/recents/home/back（上→下，对齐 Mac 侧栏）。 -->
+                        <nav class="win-rail" hidden data-i18n-aria-label="panel.phone.title" aria-label="Phone Screen">
+                            <div class="win-rail-group" data-group="tools">
+                                <button class="win-rail-btn" type="button" data-action="fusion"
+                                        data-i18n-aria-label="panel.phone.fusion" data-i18n-title="panel.phone.fusion" title="Meld Mode">
+                                    <span class="win-rail-icon" aria-hidden="true">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="3.2"/><path d="M12 3.5v17M3.5 12h17"/></svg>
+                                    </span>
+                                    <span class="win-rail-label" data-i18n="panel.phone.fusion">Meld Mode</span>
+                                </button>
+                                <button class="win-rail-btn" type="button" data-action="screen" aria-pressed="false"
+                                        data-i18n-aria-label="panel.phone.screen_off" data-i18n-title="panel.phone.screen_off" title="Use with Screen Off">
+                                    <span class="win-rail-icon" aria-hidden="true">
+                                        <svg class="win-rail-icon-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5.6V5a2.5 2.5 0 0 1 2.5-2.5h5A2.5 2.5 0 0 1 17 5v10.6"/><path d="M17 18.4V19a2.5 2.5 0 0 1-2.5 2.5h-5A2.5 2.5 0 0 1 7 19V8.4"/><path d="M4 4 20 20"/></svg>
+                                        <svg class="win-rail-icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.9h3"/></svg>
+                                    </span>
+                                    <span class="win-rail-label">
+                                        <span class="win-rail-label-off" data-i18n="panel.phone.screen_off">Use with Screen Off</span>
+                                        <span class="win-rail-label-on" data-i18n="panel.phone.screen_on">Turn Screen On</span>
+                                    </span>
+                                </button>
+                            </div>
+                            <div class="win-rail-group" data-group="nav">
+                                <button class="win-rail-btn" type="button" data-action="power"
+                                        data-i18n-aria-label="panel.phone.power" data-i18n-title="panel.phone.power" title="Power">
+                                    <span class="win-rail-icon" aria-hidden="true">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4v7.5"/><path d="M16.5 7.1a7 7 0 1 1-9 0"/></svg>
+                                    </span>
+                                    <span class="win-rail-label" data-i18n="panel.phone.power">Power</span>
+                                </button>
+                                <button class="win-rail-btn" type="button" data-action="back"
+                                        data-i18n-aria-label="panel.phone.back" data-i18n-title="panel.phone.back" title="Back">
+                                    <span class="win-rail-icon" aria-hidden="true">
+                                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15 5.4v13.2L6.2 12z"/></svg>
+                                    </span>
+                                    <span class="win-rail-label" data-i18n="panel.phone.back">Back</span>
+                                </button>
+                                <button class="win-rail-btn" type="button" data-action="home"
+                                        data-i18n-aria-label="panel.phone.home" data-i18n-title="panel.phone.home" title="Home">
+                                    <span class="win-rail-icon" aria-hidden="true">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/></svg>
+                                    </span>
+                                    <span class="win-rail-label" data-i18n="panel.phone.home">Home</span>
+                                </button>
+                                <button class="win-rail-btn" type="button" data-action="recents"
+                                        data-i18n-aria-label="panel.phone.recents" data-i18n-title="panel.phone.recents" title="Recents">
+                                    <span class="win-rail-icon" aria-hidden="true">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5.5" y="5.5" width="13" height="13" rx="2"/></svg>
+                                    </span>
+                                    <span class="win-rail-label" data-i18n="panel.phone.recents">Recents</span>
+                                </button>
+                            </div>
+                        </nav>
+                        <!-- 一次性引导（Material feature discovery）：扇形围住菜单按钮，点提示上任意一处（扇形、目标环、
+                             文案）或点菜单按钮即永久关闭——click 委托在 .win-hint 上（见 js/winhint.js）。
+                             几何由 winhint.js 按窗口尺寸算好写进 --hint-* 变量；提示之外不拦截点击。 -->
+                        <div class="win-hint" hidden>
+                            <button class="win-hint-sector" type="button"
+                                    data-i18n-aria-label="panel.window.hint.title"></button>
+                            <span class="win-hint-target" aria-hidden="true">
+                                <span class="win-hint-pulse"></span>
+                                <svg viewBox="0 -960 960 960" aria-hidden="true"><path d="M480-160q-33 0-56.5-23.5T400-240q0-33 23.5-56.5T480-320q33 0 56.5 23.5T560-240q0 33-23.5 56.5T480-160Zm0-240q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400Zm0-240q-33 0-56.5-23.5T400-720q0-33 23.5-56.5T480-800q33 0 56.5 23.5T560-720q0 33-23.5 56.5T480-640Z"/></svg>
+                            </span>
+                            <span class="win-hint-copy" aria-hidden="true">
+                                <strong data-i18n="panel.window.hint.title">App not displaying correctly?</strong>
+                                <small data-i18n="panel.window.hint.body">Turn on Compatibility Resolution here.</small>
+                            </span>
+                        </div>
+                        <canvas class="win-canvas" width="1200" height="540"></canvas>
+                        <!-- 文件管理子 App 的窗内宿主：镜像窗里它恒 hidden，文件窗里由 shell.js
+                             显示并把 .win-canvas 隐掉（同一份模板，靠 data-win-kind 区分）。 -->
+                        <div class="fm-root" hidden>
+                            <div class="fm-toolbar">
+                                <button class="fm-icon-btn fm-up" type="button"
+                                        data-i18n-aria-label="panel.files.up" data-i18n-title="panel.files.up">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V6m0 0-6 6m6-6 6 6"/></svg>
+                                </button>
+                                <button class="fm-icon-btn fm-refresh" type="button"
+                                        data-i18n-aria-label="panel.files.refresh" data-i18n-title="panel.files.refresh">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4.5V10h-5.5"/></svg>
+                                </button>
+                                <nav class="fm-crumbs" data-i18n-aria-label="panel.files.title"></nav>
+                                <!-- 当前目录内按名字即时过滤；placeholder 带目录名，由 filemanager.js 随导航更新。 -->
+                                <label class="fm-search">
+                                    <input class="fm-search-input" type="search" autocomplete="off" spellcheck="false">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>
+                                </label>
+                                <div class="fm-view-switch" role="group" data-i18n-aria-label="panel.files.title">
+                                    <button type="button" data-fm-view="grid" aria-pressed="false"
+                                            data-i18n-aria-label="panel.files.view_grid" data-i18n-title="panel.files.view_grid">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.6"/><rect x="13" y="4" width="7" height="7" rx="1.6"/><rect x="4" y="13" width="7" height="7" rx="1.6"/><rect x="13" y="13" width="7" height="7" rx="1.6"/></svg>
+                                    </button>
+                                    <button type="button" data-fm-view="list" aria-pressed="true"
+                                            data-i18n-aria-label="panel.files.view_list" data-i18n-title="panel.files.view_list">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M4 6.5h16M4 12h16M4 17.5h16"/></svg>
+                                    </button>
+                                </div>
+                                <button class="fm-icon-btn fm-new-folder" type="button"
+                                        data-i18n-aria-label="panel.files.new_folder" data-i18n-title="panel.files.new_folder">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A2 2 0 0 1 5 5.5h3.6l1.8 2.2H19a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5m-2.5-2.5h5"/></svg>
+                                </button>
+                            </div>
+                            <div class="fm-main">
+                                <!-- 侧栏：根目录 + 设备上实际存在的公共目录，由 filemanager.js 渲染。 -->
+                                <nav class="fm-side" data-i18n-aria-label="panel.files.places"></nav>
+                                <div class="fm-content">
+                                    <div class="fm-head" aria-hidden="true">
+                                        <span data-i18n="panel.files.prop_name">Name</span>
+                                        <span data-i18n="panel.files.prop_modified">Modified</span>
+                                        <span data-i18n="panel.files.prop_size">Size</span>
+                                    </div>
+                                    <div class="fm-body" tabindex="0" role="listbox" aria-multiselectable="true"
+                                         data-i18n-aria-label="panel.files.title" data-view="list">
+                                        <!-- 纯排版容器：role=presentation 让 option 仍归属外层 listbox -->
+                                        <div class="fm-list" role="presentation"></div>
+                                        <div class="fm-state" hidden></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="fm-status">
+                                <span class="fm-status-text" role="status" aria-live="polite"></span>
+                                <!-- 上传进度：确定进度的波纹圆环，--ring-progress 由 filemanager.js 写。 -->
+                                <span class="fm-progress m3-ring" hidden aria-hidden="true"></span>
+                            </div>
+                            <div class="fm-menu" hidden role="menu"></div>
+                            <div class="fm-dialog" hidden role="dialog" aria-modal="true"></div>
+                        </div>
+                        <!-- 终端子 App 的窗内宿主：与 .fm-root 同一套本地窗口接法，靠 data-win-kind 区分。
+                             .term-host 由 js/terminal.js 交给 xterm 填；右键菜单复用 ctxmenu.js 的 .fm-menu 表面。 -->
+                        <div class="term-root" hidden>
+                            <div class="term-host"></div>
+                            <div class="term-menu fm-menu" hidden role="menu"></div>
+                        </div>
+                        <input class="win-hidden-input" aria-label="">
+                        <div class="win-overlay" hidden></div>
+                        <!-- 窗内浮层提示：与 Mac 的 surfaceOverlay 同款（圆形图标 + 居中文案，
+                             3 秒自退）。拖文件进这扇窗之后由 win.js 点亮，**不发全局 toast**。 -->
+                        <div class="win-notice" hidden role="status" aria-live="polite">
+                            <span class="win-notice-icon" aria-hidden="true"></span>
+                            <span class="win-notice-text"></span>
+                        </div>
+                        <!-- 拖出传输遮罩：与 Mac 的 transfer-progress veil 同款。它同时是输入屏障——
+                             传输期间对镜像 App 的输入（返回键、关掉源 App）会切断设备侧 provider。
+                             露出时机与进度由 dragout.js 经 win.js 写。 -->
+                        <div class="win-dragout" hidden>
+                            <span class="win-dragout-ring m3-ring" aria-hidden="true"></span>
+                            <span class="win-dragout-text" role="status" aria-live="polite"></span>
+                            <button class="win-dragout-cancel" type="button" data-i18n="panel.dragout.cancel">Cancel</button>
+                        </div>
+                        <!-- App 退出/被手机切走后的窗内重启入口；aria-label 带 App 名，由 win.js 逐窗填 -->
+                        <button class="win-relaunch" type="button" aria-label="Restart">
+                            <span data-i18n="panel.window.relaunch">Restart</span>
+                        </button>
+                        <button class="replace-veil" type="button" hidden>
+                            <span class="replace-action"><span class="replace-plus" aria-hidden="true">+</span><small data-i18n="panel.replace.launch_here">Launch here</small></span>
+                        </button>
+                        </div>
+                    </section>
+                </template>
+
+    <!-- 拖出托盘的锚点：贴在标题栏右端下沿，托盘按它的矩形定位（js/dragout.js positionTray）。 -->
+    <div class="dragout-anchor" id="dragoutAnchor" aria-hidden="true"></div>
+
+    <!-- 托盘：设备 drag live 与面板内拖着设备文件时露出，松手其上 = 存进浏览器下载。 -->
+    <div class="dragout-tray" id="dragoutTray" hidden aria-hidden="true" data-state="target">
+            <svg class="dragout-tray-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3v12m0 0 5-5m-5 5-5-5"/><path d="M4 19h16"/>
+            </svg>
+            <span class="dragout-tray-ring m3-ring" id="dragoutTrayRing" aria-hidden="true"></span>
+            <span class="dragout-tray-label" id="dragoutTrayLabel"></span>
+        </div>
+
+    <p class="no-hub" id="noHub" hidden data-i18n="panel.window_app.no_hub"></p>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+
+    <script src="../h264-player.js?v=20261009-fusion-2"></script>
+    <script src="../js/local-adapter.js?v=20261009-fusion-2"></script>
+    <script type="module" src="../js/window-app.js?v=20261009-fusion-2"></script>
+</body>
+</html>

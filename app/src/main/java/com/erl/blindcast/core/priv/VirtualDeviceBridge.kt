@@ -104,6 +104,13 @@ object VirtualDeviceBridge {
      */
     const val FLAG_TRUSTED_FALLBACK = 4096
 
+    /**
+     * `Configuration.UI_MODE_NIGHT_NO` / `UI_MODE_NIGHT_YES`（原版 `MirrorServerMain`
+     * 逐屏夜间模式用的正是这两个值：`zBooleanValue ? 32 : 16`）。
+     */
+    const val UI_MODE_NIGHT_NO = 16
+    const val UI_MODE_NIGHT_YES = 32
+
     /** 已建虚拟设备句柄。 */
     class Device(
         val instance: Any,
@@ -435,16 +442,55 @@ object VirtualDeviceBridge {
             .onFailure { Log.w(TAG, "[closeDevice] failed deviceId=${d.deviceId}: ${unwrap(it).message}") }
     }
 
-    /** 设虚拟屏 UI 模式（`setDisplayUiMode(displayId, uiMode)`，Android 14+ 在 VirtualDevice 上）。 */
-    fun setDisplayUiMode(d: Device, displayId: Int, uiMode: Int): Boolean = runCatching {
-        d.cls.getMethod("setDisplayUiMode", Integer.TYPE, Integer.TYPE)
-            .invoke(d.instance, displayId, uiMode)
-        Log.i(TAG, "[setDisplayUiMode] ok deviceId=${d.deviceId} displayId=$displayId uiMode=$uiMode")
-        true
-    }.getOrElse {
-        Log.w(TAG, "[setDisplayUiMode] failed: ${unwrap(it).message}")
-        false
+    /**
+     * 设虚拟屏 UI 模式（`setDisplayUiMode(displayId, uiMode)`，Android 14+ 在 VirtualDevice 上）。
+     *
+     * 双路：
+     * 1. 首选客户端 `VirtualDevice.setDisplayUiMode(int,int)`（与原版 MirrorServerMain 完全一致）；
+     * 2. 该客户端方法在 Android 16 上加 `@FlaggedApi(FLAG_DEVICE_AWARE_UI_MODE)`，aconfig flag
+     *    `device_aware_ui_mode` 未开时抛 `UnsupportedOperationException("Required flag is not
+     *    enabled")`（**服务端实现本身不受此门禁**）。此时回退到反射内部 `IVirtualDevice`
+     *    binder 字段（`mVirtualDevice` / `mVirtualDeviceInternal`）直调同名方法——即门禁之后
+     *    客户端方法真正调用的那条路径，行为等价、不缩为全局开关。
+     */
+    fun setDisplayUiMode(d: Device, displayId: Int, uiMode: Int): Boolean {
+        // 1. 原版路径
+        runCatching {
+            d.cls.getMethod("setDisplayUiMode", Integer.TYPE, Integer.TYPE)
+                .invoke(d.instance, displayId, uiMode)
+            Log.i(TAG, "[setDisplayUiMode] ok(client) deviceId=${d.deviceId} displayId=$displayId uiMode=$uiMode")
+            return true
+        }.onFailure { t ->
+            if (!isFlagGate(unwrap(t))) {
+                Log.w(TAG, "[setDisplayUiMode] client failed: ${unwrap(t).message}")
+                return false
+            }
+            Log.i(TAG, "[setDisplayUiMode] client flag-gated, falling back to IVirtualDevice binder")
+        }
+        // 2. binder 直调（绕过仅存在于客户端的 dev-flag 门禁）
+        for (fieldName in arrayOf("mVirtualDeviceInternal", "mVirtualDevice")) {
+            val ok = runCatching {
+                val f = d.cls.getDeclaredField(fieldName).apply { isAccessible = true }
+                val ivd = f.get(d.instance) ?: return@runCatching false
+                ivd.javaClass.getMethod("setDisplayUiMode", Integer.TYPE, Integer.TYPE)
+                    .invoke(ivd, displayId, uiMode)
+                true
+            }.getOrElse { t ->
+                Log.d(TAG, "[setDisplayUiMode] binder via $fieldName failed: ${unwrap(t).message}")
+                false
+            }
+            if (ok) {
+                Log.i(TAG, "[setDisplayUiMode] ok(binder/$fieldName) deviceId=${d.deviceId} displayId=$displayId uiMode=$uiMode")
+                return true
+            }
+        }
+        Log.w(TAG, "[setDisplayUiMode] both client and binder paths failed displayId=$displayId")
+        return false
     }
+
+    /** 判定是否为 `Required flag is not enabled` 门禁异常。 */
+    private fun isFlagGate(t: Throwable): Boolean =
+        t is UnsupportedOperationException || (t.message?.contains("Required flag is not enabled") == true)
 
     /** 吞掉一切、恒返回 null 的动态代理（虚拟屏回调只为满足方法签名）。 */
     private fun nullProxy(type: Class<*>): Any? =

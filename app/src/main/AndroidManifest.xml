@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 应用管理（A18）：枚举全部已安装应用（原版 AndroMeld 的 app-list 全量语义），
+         以及卸载/清数据/应用信息所需的包可见性。 -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
@@ -80,8 +83,19 @@
             </intent-filter>
         </activity>
 
-        <!-- Desktop-Widget-1 桌面小部件绑定入口：把桌面小部件交给 BlindCast 渲染前，
-             必须由用户在此授权一次（ACTION_APPWIDGET_BIND 系统弹窗，无法静默完成）。
+        <!-- 剪贴板读取桥：透明无动画、noHistory，前台读一次即结束（Android 10+ 后台读剪贴板受限）。
+             仅由服务侧按需拉起，不对外暴露；独立 taskAffinity 防止与主任务栈纠缠。 -->
+        <activity
+            android:name=".core.clipboard.ClipboardBridgeActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTop"
+            android:taskAffinity="com.erl.blindcast.clipboard"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density" />
+
+        <!-- Desktop-Widget-1 桌面小部件绑定入口：把桌面小部件交给 BlindCast 渲染前，             必须由用户在此授权一次（ACTION_APPWIDGET_BIND 系统弹窗，无法静默完成）。
              exported=true 供 adb 直达（am start -n com.erl.blindcast/.core.widget.WidgetPickerActivity），
              接入应用内设置页入口后可收紧为 false。 -->
         <activity
@@ -115,6 +129,18 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!-- 通知镜像监听器（原版 A19 notif-*）：需系统「通知使用权」；
+             本应用以 root 幂等执行 `cmd notification allow_listener` 自动授权。 -->
+        <service
+            android:name=".core.notification.BlindCastNotificationListener"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -56,8 +56,9 @@ object StreamWsRoute {
 
     /**
      * 逐窗口视频通道头（Win-Stream-1）。线格式
-     * `[0x11][1 字节 windowId][H.264 Annex-B…]`：每个应用窗口一路独立虚拟显示/编码会话，
-     * 在**同一条** `/ws/stream` 上按 windowId 多路复用；前端每窗口一个 `VideoDecoder` 槽。
+     * `[0x11][1 字节 windowId][8 字节大端 pts 微秒][H.264 Annex-B…]`：每个应用窗口一路独立
+     * 虚拟显示/编码会话，在**同一条** `/ws/stream` 上按 windowId 多路复用；前端每窗口一个
+     * `VideoDecoder` 槽。pts 见 [broadcastWindowVideo]。
      */
     const val KIND_WINDOW_VIDEO: Byte = 0x11
 
@@ -649,7 +650,6 @@ object StreamWsRoute {
 
     private const val HELLO_JSON =
         """{"type":"hello","video":{"mime":"video/avc","kind":1,"format":"annexb"},""" +
-            """"audio":{"mime":"audio/mp4a-latm","kind":2,"format":"raw"},""" +
             """"jpeg":{"mime":"image/jpeg","kind":3,"format":"jpeg"},""" +
             """"window":{"mime":"video/avc","kind":17,"format":"annexb+wid"}}"""
 

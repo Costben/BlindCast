@@ -48,6 +48,9 @@ import java.util.concurrent.CopyOnWriteArraySet
  */
 object ControlWsRoute {
 
+    /** `KeyEvent.KEYCODE_PASTE`（API 30+）：Unicode 文本经「设剪贴板 + 粘贴」注入。 */
+    private const val KEYCODE_PASTE = 279
+
     private val sessions = CopyOnWriteArraySet<WsConnection>()
 
     /**
@@ -465,10 +468,47 @@ object ControlWsRoute {
             logInject("fail-closed", did, 0, 0, false, "window $wid not ready", detail = "wid=$wid")
             return false to "window $wid not ready"
         }
-        val r = runCatching { runBlocking { PrivilegedBridge.injectText(pkg(), text, did) } }
-            .getOrElse { false to (it.message ?: it.toString()) }
-        logInject("text", did, 0, 0, r.first, r.second, detail = "wid=$wid len=${text.length}")
+        // ASCII 走虚拟键盘映射（原路径）；含 CJK/全角标点等多字节字符 → 剪贴板 + PASTE（Unicode 注入）。
+        val asciiOnly = text.all { c -> c.code in 32..126 }
+        val r = if (asciiOnly) {
+            runCatching { runBlocking { PrivilegedBridge.injectText(pkg(), text, did) } }
+                .getOrElse { false to (it.message ?: it.toString()) }
+        } else {
+            injectUnicodeViaPaste(text, did)
+        }
+        logInject("text", did, 0, 0, r.first, r.second, detail = "wid=$wid len=${text.length} ascii=$asciiOnly")
         return r
+    }
+
+    /**
+     * Unicode 文本注入：临时把设备剪贴板设为 [text] → 向目标屏注入 `KEYCODE_PASTE`(279) → 还原剪贴板。
+     *
+     * 为什么不能只靠虚拟键盘映射：`KeyCharacterMap.VIRTUAL_KEYBOARD` 无法产出 CJK/全角标点
+     * （[com.erl.blindcast.core.scrcpy.TouchInjector.injectText] 对不可映射字符记错跳过）。
+     * 「设剪贴板 + 粘贴」是可注入任意 Unicode 的通行做法（scrcpy 同类）。粘贴后尽力还原原剪贴板。
+     */
+    private fun injectUnicodeViaPaste(text: String, did: Int): Pair<Boolean, String?> {
+        val ctx = runCatching { com.erl.blindcast.blindCastApp.applicationContext }.getOrNull()
+            ?: return false to "no context"
+        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as? android.content.ClipboardManager ?: return false to "no clipboard service"
+        // 尽力保存原剪贴板文本（后台读取可能受限，拿不到就不还原）。
+        val prev = runCatching {
+            cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(ctx)?.toString()
+        }.getOrNull()
+        val setOk = runCatching {
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("BlindCast", text)); true
+        }.getOrDefault(false)
+        if (!setOk) return false to "setPrimaryClip failed"
+        try {
+            Thread.sleep(80)
+            return runCatching { runBlocking { PrivilegedBridge.injectKey(pkg(), KEYCODE_PASTE, did) } }
+                .getOrElse { false to (it.message ?: it.toString()) }
+        } finally {
+            if (prev != null) {
+                runCatching { cm.setPrimaryClip(android.content.ClipData.newPlainText("BlindCast", prev)) }
+            }
+        }
     }
 
     // Smooth-1 实时三件套委托（常驻 daemon 直透，无单次/Shizuku 回退；

@@ -4,11 +4,18 @@ import android.content.Context
 import android.util.Log
 import com.erl.blindcast.core.server.auth.CredentialStore
 import com.erl.blindcast.core.server.auth.TokenAuthenticator
+import com.erl.blindcast.core.server.routes.AssetApiRoute
 import com.erl.blindcast.core.server.routes.AuthRoute
+import com.erl.blindcast.core.server.routes.ClipboardApiRoute
 import com.erl.blindcast.core.server.routes.ControlWsRoute
 import com.erl.blindcast.core.server.routes.DeviceApiRoute
+import com.erl.blindcast.core.server.routes.DeviceOpsApiRoute
+import com.erl.blindcast.core.server.routes.DisplayApiRoute
+import com.erl.blindcast.core.server.routes.FsApiRoute
+import com.erl.blindcast.core.server.routes.NotificationApiRoute
 import com.erl.blindcast.core.server.routes.PairRoute
 import com.erl.blindcast.core.server.routes.StreamWsRoute
+import com.erl.blindcast.core.server.routes.TerminalWsRoute
 import com.erl.blindcast.core.server.routes.WebStaticRoutes
 import com.erl.blindcast.core.server.routes.WidgetWsRoute
 import com.erl.blindcast.core.server.routes.WsConnection
@@ -39,7 +46,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * （见 [WsConnection]），**零新增依赖**（无 Ktor/Netty，质量红线守住）。
  *
  * ## 路由表
- * - `GET /`、`/index.html` → [WebStaticRoutes]（公开；4.2 落子前占位页）；
+ * - 除 `/api/` 与 `/ws/` 前缀外的一切路径 → [WebStaticRoutes]（公开；`/`、`/index.html` 落
+ *   `assets/web/index.html`，其余按 URL 相对路径映射到 `assets/web/`，带路径防穿越 +
+ *   MIME + ETag/304 + 分级缓存；未命中 404）；
  * - `GET /ws/stream` → [StreamWsRoute]（鉴权后升级，NALU/AAC 二进制下发）；
  * - `GET /ws/control` → [ControlWsRoute]（鉴权后升级，JSON 指令上行）；
  * - `GET /ws/widgets` → [WidgetWsRoute]（鉴权后升级，桌面 widget WebP 静帧下行 + 触摸注入上行）；
@@ -278,6 +287,18 @@ object BlindCastServer {
                 sendText(output, 400, "bad request")
                 return
             }
+            // 文件上传走流式：body 不读进内存，鉴权后直接把 socket 输入流落到磁盘。
+            // 必须在通用 body 上限检查之前分流，否则 >256KB 的上传会被 413 挡掉。
+            if (request.method == "POST" && request.path == "/api/fs/upload") {
+                val len = request.headers["content-length"]?.toLongOrNull() ?: -1L
+                if (!TokenAuthenticator.isAuthorized(request.rawQuery, request.headers)) {
+                    sendText(output, 401, "unauthorized")
+                } else {
+                    val (st, js) = FsApiRoute.handleUpload(request.rawQuery, input, len)
+                    serveJson(output, "POST", st to js)
+                }
+                return
+            }
             // body 超限直接拒收（慢速 Lori 熔断）。
             if (request.contentLength > MAX_BODY_BYTES) {
                 sendText(output, 413, "body too large")
@@ -300,10 +321,13 @@ object BlindCastServer {
      */
     private fun dispatch(req: HttpRequest, input: InputStream, output: OutputStream, socket: Socket): Boolean {
         val path = req.path
+        // 非 /api、非 /ws 的一切路径都走静态资源（含原版面板的 css/js/icons/img 等模块），
+        // 由 WebStaticRoutes 做路径防穿越 + MIME + 缓存；未命中自然 404。
+        if (!path.startsWith("/api/") && !path.startsWith("/ws/")) {
+            return serveStatic(req, output)
+        }
         return when {
-            path == "/" || path == "/index.html" || path == com.erl.blindcast.core.server.routes.WebStaticRoutes.H264_PLAYER_ROUTE ->
-                serveStatic(req, output)
-            path == "/ws/stream" || path == "/ws/control" || path == "/ws/widgets" ->
+            path == "/ws/stream" || path == "/ws/control" || path == "/ws/widgets" || path == "/ws/terminal" ->
                 serveWebSocket(req, input, output, socket)
             path == "/api/auth/status" ->
                 serveJson(output, req.method, AuthRoute.handleStatus())
@@ -363,7 +387,75 @@ object BlindCastServer {
                 if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
                     serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
                 } else {
-                    serveJson(output, req.method, DeviceApiRoute.handleApps(req.method))
+                    serveJson(output, req.method, DeviceApiRoute.handleApps(req.method, req.rawQuery))
+                }
+            }
+            path == "/api/apps/icon" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveBinary(req, output, AssetApiRoute.handleAppIcon(req.method, req.rawQuery))
+                }
+            }
+            path == "/api/desktop/wallpaper" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveBinary(req, output, AssetApiRoute.handleWallpaper(req.method, req.rawQuery))
+                }
+            }
+            path == "/api/apps/action" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveJson(output, req.method, DeviceOpsApiRoute.handleAppsAction(req.method, req.body))
+                }
+            }
+            path == "/api/settings" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveJson(output, req.method, DeviceOpsApiRoute.handleSettings(req.method, req.body))
+                }
+            }
+            path == "/api/display/night-mode" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveJson(output, req.method, DisplayApiRoute.handleNightMode(req.method, req.body))
+                }
+            }
+            path == "/api/clipboard" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveJson(output, req.method, ClipboardApiRoute.handle(req.method, req.body))
+                }
+            }
+            path == "/api/notifications" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveJson(output, req.method, NotificationApiRoute.handle(req.method, req.rawQuery, req.body))
+                }
+            }
+            path == "/api/notifications/icon" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveBinary(req, output, NotificationApiRoute.icon(req.rawQuery))
+                }
+            }
+            path.startsWith("/api/fs/") -> {                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else if (path == "/api/fs/download") {
+                    if (req.method != "GET" && req.method != "HEAD") {
+                        serveJson(output, req.method, 405 to """{"ok":false,"error":"method not allowed"}""")
+                    } else {
+                        serveFsDownload(req, output)
+                    }
+                } else {
+                    serveJson(output, req.method, FsApiRoute.handle(path, req.method, req.rawQuery, req.body))
                 }
             }
             path == "/api/probe/vd" -> {
@@ -397,13 +489,90 @@ object BlindCastServer {
 
     private fun serveStatic(req: HttpRequest, output: OutputStream): Boolean {
         val result = WebStaticRoutes.handle(req.method, req.path, appContextOrNull())
-        sendResponse(output, result.status, reasonOf(result.status), mapOf("Content-Type" to result.contentType), result.body, headOnly = req.method == "HEAD")
+        // 条件请求：ETag 命中直接 304 空体（省整包重传，原版面板 shell.js ~900KB）。
+        val etag = result.headers["ETag"]
+        if (result.status == 200 && etag != null && etagMatches(req.headers["if-none-match"], etag)) {
+            val h = LinkedHashMap<String, String>()
+            h["ETag"] = etag
+            result.headers["Cache-Control"]?.let { h["Cache-Control"] = it }
+            sendResponse(output, 304, "Not Modified", h, null, headOnly = true)
+            return false
+        }
+        val headers = LinkedHashMap<String, String>()
+        headers["Content-Type"] = result.contentType
+        headers.putAll(result.headers)
+        sendResponse(output, result.status, reasonOf(result.status), headers, result.body, headOnly = req.method == "HEAD")
         return false
+    }
+
+    /** 条件请求匹配：支持 `*` 与逗号分隔的 ETag 列表（弱校验按原样比对）。 */
+    private fun etagMatches(ifNoneMatch: String?, etag: String): Boolean {
+        if (ifNoneMatch.isNullOrBlank()) return false
+        val trimmed = ifNoneMatch.trim()
+        if (trimmed == "*") return true
+        return trimmed.split(',').any { it.trim() == etag }
     }
 
     private fun serveJson(output: OutputStream, method: String, result: Pair<Int, String>): Boolean {
         val body = result.second.toByteArray(Charsets.UTF_8)
         sendResponse(output, result.first, reasonOf(result.first), mapOf("Content-Type" to "application/json; charset=utf-8"), body, headOnly = method == "HEAD")
+        return false
+    }
+
+    /**
+     * 下发二进制资源（[AssetApiRoute]：图标/壁纸）：Content-Type + 附加头，
+     * 并支持 ETag 条件请求（命中直接 304 空体）。
+     */
+    private fun serveBinary(req: HttpRequest, output: OutputStream, result: AssetApiRoute.Binary): Boolean {
+        val etag = result.headers["ETag"]
+        if (result.status == 200 && etag != null && etagMatches(req.headers["if-none-match"], etag)) {
+            val h = LinkedHashMap<String, String>()
+            h["ETag"] = etag
+            result.headers["Cache-Control"]?.let { h["Cache-Control"] = it }
+            sendResponse(output, 304, "Not Modified", h, null, headOnly = true)
+            return false
+        }
+        val headers = LinkedHashMap<String, String>()
+        headers["Content-Type"] = result.contentType
+        headers.putAll(result.headers)
+        sendResponse(output, result.status, reasonOf(result.status), headers, result.body, headOnly = req.method == "HEAD")
+        return false
+    }
+
+    /**
+     * 文件下载：命中则按 `Content-Length` 流式下发（64KB 分块，不整包进内存），
+     * 支持 HEAD；未命中/越界/无权限则回 [AssetApiRoute.Binary] JSON 错误。
+     */
+    private fun serveFsDownload(req: HttpRequest, output: OutputStream): Boolean {
+        when (val r = FsApiRoute.handleDownload(req.rawQuery)) {
+            is FsApiRoute.Download.Err -> serveBinary(req, output, r.binary)
+            is FsApiRoute.Download.Ok -> {
+                val len = r.file.length()
+                runCatching {
+                    val sb = StringBuilder()
+                        .append("HTTP/1.1 200 OK\r\n")
+                        .append("Content-Type: ").append(r.contentType).append("\r\n")
+                        .append("Content-Disposition: ").append(r.disposition).append("\r\n")
+                        .append("Content-Length: ").append(len).append("\r\n")
+                        .append("Cache-Control: no-store\r\n")
+                        .append("Access-Control-Allow-Origin: *\r\n")
+                        .append("Connection: close\r\n")
+                        .append("\r\n")
+                    output.write(sb.toString().toByteArray(Charsets.ISO_8859_1))
+                    if (req.method != "HEAD") {
+                        r.file.inputStream().use { ins ->
+                            val buf = ByteArray(FsApiRoute.streamBuffer())
+                            while (true) {
+                                val n = ins.read(buf)
+                                if (n < 0) break
+                                output.write(buf, 0, n)
+                            }
+                        }
+                    }
+                    output.flush()
+                }
+            }
+        }
         return false
     }
 
@@ -452,6 +621,7 @@ object BlindCastServer {
         when (req.path) {
             "/ws/stream" -> StreamWsRoute.handle(conn)
             "/ws/widgets" -> WidgetWsRoute.handle(conn)
+            "/ws/terminal" -> TerminalWsRoute.handle(conn)
             else -> ControlWsRoute.handle(conn)
         }
         return true

@@ -84,6 +84,42 @@ object DesktopController {
         runCatching { Shell.cmd("touch ${stopFile()}.sync").exec() }
     }
 
+    /** 逐屏夜间模式结果。 */
+    data class NightResult(val ok: Boolean, val on: Boolean, val displayId: Int, val error: String)
+
+    /**
+     * 设置**桌面虚拟屏**的夜间模式（原版 `display-night-mode` 的逐屏实现，Display-Api）。
+     *
+     * 写 `<stopFile>.uimode`（`yes`/`no`）→ 宿主 250ms 内消费并反射
+     * `VirtualDevice.setDisplayUiMode(displayId, 32|16)` → 回写 `<stopFile>.uimode.state`。
+     * **只作用于本虚拟屏**，不动设备全局 `cmd uimode night`。
+     *
+     * 桌面未运行 → `ok=false`（fail closed，绝不隐式改全局）；宿主 5s 内无回执 → 超时失败。
+     */
+    fun setNightMode(on: Boolean): NightResult = serialized {
+        val st = status()
+        if (!st.running) return@serialized NightResult(false, on, -1, "桌面未运行")
+        val stop = stopFile()
+        val cmdFile = "$stop.uimode"
+        val stateFile = "$stop.uimode.state"
+        runCatching { Shell.cmd("rm -f $stateFile").exec() }
+        runCatching { Shell.cmd("echo ${if (on) "yes" else "no"} > $cmdFile").exec() }
+        var waited = 0
+        while (waited < 5_000) {
+            Thread.sleep(150L)
+            waited += 150
+            val txt = runCatching { Shell.cmd("cat $stateFile 2>/dev/null").exec() }
+                .getOrNull()?.out?.joinToString("\n").orEmpty()
+            if (txt.contains("ok=")) {
+                val ok = txt.contains("ok=1")
+                Log.i(TAG, "[setNightMode] on=$on ok=$ok displayId=${st.displayId} after=${waited}ms")
+                return@serialized NightResult(ok, on, st.displayId, if (ok) "" else "setDisplayUiMode 失败")
+            }
+        }
+        Log.w(TAG, "[setNightMode] timeout on=$on displayId=${st.displayId}")
+        NightResult(false, on, st.displayId, "宿主 5s 内未回写 uimode 结果")
+    }
+
     /** 状态快照（对应 `GET /api/desktop`）。 */
     data class Status(
         val running: Boolean,
@@ -195,7 +231,7 @@ object DesktopController {
             return failure("自管理关联建立失败（见 logcat BlindCast-VDAssoc）")
         }
         val stop = stopFile()
-        runCatching { Shell.cmd("rm -f $stop ${stop}.status $stop.sync").exec() }
+        runCatching { Shell.cmd("rm -f $stop ${stop}.status $stop.sync ${stop}.uimode ${stop}.uimode.state").exec() }
         val inner = "CLASSPATH=$apkPath app_process /system/bin " +
             "com.erl.blindcast.core.scrcpy.FusionDesktopMain desktop " +
             "${DEFAULT_WIDTH} ${DEFAULT_HEIGHT} ${DEFAULT_BITRATE} ${DEFAULT_FPS} $assoc $stop " +
@@ -264,6 +300,7 @@ object DesktopController {
         }
         runCatching { Shell.cmd("rm -f $pattern; true").exec() }
         runCatching { Shell.cmd("rm -f $RUN_DIR/${PREFIX}*.stop.sync; true").exec() }
+        runCatching { Shell.cmd("rm -f $RUN_DIR/${PREFIX}*.stop.uimode $RUN_DIR/${PREFIX}*.stop.uimode.state; true").exec() }
         Log.i(TAG, "[on] stale host sweep done (left=$left, killed=${left > 0})")
     }
 
@@ -294,7 +331,7 @@ object DesktopController {
         } else {
             runCatching { VirtualDeviceAssociation.release(VirtualDeviceAssociation.OWN_MAC) }
         }
-        runCatching { Shell.cmd("rm -f $stop ${stop}.status $stop.sync").exec() }
+        runCatching { Shell.cmd("rm -f $stop ${stop}.status $stop.sync ${stop}.uimode ${stop}.uimode.state").exec() }
         cachedAlive = false
         cachedAliveAt = 0L
         Log.i(TAG, "[off] done after=${waited}ms stillRunning=${status().running}")
@@ -322,9 +359,22 @@ object DesktopController {
         return if (text.contains("Status: ok")) st else st.copy(error = "home 启动未确认：${text.take(160)}")
     }
 
+    /**
+     * 读桌面虚拟屏最近一次夜间模式状态（宿主回写的 `<stopFile>.uimode.state`）。
+     * 无记录返回 null。
+     */
+    fun nightModeState(): Boolean? {
+        val txt = runCatching { Shell.cmd("cat ${stopFile()}.uimode.state 2>/dev/null").exec() }
+            .getOrNull()?.out?.joinToString("\n").orEmpty()
+        if (!txt.contains("on=")) return null
+        // 只有宿主确认 setDisplayUiMode 成功（ok=1）才认为夜间模式真的生效；
+        // 否则回上一次的稳定态 false，避免把「请求态」当成「生效态」误报。
+        val applied = txt.contains("ok=1")
+        return applied && txt.contains("on=1")
+    }
+
     /** 一句话状态（日志/控制台用）。 */
-    fun stateLine(): String {
-        val s = status()
+    fun stateLine(): String {        val s = status()
         return "mode=${s.mode} displayId=${s.displayId} deviceId=${s.deviceId} " +
             "size=${s.width}x${s.height} source=${s.source} error=${s.error}"
     }

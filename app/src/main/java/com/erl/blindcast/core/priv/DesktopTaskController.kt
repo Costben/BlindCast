@@ -55,6 +55,21 @@ object DesktopTaskController {
             .put("error", error)
     }
 
+    data class TaskCloseResult(
+        val ok: Boolean,
+        val taskId: Int,
+        val displayId: Int,
+        val closed: Boolean,
+        val error: String = "",
+    ) {
+        fun toJson(): JSONObject = JSONObject()
+            .put("ok", ok)
+            .put("taskId", taskId)
+            .put("displayId", displayId)
+            .put("closed", closed)
+            .put("error", error)
+    }
+
     /**
      * 查询指定 [targetDisplayId] 上的任务列表。
      * 严格限制：只返回当前副屏上的任务；[targetDisplayId] <= 0 时返回空列表（防透传主屏）。
@@ -141,6 +156,61 @@ object DesktopTaskController {
     }
 
     /**
+     * 关闭/移除副屏上的一个任务（原版桌面「关闭应用」）。
+     *
+     * 与 [switchTask] 同源的三重安全校验：targetDisplayId <= 0 立即拒绝；按 taskId 反查真实
+     * displayId；不属于该虚拟屏（尤其物理主屏 0）一律拒绝，**永不 remove 主屏任务**。
+     */
+    fun closeTask(taskId: Int, targetDisplayId: Int): TaskCloseResult {
+        if (targetDisplayId <= 0) {
+            return TaskCloseResult(
+                ok = false,
+                taskId = taskId,
+                displayId = targetDisplayId,
+                closed = false,
+                error = "targetDisplayId <= 0 无效，已阻断避免触碰物理主屏",
+            )
+        }
+
+        val actualDisplayId = findTaskDisplayId(taskId)
+        if (actualDisplayId == null) {
+            return TaskCloseResult(
+                ok = false,
+                taskId = taskId,
+                displayId = targetDisplayId,
+                closed = false,
+                error = "task $taskId 不存在或已退出",
+            )
+        }
+
+        if (actualDisplayId != targetDisplayId) {
+            val msg = "task $taskId 不在虚拟屏 $targetDisplayId 上（在 $actualDisplayId），拒绝关闭"
+            Log.w(TAG, "[closeTask] Cross-display close blocked: $msg")
+            return TaskCloseResult(
+                ok = false,
+                taskId = taskId,
+                displayId = targetDisplayId,
+                closed = false,
+                error = msg,
+            )
+        }
+
+        val success = runCatching { removeTaskInternal(taskId) }.getOrDefault(false)
+        return if (success) {
+            Log.i(TAG, "[closeTask] task $taskId removed on display $targetDisplayId")
+            TaskCloseResult(ok = true, taskId = taskId, displayId = targetDisplayId, closed = true)
+        } else {
+            TaskCloseResult(
+                ok = false,
+                taskId = taskId,
+                displayId = targetDisplayId,
+                closed = false,
+                error = "执行 task remove 失败",
+            )
+        }
+    }
+
+    /**
      * 查找目标包名在副屏上已有的任务（同屏任务复用）。
      */
     fun findTaskByPackage(packageName: String, targetDisplayId: Int): DesktopTask? {
@@ -163,6 +233,13 @@ object DesktopTaskController {
         val binderMap = runCatching { getAllTaskDisplaysViaBinder() }.getOrNull() ?: return null
         if (binderMap.isEmpty() || binderMap.values.all { it == 0 }) return null
         return binderMap[taskId]
+    }
+
+    private fun removeTaskInternal(taskId: Int): Boolean {
+        val res = runCatching { Shell.cmd("am task remove $taskId").exec() }.getOrNull()
+        if (res != null && res.isSuccess) return true
+        val res2 = runCatching { Shell.cmd("cmd activity remove-task $taskId").exec() }.getOrNull()
+        return res2 != null && res2.isSuccess
     }
 
     private fun moveTaskToFrontInternal(taskId: Int, targetDisplayId: Int): Boolean {

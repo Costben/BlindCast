@@ -25,7 +25,7 @@ import java.util.concurrent.CopyOnWriteArraySet
  * 前端按坐标自行排布，尺寸变化时只重传受影响的那一个）。
  *
  * 下行文本帧（JSON）：
- * - `{"type":"widget-state","widgets":[{"id","label","provider","stale","active","w","h"}]}`
+ * - `{"type":"widget-state","density":int,"widgets":[{"id","label","provider","stale","active","w","h"}]}`
  *   连上即下发一次，`widget-list` 可再次索取；
  *   `w`/`h`：本会话已声明的用会话尺寸，未声明的用该 provider 的**自然尺寸**
  *   （前端据此定默认盒子大小，避免给 105x105 的部件套一个 320x200 的空壳）；

@@ -1,18 +1,27 @@
 package com.erl.blindcast.core.server.routes
 
 import android.content.Context
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 静态文件路由（Slice 4.1 · `GET /` 与 `/index.html`）。
+ * 静态资源路由（`GET|HEAD /` 与 `assets/web/` 下任意资源）。
  *
  * ## 行为
- * - 优先输出 `assets/web/index.html`（Slice 4.2 落子真正的单页控制台后自动生效，
- *   本文件零改动——刻意只做“有则 serve、无则占位”的薄封装）；
- * - 4.2 落子前 assets 缺失 → 返回内嵌占位页（暗黑风，提示控制台即将上线，
- *   附 `/api/auth/status` 与 `/api/status` 快捷探活链接，供联调确认服务存活）；
- * - 仅允许 GET / HEAD，其余 405；未知路径由 [BlindCastServer] 统一 404。
+ * - `GET /`、`GET /index.html` → `assets/web/index.html`；
+ * - 其它路径 → 按 URL 相对路径映射到 `assets/web/<rel>`（原版面板的
+ *   `css/panel.css`、`js/shell.js`、`icons/`、`img/`、`manifest.webmanifest`
+ *   等全部走这里），缺失 404；
+ * - 仅允许 GET / HEAD，其余 405；
+ * - 正确 MIME（按扩展名）+ ETag/304 + 分级 Cache-Control：
+ *   `index.html` 用 `no-cache`（重连即拿到新入口），其余静态资源 `max-age=3600`。
  *
- * 纯内存 + AssetManager 只读，无状态，任意线程可调，永不抛异常（IO 失败走占位）。
+ * ## 安全
+ * - **路径防穿越**：只接受 `[A-Za-z0-9._~/-]`，显式拒绝 `..`、反斜杠、`%`（未解码的
+ *   百分号编码一律拒绝，杜绝 `%2e%2e` 之类绕过）、空段与超长路径；解析后仍须落在
+ *   `web/` 前缀内，否则 404。绝不 `File` 拼接用户输入。
+ * - 单文件上限 [MAX_ASSET_BYTES]，超限视为异常包走 404（防 OOM）。
+ *
+ * 纯内存 + AssetManager 只读，无状态，任意线程可调，永不抛异常（IO 失败走占位/404）。
  */
 object WebStaticRoutes {
 
@@ -31,24 +40,149 @@ object WebStaticRoutes {
     /** 模块对外路径（与 assets 相对路径同名，便于同目录引用）。 */
     const val H264_PLAYER_ROUTE = "/h264-player.js"
 
+    /** assets 中的 Web 根目录前缀。 */
+    private const val WEB_ASSET_ROOT = "web"
+
     /** 占位页单文件上限兜底：assets 体积超过此值视为异常包，改走占位（防 OOM）。 */
     private const val MAX_ASSET_BYTES = 5 * 1024 * 1024
 
-    /** 路由结果：HTTP 状态码 + 响应体（HEAD 由 server 压掉 body 只发头）。 */
-    data class StaticResult(val status: Int, val contentType: String, val body: ByteArray)
+    /** URL 路径总长上限（防病态输入）。 */
+    private const val MAX_PATH_CHARS = 1024
+
+    /** 静态资源缓存时长（秒）。入口 HTML 走 no-cache，不进这里。 */
+    private const val STATIC_MAX_AGE_SECONDS = 3600L
+
+    /** 路由结果：HTTP 状态码 + 响应头 + 响应体（HEAD 由 server 压掉 body 只发头）。 */
+    data class StaticResult(
+        val status: Int,
+        val contentType: String,
+        val body: ByteArray,
+        val headers: Map<String, String> = emptyMap(),
+    )
+
+    /** 扩展名 → MIME（小写扩展名，无点）。 */
+    private val MIME_BY_EXT: Map<String, String> = mapOf(
+        "html" to "text/html; charset=utf-8",
+        "htm" to "text/html; charset=utf-8",
+        "css" to "text/css; charset=utf-8",
+        "js" to "application/javascript; charset=utf-8",
+        "mjs" to "application/javascript; charset=utf-8",
+        "json" to "application/json; charset=utf-8",
+        "webmanifest" to "application/manifest+json; charset=utf-8",
+        "map" to "application/json; charset=utf-8",
+        "txt" to "text/plain; charset=utf-8",
+        "svg" to "image/svg+xml",
+        "png" to "image/png",
+        "jpg" to "image/jpeg",
+        "jpeg" to "image/jpeg",
+        "webp" to "image/webp",
+        "gif" to "image/gif",
+        "ico" to "image/x-icon",
+        "avif" to "image/avif",
+        "woff" to "font/woff",
+        "woff2" to "font/woff2",
+        "ttf" to "font/ttf",
+        "otf" to "font/otf",
+        "wasm" to "application/wasm",
+        "mp3" to "audio/mpeg",
+        "mp4" to "video/mp4",
+        "webm" to "video/webm",
+    )
+
+    /**
+     * 每个资源的强 ETag 缓存（key = 规范化后的 assets 相对路径）。
+     * 只在本进程生命周期内有效（重装即重启进程，天然失效），避免每次请求重算哈希。
+     */
+    private val etagCache = ConcurrentHashMap<String, String>()
 
     fun handle(method: String, path: String, appContext: Context?): StaticResult {
         if (method != "GET" && method != "HEAD") {
             return StaticResult(405, "text/plain; charset=utf-8", "method not allowed".toByteArray())
         }
-        // 解码模块：单独按路径服务，缺失时 404（不回落占位页，否则浏览器会把 HTML 当 JS 解析）。
-        if (path == H264_PLAYER_ROUTE) {
-            val js = loadAsset(appContext, H264_PLAYER_ASSET_PATH)
-                ?: return StaticResult(404, "text/plain; charset=utf-8", "h264-player.js not found".toByteArray())
-            return StaticResult(200, "application/javascript; charset=utf-8", js)
+        // 入口：`/` 与 `/index.html` 都落 assets/web/index.html（缺则占位页）。
+        if (path == "/" || path == "/index.html") {
+            val body = loadAsset(appContext, WEB_INDEX_ASSET_PATH) ?: PLACEHOLDER_HTML.toByteArray(Charsets.UTF_8)
+            return assetResult(appContext, WEB_INDEX_ASSET_PATH, body, noCache = true)
         }
-        val body = loadIndex(appContext)
-        return StaticResult(200, "text/html; charset=utf-8", body)
+        val assetPath = resolveAssetPath(path)
+            ?: return StaticResult(404, "text/plain; charset=utf-8", "not found".toByteArray())
+        // 目录路径（`/window/` 与 `/window`）落该目录下的 index.html：原版 Fusion 逐应用窗口
+        // 就是打开 `/window/` 这个路径，资产里对应 `assets/web/window/index.html`。
+        val direct = loadAsset(appContext, assetPath)
+        val resolvedPath: String
+        val body: ByteArray
+        if (direct != null) {
+            resolvedPath = assetPath
+            body = direct
+        } else {
+            val indexPath = "$assetPath/index.html"
+            val indexBody = loadAsset(appContext, indexPath)
+                ?: return StaticResult(404, "text/plain; charset=utf-8", "not found".toByteArray())
+            resolvedPath = indexPath
+            body = indexBody
+        }
+        return assetResult(appContext, resolvedPath, body, noCache = false)
+    }
+
+    /**
+     * URL 路径 → assets 相对路径（带防穿越）。非法/越界返回 null（调用方 404）。
+     *
+     * 规则：拒绝 `%`、`\`、`\u0000`；按 `/` 切分后拒绝空段、`.`、`..` 与以 `.` 开头的
+     * 隐藏段；每段只允许 `[A-Za-z0-9._~-]`；最终前缀必须是 `web/`。
+     */
+    internal fun resolveAssetPath(urlPath: String): String? {
+        if (urlPath.isEmpty() || urlPath.length > MAX_PATH_CHARS) return null
+        if (!urlPath.startsWith("/")) return null
+        if (urlPath.contains('%') || urlPath.contains('\\') || urlPath.contains('\u0000')) return null
+        val segments = urlPath.split('/').filter { it.isNotEmpty() }
+        if (segments.isEmpty()) return null
+        for (seg in segments) {
+            if (seg == "." || seg == "..") return null
+            if (seg.startsWith(".")) return null
+            for (ch in seg) {
+                val ok = ch in 'a'..'z' || ch in 'A'..'Z' || ch in '0'..'9' ||
+                    ch == '.' || ch == '_' || ch == '-' || ch == '~'
+                if (!ok) return null
+            }
+        }
+        // 双保险：拼接结果不得出现 `..` 段，且必须落在 web/ 前缀内。
+        val rel = segments.joinToString("/")
+        if (rel.split('/').any { it == ".." }) return null
+        return "$WEB_ASSET_ROOT/$rel"
+    }
+
+    /** 组装响应头：Content-Type + ETag + Cache-Control（入口 no-cache，其余 max-age）。 */
+    private fun assetResult(appContext: Context?, assetPath: String, body: ByteArray, noCache: Boolean): StaticResult {
+        val contentType = mimeOf(assetPath)
+        val etag = etagCache[assetPath] ?: weakEtag(body).also { etagCache[assetPath] = it }
+        val cache = if (noCache) "no-cache" else "public, max-age=$STATIC_MAX_AGE_SECONDS"
+        return StaticResult(
+            status = 200,
+            contentType = contentType,
+            body = body,
+            headers = mapOf("ETag" to etag, "Cache-Control" to cache),
+        )
+    }
+
+    /**
+     * 弱 ETag：`W/"<len>-<fnv1a32 hex>"`。只用长度 + 32 位内容哈希，
+     * 足够区分构建产物，且避免整包 SHA-256 开销。
+     */
+    internal fun weakEtag(body: ByteArray): String {
+        var h = -0x7ee3623b // FNV-1a 32 位 offset basis
+        for (b in body) {
+            h = h xor (b.toInt() and 0xFF)
+            h *= 0x01000193
+        }
+        return "W/\"${body.size}-${(h.toLong() and 0xFFFFFFFFL).toString(16)}\""
+    }
+
+    /** 按扩展名取 MIME；未知扩展名按二进制流（`application/octet-stream`）。 */
+    internal fun mimeOf(assetPath: String): String {
+        val dot = assetPath.lastIndexOf('.')
+        if (dot < 0 || dot == assetPath.length - 1) return "application/octet-stream"
+        val ext = assetPath.substring(dot + 1).lowercase()
+        return MIME_BY_EXT[ext] ?: "application/octet-stream"
     }
 
     /** 通用 assets 读取（超限/缺失返回 null，不抛）。 */
@@ -70,9 +204,6 @@ object WebStaticRoutes {
             }
         }.getOrNull()
     }
-
-    private fun loadIndex(appContext: Context?): ByteArray =
-        loadAsset(appContext, WEB_INDEX_ASSET_PATH) ?: PLACEHOLDER_HTML.toByteArray(Charsets.UTF_8)
 
     /**
      * 4.2 落子前的占位页（内嵌常量，不占 assets）。
