@@ -29,17 +29,16 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
 .pill.bad{color:var(--danger);border-color:rgba(248,113,113,.4)}
 /* ---- 舞台 ---- */
 #stage{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;
-  padding:12px;
   background:#05060a repeating-conic-gradient(rgba(255,255,255,.014) 0% 25%,transparent 0% 50%) 0 0/28px 28px}
 #canvas{background:#000;border-radius:8px;box-shadow:0 0 0 1px var(--line),0 12px 48px rgba(0,0,0,.6);
   touch-action:none;cursor:crosshair;outline:none;max-width:100%;max-height:100%}
 #canvas:focus{box-shadow:0 0 0 1px rgba(52,211,153,.55),0 12px 48px rgba(0,0,0,.6)}
-.hint{position:absolute;left:12px;bottom:10px;font-family:var(--mono);font-size:11px;color:var(--dim);
+/* 抬高让开 #dock：底部 14px + 工具条 56px，窄窗口工具条还会多出 ~15px 横向滚动条，故留 92px */
+.hint{position:absolute;left:12px;bottom:92px;font-family:var(--mono);font-size:11px;color:var(--dim);
   background:rgba(0,0,0,.45);padding:4px 10px;border-radius:8px;pointer-events:none}
-/* ---- 悬浮控制栏（默认右侧垂直侧边栏，不再挡画面；窄窗回退底部横条见 media query） ---- */
-#dock{position:absolute;right:12px;top:50%;transform:translateY(-50%);z-index:6;
-  display:flex;flex-direction:column;gap:6px;align-items:stretch;padding:10px 8px;border-radius:16px;
-  max-height:96%;overflow-y:auto;overflow-x:hidden;
+/* ---- 悬浮控制栏 ---- */
+#dock{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;z-index:6;
+  display:flex;gap:6px;align-items:center;padding:8px 10px;border-radius:16px;max-width:96vw;overflow-x:auto;
   background:rgba(16,19,26,.62);border:1px solid var(--line);backdrop-filter:blur(14px);
   box-shadow:0 8px 32px rgba(0,0,0,.5)}
 #dock button{flex:0 0 auto;border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--fg);
@@ -48,14 +47,14 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
 #dock button i{font-style:normal;font-size:16px;line-height:1;flex:0 0 auto}
 #dock button span{font-size:12px;line-height:1.2;white-space:nowrap}
 #dock button:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
-#dock button:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
 #dock button.on{background:rgba(52,211,153,.22);border-color:var(--neon);color:var(--neon)}
 #dock button.warn-on{background:rgba(251,191,36,.18);border-color:var(--warn);color:var(--warn)}
-#dock .sep{flex:0 0 auto;width:24px;height:1px;margin:2px auto;background:var(--line)}
+#dock .sep{flex:0 0 auto;width:1px;height:24px;background:var(--line)}
 #dock .lbl{font-size:10px;color:var(--dim);font-family:var(--mono)}
 /* ---- 遮罩 / 弹窗 ---- */
 .overlay{position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;
-  background:rgba(5,6,10,.66);backdrop-filter:blur(6px)}
+  background:rgba(5,6,10,.66);backdrop-filter:blur(6px);pointer-events:none}
+.overlay .card{pointer-events:auto}
 .overlay.hide{display:none}
 .card{background:rgba(20,24,33,.78);border:1px solid var(--line);border-radius:18px;
   padding:28px 30px;max-width:400px;width:92vw;text-align:center;backdrop-filter:blur(18px);
@@ -67,6 +66,15 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
   background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:12px;outline:none}
 .card input:focus{border-color:var(--neon)}
 .card .row{display:flex;gap:10px;margin-top:14px}
+/* ---- 鉴权弹窗：配对码 / 访问口令 分段控件 ---- */
+#tokenPane.hide,#pairPane.hide{display:none}
+.tabs{display:flex;gap:6px;padding:4px;margin:16px 0 2px;border:1px solid var(--line);border-radius:13px;
+  background:rgba(255,255,255,.04)}
+.tabs button{flex:1;padding:8px 0;border:1px solid transparent;border-radius:10px;background:transparent;
+  color:var(--dim);font-size:13px;cursor:pointer}
+.tabs button.on{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.5);color:var(--neon);font-weight:700}
+.card .tip{font-size:11px;line-height:1.7;color:rgba(232,234,240,.42);text-align:left;margin:8px 0 0}
+#pairInput{font-family:var(--mono);letter-spacing:3px;text-align:center}
 .btn{flex:1;padding:11px 0;border-radius:12px;border:1px solid rgba(52,211,153,.5);cursor:pointer;
   background:rgba(52,211,153,.16);color:var(--neon);font-size:15px;font-weight:700}
 .btn:hover{background:rgba(52,211,153,.28)}
@@ -82,34 +90,162 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
   padding:8px 16px;border-radius:10px;animation:fadein .2s}
 @keyframes fadein{from{opacity:0;transform:translateY(-6px)}}
 footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,234,240,.32);
-  display:flex;gap:12px;border-top:1px solid rgba(255,255,255,.06);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-footer span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-footer #footStat{flex:0 1 auto;min-width:0}
-footer #footFrame{flex:0 0 auto;margin-left:auto}
-/* ExtPolish-1: 窄窗去挤（dock 缩钮+横滑）/ 矮窗藏 hint / footer 合并一行不断行 */
-@media (max-width:720px){
-  header{padding:8px 10px;gap:8px}
-  .logo span.sub{display:none}
-  .pill{font-size:10px;padding:3px 8px}
-  #stage{padding:8px}
-  /* 窄窗（手机竖屏手持）回退到底部横条 */
-  #dock{left:50%;right:auto;top:auto;bottom:14px;transform:translateX(-50%);
-    flex-direction:row;align-items:center;gap:4px;padding:6px 8px;
-    max-width:96vw;max-height:none;overflow-x:auto;overflow-y:hidden}
-  #dock button{min-width:34px;height:34px;font-size:14px;padding:0 8px}
-  #dock button span{display:none}
-  #dock .sep{width:1px;height:24px;margin:0}
-  #dock .lbl{display:none}
-}
-@media (max-height:560px){ .hint{display:none} }
+  display:flex;gap:12px;border-top:1px solid rgba(255,255,255,.06)}
+@media (max-width:640px){ .hint{display:none} footer{display:none} .logo span.sub{display:none} }
+/* ---- 桌面小部件面板（覆盖 canvas，底部留出 #dock 保持可点） ---- */
+#widgetPanel{position:absolute;left:8px;right:8px;top:8px;bottom:74px;z-index:5;display:flex;flex-direction:column;
+  border:1px solid var(--line);border-radius:16px;overflow:hidden;pointer-events:auto;
+  background:rgba(12,15,21,.86);backdrop-filter:blur(14px);box-shadow:0 12px 40px rgba(0,0,0,.55)}
+#widgetPanel.hide{display:none;pointer-events:none}
+.wp-bar{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:8px 10px;
+  border-bottom:1px solid var(--line);background:rgba(16,19,26,.72)}
+.wp-title{font-size:13px;font-weight:700;white-space:nowrap}
+.wp-state{font-family:var(--mono);font-size:11px;color:var(--dim);white-space:nowrap}
+.wp-state.ok{color:var(--neon)}
+.wp-state.bad{color:var(--danger)}
+.wp-spacer{flex:1}
+.wp-btn{flex:0 0 auto;height:30px;padding:0 10px;border-radius:9px;font-size:12px;cursor:pointer;white-space:nowrap;
+  border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--fg)}
+.wp-btn:hover{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.45)}
+.wp-btn.danger{color:var(--danger);border-color:rgba(248,113,113,.45);background:rgba(248,113,113,.12)}
+.wp-canvas{position:relative;flex:1;min-height:0;overflow:auto}
+.wp-layer{position:relative;width:100%;height:100%;min-width:100%;min-height:100%}
+.wp-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;
+  padding:0 28px;color:var(--dim);font-size:13px;line-height:1.9;pointer-events:none}
+.wp-empty.hide{display:none}
+.wp-item{position:absolute;display:flex;flex-direction:column;border-radius:12px;overflow:hidden;
+  background:rgba(255,255,255,.05);box-shadow:0 0 0 1px var(--line),0 6px 22px rgba(0,0,0,.45)}
+.wp-item.sel{box-shadow:0 0 0 1px var(--neon),0 6px 22px rgba(0,0,0,.45)}
+.wp-item.stale{opacity:.45;filter:grayscale(1)}
+/* 盒子窄到装不下「名字 + 尺寸」时，先让位给名字（尺寸看盒子本身即可） */
+.wp-item.narrow .wp-badge{display:none}
+.wp-head{flex:0 0 auto;height:24px;display:flex;align-items:center;gap:6px;padding:0 8px;cursor:move;
+  user-select:none;background:rgba(255,255,255,.06);border-bottom:1px solid var(--line)}
+.wp-name{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wp-badge{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--dim);white-space:nowrap}
+.wp-cv{flex:1;min-height:0;width:100%;display:block;background:#000;touch-action:none;cursor:crosshair}
+.wp-rs{position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;touch-action:none;
+  border-bottom-right-radius:11px;background:linear-gradient(135deg,transparent 0 50%,rgba(52,211,153,.85) 50% 100%)}
+.wp-menu{position:absolute;z-index:3;min-width:118px;padding:6px;border-radius:10px;border:1px solid var(--line);
+  background:rgba(20,24,33,.96);backdrop-filter:blur(12px);box-shadow:0 10px 30px rgba(0,0,0,.6)}
+.wp-menu.hide{display:none}
+.wp-menu button{display:block;width:100%;padding:7px 10px;text-align:left;border:0;border-radius:7px;
+  background:transparent;color:var(--fg);font-size:12px;cursor:pointer}
+.wp-menu button:hover{background:rgba(255,255,255,.08)}
+.wp-menu button.danger{color:var(--danger)}
+.wp-confirm{position:absolute;inset:0;z-index:4;display:flex;align-items:center;justify-content:center;
+  background:rgba(5,6,10,.62);backdrop-filter:blur(4px)}
+.wp-confirm.hide{display:none}
+.wp-box{width:min(340px,86%);padding:18px 20px;border-radius:14px;border:1px solid var(--line);text-align:center;
+  background:rgba(20,24,33,.96);box-shadow:0 16px 48px rgba(0,0,0,.6)}
+.wp-box p{margin:0 0 14px;font-size:13px;line-height:1.8}
+.wp-box .row{display:flex;gap:10px}
+.wp-box .row .wp-btn{flex:1;height:34px;font-size:13px}
+/* ---- 副屏任务切换浮层 ---- */
+#deskTaskMenu{position:absolute;bottom:68px;left:50%;transform:translateX(-50%);z-index:7;min-width:220px;max-width:320px;padding:8px;border-radius:12px;border:1px solid var(--line);background:rgba(20,24,33,.96);backdrop-filter:blur(14px);box-shadow:0 12px 40px rgba(0,0,0,.6)}
+#deskTaskMenu.hide{display:none}
+#deskTaskMenu .dt-title{font-size:11px;color:var(--dim);margin:2px 8px 6px;display:flex;justify-content:space-between;align-items:center}
+#deskTaskMenu .dt-list{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
+#deskTaskMenu .dt-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:transparent;color:var(--fg);font-size:12px;cursor:pointer;border:0;width:100%;text-align:left}
+#deskTaskMenu .dt-item:hover{background:rgba(255,255,255,.08)}
+#deskTaskMenu .dt-item.active{color:var(--neon);font-weight:700;background:rgba(52,211,153,.12)}
+#deskTaskMenu .dt-tag{margin-left:auto;font-size:10px;color:var(--dim);font-family:var(--mono)}
+/* ---- 非安全上下文提示条（局域网 http 打开时的「无 WebCodecs→MSE」说明，不遮挡画面） ---- */
+#secBanner{position:absolute;left:8px;right:8px;top:8px;z-index:8;display:flex;align-items:center;gap:10px;
+  padding:7px 12px;border-radius:11px;pointer-events:none;font-size:12px;line-height:1.6;color:#fcd34d;
+  background:rgba(251,191,36,.13);border:1px solid rgba(251,191,36,.4);backdrop-filter:blur(10px)}
+#secBanner.hide{display:none}
+#secBanner span{flex:1}
+#secBanner button{pointer-events:auto;flex:0 0 auto;border:1px solid rgba(251,191,36,.45);border-radius:8px;
+  background:rgba(251,191,36,.14);color:#fcd34d;padding:4px 10px;font-size:11px;cursor:pointer}
+body.desk .hint{display:none}
+/* ---- Fusion 桌面外壳（客户端多窗口；画面仍来自 /ws/stream 那一路） ----
+ * 尺寸按 720 宽参考稿换算：--s 由 JS 写入（renderWidth/720），交互件用 max() 兜住 24px 命中区。 */
+#deskShell{position:absolute;left:0;right:0;top:0;bottom:76px;z-index:4;display:flex;flex-direction:column;overflow:hidden}
+#deskShell.hide{display:none}
+/* 壁纸：奶油底 + 色块，按用户截图整图复刻（内联 SVG，不逐形状写 CSS） */
+.desk-bg{position:absolute;inset:0;pointer-events:none;background-color:#f7eee4;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1920 866' preserveAspectRatio='xMidYMid slice'%3E%3Crect width='1920' height='866' fill='%23f7eee4'/%3E%3Cpath d='M-600,872 L900,-628 L900,-499 L-600,1001 Z' fill='%23294420'/%3E%3Cpath d='M-600,1002 L900,-498 L900,-337 L-600,1163 Z' fill='%23cbd6c8'/%3E%3Ccircle cx='69' cy='110' r='24' fill='%2377c9c3'/%3E%3Ccircle cx='-5' cy='194' r='22' fill='%23d2f3df'/%3E%3Ccircle cx='300' cy='95' r='46' fill='%23cbd6c8'/%3E%3Cpath d='M117,-60 H235 V26 A20,20 0 0 1 215,46 H137 A20,20 0 0 1 117,26 Z' fill='%23fd9f9d'/%3E%3Cpath d='M1690,38 C1720,105 1770,133 1830,152 C1870,163 1900,166 1920,167 L1920,0 Z' fill='%23cbd6c8'/%3E%3Ccircle cx='1705' cy='570' r='68' fill='none' stroke='%23294420' stroke-width='7'/%3E%3Ccircle cx='1695' cy='584' r='121' fill='none' stroke='%2377c9c3' stroke-width='8'/%3E%3Ccircle cx='1689' cy='574' r='10' fill='%2377c9c3'/%3E%3Cpath d='M1916,575 L2095,575 L900,1770 L722,1770 Z' fill='%2377c9c3'/%3E%3Cpath d='M1452,841 H1599 V886 H1452 Z' fill='%23fd9f9d'/%3E%3Ccircle cx='-10' cy='900' r='72' fill='%2377c9c3'/%3E%3C/svg%3E");
+  background-size:cover;background-position:center;background-repeat:no-repeat}
+.desk-area{position:relative;flex:1;min-height:0;overflow:hidden}
+/* ---- 窗口 chrome：对齐用户截图（交通灯在左 · 标题紧随 · 右侧「‹ 返回」胶囊 + ⋮ 圆钮 · 无描边） ----
+ * 尺寸取截图的 CSS 值（截图为 DPR=2：标题栏 86dev→43、圆角 22~24dev→11~12、
+ * 交通灯直径 27dev→13.5、中心距 52dev→26、红灯中心距左缘 40dev→20、
+ * 返回胶囊 137×52dev→68×26、⋮ 圆钮 57dev→28.5）。这些是外壳自己的固定尺寸，
+ * 不跟 --s 缩放（--s 只用于内容命中区）。 */
+.desk-win{position:absolute;display:flex;flex-direction:column;overflow:hidden;background:#fff;
+  border:0;border-radius:12px;
+  box-shadow:0 16px 40px rgba(38,32,26,.34),0 3px 10px rgba(38,32,26,.18)}
+.desk-win.foc{box-shadow:0 24px 60px rgba(38,32,26,.42),0 5px 14px rgba(38,32,26,.22)}
+.desk-win.min{display:none}
+.dw-bar{flex:0 0 auto;height:44px;display:flex;align-items:center;padding:0 10px 0 13px;
+  cursor:move;user-select:none;touch-action:none;background:#f5f5f6}
+.dw-tl{flex:0 0 auto;display:flex;align-items:center;gap:13px;margin-right:24px}
+.dw-tl i{width:13px;height:13px;border-radius:50%;display:block;cursor:pointer}
+.dw-tl .tl-close{background:#ff5f57}
+.dw-tl .tl-min{background:#ffbd2e}
+.dw-tl .tl-max{background:#28c840}
+.dw-tl i:hover{filter:brightness(.92)}
+.dw-title{flex:0 1 auto;font-size:17px;font-weight:700;color:#38383a;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;max-width:56%}
+.dw-sub{display:none}
+.dw-spacer{flex:1;min-width:6px}
+.dw-btn{flex:0 0 auto;display:flex;align-items:center;justify-content:center;border:0;cursor:pointer;
+  font:inherit;color:#343436;background:#e0e0e1;padding:0}
+.dw-back{height:26px;border-radius:13px;padding:0 12px;font-size:13px;font-weight:600;gap:4px}
+.dw-back .dw-chev{font-size:15px;line-height:1;display:block;transform:translateY(-1px)}
+.dw-back:hover{background:#d3d3d5}
+.dw-menu{width:28px;height:28px;border-radius:50%;font-size:16px;line-height:1;margin-left:9px}
+.dw-menu:hover{background:#d3d3d5}
+.dw-body{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;background:#0b0b0d}
+.dw-ph{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  padding:0 18px;text-align:center;color:rgba(255,255,255,.62);font-size:12px;line-height:1.7;pointer-events:none;
+  white-space:pre-line}
+.dw-cv{max-width:100%;max-height:100%;background:#0b0b0d;touch-action:none;cursor:crosshair;outline:none;display:block}
+#canvas.dw-live{border-radius:0;box-shadow:none;background:#0b0b0d}
+/* ---- 主画面容器（0x01：H264 经 Phase E 模块，JPEG 经 #canvas；两者互斥） ---- */
+#mainHost{position:absolute;left:0;right:0;top:0;bottom:76px;display:flex;align-items:center;
+  justify-content:center;overflow:hidden;z-index:1}
+#mainHost>video,#mainHost>canvas{max-width:100%;max-height:100%;display:block;background:#0b0b0d;touch-action:none}
+body.desk #mainHost{position:static;left:auto;right:auto;top:auto;bottom:auto;width:100%;height:100%}
+.desk-bar{flex:0 0 auto;height:max(44px,calc(var(--s,1) * 56px));margin:0 8px 6px;padding:0 8px;display:flex;
+  align-items:center;gap:6px;overflow:hidden;border:1px solid rgba(255,255,255,.1);background:rgba(12,14,22,.68);
+  border-radius:calc(var(--s,1) * 14px);backdrop-filter:blur(14px)}
+.db-list{flex:1;display:flex;align-items:center;gap:6px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.db-list::-webkit-scrollbar{height:0}
+.db-item{flex:0 0 auto;display:flex;align-items:center;gap:6px;max-width:200px;cursor:pointer;color:var(--fg);
+  height:max(32px,calc(var(--s,1) * 40px));padding:0 10px;border-radius:10px;border:1px solid transparent;
+  background:rgba(255,255,255,.05);font-size:max(11px,calc(var(--s,1) * 12px))}
+.db-item.on{border-color:rgba(139,124,255,.6);background:rgba(124,108,255,.2);color:#cbc3ff}
+.db-item.min{opacity:.5}
+.db-ico{flex:0 0 auto;width:max(20px,calc(var(--s,1) * 24px));height:max(20px,calc(var(--s,1) * 24px));
+  display:flex;align-items:center;justify-content:center;border-radius:7px;font-weight:800;color:#fff;
+  font-size:max(10px,calc(var(--s,1) * 11px));background:linear-gradient(135deg,#5b46d6,#2c2a72)}
+.db-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.db-tools{flex:0 0 auto;display:flex;align-items:center;gap:6px}
+.db-tag{font-family:var(--mono);font-size:max(9px,calc(var(--s,1) * 10px));color:var(--dim);white-space:nowrap}
+.db-btn{height:max(30px,calc(var(--s,1) * 34px));padding:0 10px;border-radius:9px;cursor:pointer;white-space:nowrap;
+  border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--fg);font-size:max(11px,calc(var(--s,1) * 12px))}
+.db-btn:hover{background:rgba(124,108,255,.2);border-color:rgba(139,124,255,.5)}
+.db-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;padding:0 30px;text-align:center;color:rgba(232,234,240,.55);font-size:13px;line-height:1.9}
+.db-empty.hide{display:none}
+#deskStatus{position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;
+  background:rgba(6,7,14,.55);backdrop-filter:blur(4px)}
+#deskStatus.hide{display:none}
+.ds-box{width:min(360px,88%);padding:22px;border-radius:16px;border:1px solid var(--line);text-align:center;
+  background:rgba(18,20,30,.94);box-shadow:0 18px 50px rgba(0,0,0,.6)}
+.ds-box p{margin:0 0 14px;color:var(--dim);font-size:13px;line-height:1.85}
+.ds-box .row{display:flex;gap:10px}
 </style>
 </head>
 <body>
 <header>
-  <div class="logo"><b>BlindCast</b> <span class="sub" style="color:var(--dim);font-weight:400">隐播控制台 · 硬解版</span></div>
+  <div class="logo"><b>BlindCast</b> <span class="sub" style="color:var(--dim);font-weight:400">隐播控制台</span></div>
   <div class="pills">
     <span class="pill" id="pillConn">○ 未连接</span>
+    <span class="pill" id="pillDesk" title="点击切换独立桌面 / 手机镜像" style="cursor:pointer">🖥 手机镜像</span>
     <span class="pill" id="pillFps">FPS --</span>
     <span class="pill" id="pillLat">延迟 --</span>
     <span class="pill" id="pillBat">电量 --</span>
@@ -118,12 +254,94 @@ footer #footFrame{flex:0 0 auto;margin-left:auto}
 
 <div id="stage">
   <canvas id="canvas" tabindex="0" width="720" height="1600"></canvas>
+  <!-- H264 主画面容器（0x01）：Phase E 模块自建 <video>(MSE) 或 <canvas>(WebCodecs)。
+       JPEG 降级模式才用上面的 #canvas；两者互斥显示，见 syncMirrorHost()/deskSyncCanvasHost()。 -->
+  <div id="mainHost"></div>
   <div class="hint">左键拖拽=触控 · 右键=返回 · 中键=Home · 滚轮=滑动 · 键盘直接打字</div>
+
+  <!-- 桌面小部件面板（覆盖 canvas；底部留空使 #dock 仍可点） -->
+  <div id="widgetPanel" class="hide"
+       title="拖动标题栏移动 · Alt+拖动图像移动 · 右下角缩放 · 图像左键=触控 · 滚轮=滑动 · 右键=菜单">
+    <div class="wp-bar">
+      <span class="wp-title">▦ 桌面小部件</span>
+      <span class="wp-state" id="wpState">未连接</span>
+      <span class="wp-spacer"></span>
+      <button class="wp-btn" id="wpRelayout" title="清空本机位置记录并重新排列">重新布局</button>
+      <button class="wp-btn" id="wpClose" title="关闭面板（同时断开小部件通道）">关闭</button>
+    </div>
+    <div class="wp-canvas" id="wpCanvas">
+      <div class="wp-layer" id="wpLayer"></div>
+      <div class="wp-empty hide" id="wpEmpty">手机上还没有绑定小部件 —— 在手机端打开 BlindCast 的「桌面小部件」页面添加</div>
+    </div>
+    <div class="wp-menu hide" id="wpMenu">
+      <button id="wpMenuHide">隐藏</button>
+      <button id="wpMenuUnbind" class="danger">解绑</button>
+    </div>
+    <div class="wp-confirm hide" id="wpConfirm">
+      <div class="wp-box">
+        <p id="wpConfirmMsg"></p>
+        <div class="row">
+          <button class="wp-btn" id="wpCancel">取消</button>
+          <button class="wp-btn danger" id="wpConfirmOk">解绑</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 故障提示条（仅在 H264 硬解不可用、降级 JPEG 等需要用户处理时出现；正常 H264 不显示） -->
+  <div id="secBanner" class="hide">
+    <span>视频已降级为 JPEG（浏览器不支持 H264 硬解），画质与帧率下降。用 http://127.0.0.1 或 HTTPS 入口可启用 WebCodecs</span>
+    <button id="secBannerX">隐藏</button>
+  </div>
+
+  <!-- Fusion 桌面外壳：多窗口由前端摆放，活画面（#canvas）跟随聚焦窗口 -->
+  <div id="deskShell" class="hide">
+    <div class="desk-bg"></div>
+    <div class="desk-area" id="deskArea">
+      <div class="db-empty hide" id="deskEmpty"></div>
+    </div>
+    <div class="desk-bar" id="deskBar">
+      <div class="db-list" id="deskList"></div>
+      <div class="db-tools">
+        <span class="db-tag" id="deskTag">--</span>
+        <button class="db-btn" id="deskOpen" title="打开一个应用到独立窗口">＋ 打开应用</button>
+        <button class="db-btn" id="deskRefresh" title="重新读取窗口列表">刷新</button>
+        <button class="db-btn" id="deskToMirror" title="切回物理屏镜像">切回镜像</button>
+      </div>
+    </div>
+    <div id="deskPark" style="display:none"></div>
+  </div>
+
+  <!-- 打开应用选择器（逐窗口：一个应用 = 一张虚拟屏 + 一路独立流） -->
+  <div class="overlay hide" id="appPicker">
+    <div class="card" style="max-width:440px">
+      <h1><b>打开应用</b> · 独立窗口</h1>
+      <p id="appPickerSub" style="font-size:12px;color:var(--muted);margin-bottom:12px"><span class="dot"></span>每个应用独占一张虚拟屏，后台也实时更新</p>
+      <input id="appSearch" type="text" placeholder="搜索应用…" autocomplete="off" spellcheck="false" style="width:100%;margin-bottom:10px">
+      <div id="appList" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:14px"></div>
+      <div class="row"><button class="btn ghost" id="btnAppClose">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- 桌面状态卡：放在 #deskShell 外面，启动期（壳还没亮）也要能看见 -->
+  <div id="deskStatus" class="hide">
+    <div class="ds-box">
+      <p id="deskStatusMsg">正在启动独立桌面…</p>
+      <div class="row">
+        <button class="btn ghost" id="deskStatusMirror">切回镜像</button>
+        <button class="btn" id="deskStatusRetry">重试</button>
+      </div>
+    </div>
+  </div>
 
   <div id="dock">
     <button id="btnBack" title="返回 (Back)"><i>◀</i><span>返回</span></button>
-    <button id="btnHome" title="桌面 (Home)"><i>●</i><span>桌面</span></button>
+    <button id="btnHome" title="手机物理主屏 (Home)"><i>●</i><span>主屏</span></button>
     <button id="btnRecents" title="最近任务 (Recents)"><i>■</i><span>最近任务</span></button>
+    <span class="sep"></span>
+    <button id="btnDesktop" title="切换独立桌面 / 手机镜像"><i>🖥</i><span>独立桌面</span></button>
+    <button id="btnDeskHome" title="返回独立桌面主页" style="display:none"><i>🏠</i><span>桌面主页</span></button>
+    <button id="btnDeskTasks" title="副屏已开任务快速切换" style="display:none"><i>📋</i><span>已开任务</span></button>
     <span class="sep"></span>
     <button id="btnVolDown" title="音量 -"><i>🔉</i><span>音量-</span></button>
     <button id="btnVolUp" title="音量 +"><i>🔊</i><span>音量+</span></button>
@@ -135,16 +353,33 @@ footer #footFrame{flex:0 0 auto;margin-left:auto}
     <button id="btnKeys" title="聚焦键盘输入"><i>⌨</i><span>键盘</span></button>
     <button id="btnJpeg" title="切换 JPEG/H264 (裸浏览器降级)"><i>🎞</i><span>画质</span></button>
     <button id="btnReconnect" title="重连"><i>⟳</i><span>重连</span></button>
+    <span class="sep"></span>
+    <button id="btnWidgets" title="桌面小部件（拖动标题栏移动 · Alt+拖动图像移动 · 右键菜单）"><i>▦</i><span>部件</span></button>
   </div>
 
-  <!-- Token 鉴权弹窗 -->
+  <!-- 鉴权弹窗：配对码（默认）/ 访问口令 双入口 -->
   <div class="overlay hide" id="authOverlay">
     <div class="card" id="authCard">
       <h1><b>BlindCast</b> · 隐播</h1>
-      <p><span class="dot"></span>串流服务要求访问密码<br>输入 App 设置页配置的 Token</p>
-      <input id="tokenInput" type="password" placeholder="输入访问 Token" autocomplete="off">
-      <div class="row">
-        <button class="btn" id="btnAuth">进入控制台</button>
+      <div class="tabs">
+        <button id="tabPair" class="on">配对码</button>
+        <button id="tabToken">访问口令</button>
+      </div>
+      <div id="pairPane">
+        <p><span class="dot"></span>输入手机 App 主页显示的配对码</p>
+        <input id="pairInput" type="text" placeholder="XXXX-XXXXX" inputmode="text"
+               autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off">
+        <p class="tip">配对码显示在手机 App 主页，5 分钟内有效，用过一次即失效。</p>
+        <div class="row">
+          <button class="btn" id="btnPair">连接</button>
+        </div>
+      </div>
+      <div id="tokenPane" class="hide">
+        <p><span class="dot"></span>串流服务要求访问密码<br>输入 App 设置页配置的 Token</p>
+        <input id="tokenInput" type="password" placeholder="输入访问 Token" autocomplete="off">
+        <div class="row">
+          <button class="btn" id="btnAuth">进入控制台</button>
+        </div>
       </div>
       <p id="authErr" style="color:var(--danger);min-height:20px;margin-bottom:0"></p>
     </div>
@@ -159,13 +394,31 @@ footer #footFrame{flex:0 0 auto;margin-left:auto}
         <button class="btn" id="btnEnter">进入控制台</button>
         <button class="btn" id="btnStreamOn" style="display:none">开启投屏</button>
       </div>
-      <p style="font-size:11px">WebCodecs 硬解 · WebSocket 推流 · 插件安全源</p>
+      <p style="font-size:11px">WebCodecs 硬解 · WebSocket 推流 · 零外部依赖</p>
+    </div>
+  </div>
+
+  <!-- 桌面任务管理浮层 (Phase C) -->
+  <div class="overlay hide" id="tasksOverlay">
+    <div class="card" style="max-width:440px">
+      <h1><b>副屏已开任务</b> · 独立桌面</h1>
+      <p id="tasksSub" style="font-size:12px;color:var(--muted);margin-bottom:12px"><span class="dot"></span>点击直接切回已有实例，避免重复开启</p>
+      <div id="tasksList" style="max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
+      <div class="row">
+        <button class="btn ghost" id="btnRefreshTasks">刷新</button>
+        <button class="btn" id="btnCloseTasks">关闭</button>
+      </div>
     </div>
   </div>
 </div>
 
-<footer><span id="footStat"> BlindCast WebConsole · extension build </span><span id="footFrame">frame --</span></footer>
+<footer><span id="footStat"> BlindCast WebConsole · single-file · no CDN ·</span><span id="footFrame">frame --</span></footer>
 <div id="toast"></div>
+
+<!-- 并行解码模块（Phase E，独立文件）：普通 LAN HTTP（非安全上下文、无 WebCodecs）下
+     走 MSE + fMP4 兜底，安全上下文走 VideoDecoder。暴露 window.H264Player。
+     必须在下面内联主脚本之前同步加载，主脚本才能用 H264Player。 -->
+<script src="h264-player.js"></script>
 
 <script src="app.js"></script>
 </body>

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "BlindCast Console",
-  "version": "0.1.0.2",
-  "description": "BlindCast 隐播控制台（硬解版）：局域网直连手机 8888 端口，WebCodecs 硬件解码 + 反向触控，无需任何浏览器设置。",
+  "version": "0.1.0.3",
+  "description": "BlindCast Fusion 桌面：默认进入独立桌面，同时显示多个应用窗口，支持逐窗硬件解码与触控。",
   "minimum_chrome_version": "94",
   "action": {
     "default_title": "BlindCast Console",
