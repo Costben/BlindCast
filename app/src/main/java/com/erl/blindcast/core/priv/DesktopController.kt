@@ -62,10 +62,27 @@ object DesktopController {
         }
     }
 
-    /** 本次会话的 stop 文件（App 进程唯一，nonce 防串扰）。 */
-    private fun stopFile(): String = "$RUN_DIR/$PREFIX${android.os.Process.myPid()}.stop"
+    /**
+     * 本次会话的 stop 文件。**按固定名命名，不按 PID**：
+     * 旧实现按 PID 命名，App 进程被替换后新会话读不到旧状态文件、旧宿主也收不到 stop 信号，
+     * 于是残留宿主一直持有 VDM 设备与虚拟屏（真机实证：泄漏 displayId 219 / 280，
+     * 并把 `am start --display` 落到死屏上）。固定名让「换号不失联」，
+     * 再配合 [verifyHostAlive] 处理「文件还在但宿主已死」的陈旧态。
+     */
+    private fun stopFile(): String = "$RUN_DIR/${PREFIX}host.stop"
 
     private fun statusFile(): String = stopFile() + ".status"
+
+    /**
+     * 请求整屏桌面源立刻产一个 IDR（Request-Sync-1）。
+     *
+     * App 侧 touch `blindcast_desktop_host.stop.sync` → 宿主 250ms 内消费 →
+     * `setParameters({"request-sync":0})`。用于新客户端接入与背压丢帧后的重同步。
+     * 桌面未运行时是空操作（宿主不在，没人消费那个文件，[sweepStaleHosts] 会清掉）。
+     */
+    fun requestSync() {
+        runCatching { Shell.cmd("touch ${stopFile()}.sync").exec() }
+    }
 
     /** 状态快照（对应 `GET /api/desktop`）。 */
     data class Status(
@@ -97,11 +114,18 @@ object DesktopController {
             .toMap()
     }
 
-    /** 当前状态（纯读，不产生副作用）。 */
+    /** 当前状态（纯读，不产生副作用；但会校验宿主存活，陈旧状态文件自动作废）。 */
     fun status(): Status {
         val m = readStatusFile()
         val state = m["state"] ?: "stopped"
-        val running = state == "running"
+        var running = state == "running"
+        if (running && !verifyHostAlive()) {
+            // 状态文件还在但宿主已死（App 被替换/宿主崩溃）：判为未运行并清掉陈旧文件，
+            // 否则「桌面 active」会把物理镜像采集一并 skip，画面彻底没有（真机实证）。
+            Log.w(TAG, "[status] stale status file (host dead), clearing ${statusFile()}")
+            runCatching { Shell.cmd("rm -f ${stopFile()} ${statusFile()} ${stopFile()}.sync").exec() }
+            running = false
+        }
         return Status(
             running = running,
             displayId = m["displayId"]?.toIntOrNull() ?: -1,
@@ -114,6 +138,27 @@ object DesktopController {
             assocId = m["assocId"]?.toIntOrNull() ?: -1,
         )
     }
+
+    /**
+     * 宿主存活判定（`pgrep -f "FusionDesktopMain desktop"`，1s 缓存）。
+     *
+     * 只认**整屏桌面**宿主：逐窗口宿主是 `FusionDesktopMain window …`，两者必须分开判，
+     * 否则窗口在跑会把已死的桌面会话判成活着。
+     */
+    private fun verifyHostAlive(): Boolean {
+        val now = System.currentTimeMillis()
+        val cached = cachedAliveAt
+        if (cached > 0 && now - cached < 1_000L) return cachedAlive
+        val n = runCatching {
+            Shell.cmd("pgrep -f 'FusionDesktopMain desktop' | wc -l").exec()
+        }.getOrNull()?.out?.firstOrNull()?.trim()?.toIntOrNull() ?: 0
+        cachedAlive = n > 0
+        cachedAliveAt = now
+        return cachedAlive
+    }
+
+    @Volatile private var cachedAlive: Boolean = false
+    @Volatile private var cachedAliveAt: Long = 0L
 
     /** 失败状态工厂（口径统一，避免每处手拼）。 */
     private fun failure(error: String): Status =
@@ -150,7 +195,7 @@ object DesktopController {
             return failure("自管理关联建立失败（见 logcat BlindCast-VDAssoc）")
         }
         val stop = stopFile()
-        runCatching { Shell.cmd("rm -f $stop ${stop}.status").exec() }
+        runCatching { Shell.cmd("rm -f $stop ${stop}.status $stop.sync").exec() }
         val inner = "CLASSPATH=$apkPath app_process /system/bin " +
             "com.erl.blindcast.core.scrcpy.FusionDesktopMain desktop " +
             "${DEFAULT_WIDTH} ${DEFAULT_HEIGHT} ${DEFAULT_BITRATE} ${DEFAULT_FPS} $assoc $stop " +
@@ -160,6 +205,9 @@ object DesktopController {
         val launched = runCatching { Shell.cmd(cmd).exec() }
         Log.i(TAG, "[on] launched host assoc=$assoc exit=${launched.getOrNull()?.code} " +
             "out=${launched.getOrNull()?.out?.take(3)} err=${launched.getOrNull()?.err?.take(3)}")
+        // 新宿主刚拉起：立刻让存活判定重新取样，别用旧的 false 缓存把状态判死。
+        cachedAlive = false
+        cachedAliveAt = 0L
         // 轮询状态文件（宿主先建屏再拉起 Home，约 3-6s）。
         var waited = 0
         while (waited < 20_000) {
@@ -201,17 +249,21 @@ object DesktopController {
             Shell.cmd("for f in $pattern; do [ -e \"\$f\" ] && touch \"\$f\"; done; true").exec()
         }
         Thread.sleep(1_200L)
+        // 只杀**整屏桌面**宿主：逐窗口宿主是 `FusionDesktopMain window …`，
+        // 它们有自己的 stop 文件与生命周期（DesktopWindowController），
+        // 这里一刀切会连用户正开着的窗口一起拆掉。
         val left = runCatching {
-            Shell.cmd("pgrep -f com.erl.blindcast.core.scrcpy.FusionDesktopMain | wc -l").exec()
+            Shell.cmd("pgrep -f 'FusionDesktopMain desktop' | wc -l").exec()
         }.getOrNull()?.out?.firstOrNull()?.trim()?.toIntOrNull() ?: 0
         if (left > 0) {
             Log.w(TAG, "[on] stale desktop hosts left=$left, terminating")
             runCatching {
-                Shell.cmd("pkill -f com.erl.blindcast.core.scrcpy.FusionDesktopMain; true").exec()
+                Shell.cmd("pkill -f 'FusionDesktopMain desktop'; true").exec()
             }
             Thread.sleep(800L)
         }
         runCatching { Shell.cmd("rm -f $pattern; true").exec() }
+        runCatching { Shell.cmd("rm -f $RUN_DIR/${PREFIX}*.stop.sync; true").exec() }
         Log.i(TAG, "[on] stale host sweep done (left=$left, killed=${left > 0})")
     }
 
@@ -235,8 +287,16 @@ object DesktopController {
             waited += 400
             if (!status().running) break
         }
-        runCatching { VirtualDeviceAssociation.release(VirtualDeviceAssociation.OWN_MAC) }
-        runCatching { Shell.cmd("rm -f $stop ${stop}.status").exec() }
+        // 逐窗口流与整屏桌面共用同一条 companion 关联：窗口还开着就**不能**摘关联，
+        // 否则正在跑的窗口宿主会当场失去 VDM 关联（其虚拟屏随即不可用）。
+        if (com.erl.blindcast.core.priv.DesktopWindowController.isActive()) {
+            Log.i(TAG, "[off] windows still active, keep association")
+        } else {
+            runCatching { VirtualDeviceAssociation.release(VirtualDeviceAssociation.OWN_MAC) }
+        }
+        runCatching { Shell.cmd("rm -f $stop ${stop}.status $stop.sync").exec() }
+        cachedAlive = false
+        cachedAliveAt = 0L
         Log.i(TAG, "[off] done after=${waited}ms stillRunning=${status().running}")
         return Status(false, -1, -1, DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_DENSITY, "mirror", "", -1)
     }

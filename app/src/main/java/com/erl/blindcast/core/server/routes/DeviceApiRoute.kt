@@ -15,6 +15,7 @@ import com.erl.blindcast.core.priv.RootExecutor
 import com.erl.blindcast.core.priv.VirtualDeviceAssociation
 import com.erl.blindcast.core.priv.DesktopController
 import com.erl.blindcast.core.priv.DesktopTaskController
+import com.erl.blindcast.core.priv.DesktopWindowController
 import com.erl.blindcast.core.priv.VirtualDeviceBridge
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
 import com.erl.blindcast.core.scrcpy.AudioGate
@@ -555,6 +556,137 @@ object DeviceApiRoute {
             }
             else -> 405 to err("method not allowed")
         }
+    }
+
+    /**
+     * 逐应用窗口（Win-Api-1，需鉴权）：`/api/desktop/windows`
+     * - `GET` → `{ok, windows:[{windowId,displayId,taskId,packageName,component,width,height,state,error}]}`；
+     * - `POST {action:"open", package, component?, width?, height?}` → 起一个窗口（该应用独占
+     *   一张虚拟显示 + 一路编码 + 一条 socket）；
+     * - `POST {action:"close", windowId}` → 真关：宿主释放自己的虚拟屏/设备/编码器，
+     *   屏上应用任务一并销毁，**物理主屏与整屏桌面不受影响**；
+     * - `POST {action:"resize", windowId, width, height}` → 同 id 重建（源几何随窗口变）；
+     * - `POST {action:"closeAll"}` → 全关。
+     *
+     * 每个窗口的帧走 `/ws/stream` 的 `0x11 + windowId` 通道；输入走 `/ws/control` 的 `wid`。
+     */
+    fun handleDesktopWindows(method: String, body: ByteArray): Pair<Int, String> = when (method) {
+        "GET" -> 200 to windowsJson()
+        "POST" -> {
+            val obj = runCatching { JSONObject(body.toString(Charsets.UTF_8)) }.getOrNull()
+                ?: return 400 to err("invalid json body")
+            when (val action = obj.optString("action", "")) {
+                "list" -> 200 to windowsJson()
+                "open" -> {
+                    val pkgName = obj.optString("package", "").trim()
+                    if (pkgName.isBlank()) {
+                        400 to err("missing package")
+                    } else {
+                        val w = obj.optInt("width", DesktopWindowController.DEFAULT_WIDTH)
+                        val h = obj.optInt("height", DesktopWindowController.DEFAULT_HEIGHT)
+                        val comp = obj.optString("component", "")
+                        val info = runBlocking { DesktopWindowController.open(pkgName, comp, w, h) }
+                        Log.i(
+                            "BlindCast",
+                            "[WinApi] open pkg=$pkgName ${w}x${h} wid=${info.windowId} did=${info.displayId} " +
+                                "state=${info.state} err=${info.error.take(120)}",
+                        )
+                        200 to JSONObject()
+                            .put("ok", info.state == "running")
+                            .put("window", windowJson(info))
+                            .put("error", info.error)
+                            .toString()
+                    }
+                }
+                "close" -> {
+                    val wid = obj.optInt("windowId", -1)
+                    if (wid <= 0) 400 to err("missing windowId") else {
+                        val ok = runBlocking { DesktopWindowController.close(wid) }
+                        Log.i("BlindCast", "[WinApi] close wid=$wid ok=$ok")
+                        200 to JSONObject().put("ok", ok).put("windowId", wid).put("error", "").toString()
+                    }
+                }
+                "resize" -> {
+                    val wid = obj.optInt("windowId", -1)
+                    val w = obj.optInt("width", 0)
+                    val h = obj.optInt("height", 0)
+                    if (wid <= 0 || w <= 0 || h <= 0) {
+                        400 to err("missing windowId|width|height")
+                    } else {
+                        val info = runBlocking { DesktopWindowController.resize(wid, w, h) }
+                        Log.i(
+                            "BlindCast",
+                            "[WinApi] resize wid=$wid ${w}x$h state=${info.state} err=${info.error.take(120)}",
+                        )
+                        200 to JSONObject()
+                            .put("ok", info.state == "running")
+                            .put("window", windowJson(info))
+                            .put("error", info.error)
+                            .toString()
+                    }
+                }
+                "closeAll" -> {
+                    val n = runBlocking { DesktopWindowController.closeAll() }
+                    200 to JSONObject().put("ok", true).put("closed", n).put("error", "").toString()
+                }
+                else -> 400 to err("unknown action: $action (list|open|close|resize|closeAll)")
+            }
+        }
+        else -> 405 to err("method not allowed")
+    }
+
+    private fun windowsJson(): String {
+        val arr = JSONArray()
+        runCatching { DesktopWindowController.list() }.getOrDefault(emptyList())
+            .forEach { arr.put(windowJson(it)) }
+        return JSONObject()
+            .put("ok", true)
+            .put("windows", arr)
+            .put("max", DesktopWindowController.MAX_WINDOWS)
+            .put("error", "")
+            .toString()
+    }
+
+    private fun windowJson(w: DesktopWindowController.WindowInfo): JSONObject = JSONObject()
+        .put("windowId", w.windowId)
+        .put("displayId", w.displayId)
+        .put("taskId", w.taskId)
+        .put("packageName", w.packageName)
+        .put("component", w.component)
+        .put("width", w.width)
+        .put("height", w.height)
+        .put("state", w.state)
+        .put("error", w.error)
+
+    /**
+     * 可启动应用列表（「打开应用」选择器用）：`GET /api/apps` → `{ok, apps:[{package,label}]}`。
+     *
+     * 只列**有 launcher activity** 的应用（与 [DesktopWindowController.resolveLauncherComponent]
+     * 同口径，保证列表里点开的包一定能起窗口），按 label 排序、按包名去重。
+     * 只读 PackageManager，无副作用。
+     */
+    fun handleApps(method: String): Pair<Int, String> {
+        if (method != "GET") return 405 to err("method not allowed")
+        val ctx = runCatching { com.erl.blindcast.blindCastApp.applicationContext }.getOrNull()
+            ?: return 500 to err("no context")
+        val arr = JSONArray()
+        runCatching {
+            val pm = ctx.packageManager
+            val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
+                .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+            val list = pm.queryIntentActivities(intent, 0)
+            val seen = HashSet<String>()
+            val rows = ArrayList<Pair<String, String>>() // pkg to label
+            for (ri in list) {
+                val pkgName = ri.activityInfo?.packageName ?: continue
+                if (!seen.add(pkgName)) continue
+                val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(pkgName)
+                rows.add(pkgName to label)
+            }
+            rows.sortBy { it.second.lowercase() }
+            for ((p, l) in rows) arr.put(JSONObject().put("package", p).put("label", l))
+        }
+        return 200 to JSONObject().put("ok", true).put("apps", arr).put("error", "").toString()
     }
 
     private data class Battery(val level: Int, val tempC: Float, val charging: Boolean)

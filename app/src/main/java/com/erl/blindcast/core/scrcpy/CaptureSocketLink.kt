@@ -1,30 +1,17 @@
 package com.erl.blindcast.core.scrcpy
 
-import android.net.LocalServerSocket
-import android.net.LocalSocket
-import android.net.LocalSocketAddress
-import android.system.Os
-import android.system.OsConstants
 import android.util.Log
-import java.io.DataInputStream
-import java.io.FileDescriptor
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.locks.ReentrantLock
 
 /**
- * 特权帧搬运链（Stream-Priv-1 · 跑在 App 进程，只做搬运）。
+ * 镜像/整屏桌面这一路的特权帧搬运链（App 进程，只做搬运）。
  *
- * ## 分工
- * - 本端 `LocalServerSocket(abstract:blindcast_capture)` 监听，特权侧
- *   [PrivilegedCapture] `LocalSocket.connect` 上来后按
- *   `[1 字节通道 0x01/0x02 + 4 字节大端长度 + payload]` 读帧；
- * - 视频帧 → [ScreenCaptureEngine.frameChannel].trySend + `onFrame` 回调透传
- *   （复用其回调给 `StreamWsRoute`，`StreamWsRoute` 仍从既有 Channel 拉帧广播）；
- * - 音频帧 →  d经 [AudioGate] 过滤（关闸丢弃，零网络）后 →
- *   [AudioCaptureEngine.audioChannel].trySend + `onPacket` 透传；
- * - 不做编解码、不改 WS 路由、不碰偏好键。
+ * 本对象是 [CaptureLink] 的**单例门面**：固定抽象名 [SOCKET_NAME]，视频帧喂进
+ * [ScreenCaptureEngine.frameChannel]（再经 `StreamWsRoute` 广播成 `0x01`），
+ * 音频帧过 [AudioGate] 后喂进 [AudioCaptureEngine.audioChannel]（`0x02`）。
+ *
+ * 逐窗口流不经过本对象：`DesktopWindowController` 各建一个 [CaptureLink] 实例，
+ * socket 名 `blindcast_win_<id>`，帧直接进 `StreamWsRoute` 的 `0x11` 逐窗口通道。
  *
  * ## running 语义（供 ForegroundService.bootStack）
  * - [isRunning] = 服务端监听中（start 后 true，stop 后 false）；
@@ -42,368 +29,105 @@ object CaptureSocketLink {
     const val CHANNEL_VIDEO: Byte = 0x01
     const val CHANNEL_AUDIO: Byte = 0x02
 
-    /** 单帧上限 8MB（与特权侧一致，超限断连防炸内存）。 */
-    private const val MAX_FRAME_BYTES = 8 * 1024 * 1024
-
     /** 首帧等待默认 3s（任务包约定）。 */
-    const val FIRST_FRAME_TIMEOUT_MS = 3_000L
-
-    @Volatile var isRunning: Boolean = false; private set
-    @Volatile var hasVideo: Boolean = false; private set
-    @Volatile var hasAudio: Boolean = false; private set
-    @Volatile var lastError: Throwable? = null; private set
-
-    @Volatile var currentWidth: Int = -1; private set
-    @Volatile var currentHeight: Int = -1; private set
-    @Volatile var currentBitrate: Int = -1; private set
-    @Volatile var currentFps: Int = -1; private set
-
-    /** 便于诊断的累计帧计数（logcat/排障用，不进状态流）。 */
-    val videoFrames: AtomicLong = AtomicLong(0)
-    val audioFrames: AtomicLong = AtomicLong(0)
+    const val FIRST_FRAME_TIMEOUT_MS = CaptureLink.FIRST_FRAME_TIMEOUT_MS
 
     /**
      * 视频泵入分叉（Universal-1 JPEG 降级用 · App 进程内存回调，不做编解码）。
-     * [JpegTranscoder] 在 init 中赋值为其 `offer`，每视频帧另调一次
-     * （含关键帧内联 SPS+PPS 的完整 Annex-B payload + 是否关键帧）。
+     * [JpegTranscoder] 在 init 中赋值为其 `offer`，每视频帧另调一次。
      * 无订阅时 Jpeg 侧直接丢弃，本回调开销仅一次空函数调用。
      */
     @Volatile
     var videoTap: ((payload: ByteArray, isKey: Boolean) -> Unit)? = null
 
-    /** 首帧门闩（任意通道首帧即放行；重启重建）。 */
-    @Volatile private var firstFrameLatch = CountDownLatch(1)
+    /** 便于诊断的累计帧计数（logcat/排障用，不进状态流）。 */
+    val videoFrames: AtomicLong get() = link.videoFrames
+    val audioFrames: AtomicLong get() = link.audioFrames
 
-    private val lock = Any()
+    private val link = CaptureLink(
+        socketName = SOCKET_NAME,
+        onVideo = { payload, isKey, _ -> onVideoFrame(payload, isKey) },
+        onAudio = { payload -> onAudioFrame(payload) },
+    )
 
-    /**
-     * 生命周期串行锁：start/stop 互斥。
-     * **绝不在持锁时 join accept 线程**：accept 线程退出路径要拿 [lock]，
-     * 持锁 join 会互等，进而把 socket 拖成孤儿（见 [teardownLocked]）。
-     */
-    private val lifecycle = ReentrantLock()
+    @Volatile
+    var isRunning: Boolean = false
+        private set
 
-    private var server: LocalServerSocket? = null
-    private var client: LocalSocket? = null
-    private var acceptThread: Thread? = null
+    @Volatile
+    var hasVideo: Boolean = false
+        private set
 
-    /**
-     * 代际令牌：每次成功 start / 每次 teardown 自增。
-     * 旧 accept/read 线程据此自弃——stop 后又 start 时，上一代线程**不得**
-     * 把陈旧连接写成新 client，也不得在退出前关掉新 client。
-     */
-    @Volatile private var generation: Int = 0
+    @Volatile
+    var hasAudio: Boolean = false
+        private set
 
-    /** join 上界：唤醒（shutdown + 自连）后正常应在数十 ms 内退出。 */
-    private val JOIN_TIMEOUT_MS = 1_000L
+    @Volatile
+    var lastError: Throwable? = null
+        private set
+
+    @Volatile
+    var currentWidth: Int = -1
+        private set
+
+    @Volatile
+    var currentHeight: Int = -1
+        private set
+
+    @Volatile
+    var currentBitrate: Int = -1
+        private set
+
+    @Volatile
+    var currentFps: Int = -1
+        private set
 
     /**
      * 启动搬运服（幂等，同步返回，不阻塞等帧）。
      * 首帧经 [awaitFirstFrame] 另行等待（bootStack 等首帧或 3s 超时再标 running）。
-     *
-     * Stream-Priv-2 加固：
-     * - 加锁幂等：已在运行重复 start 直接返回 true（不再先停再起，避免
-     *   onCreate/onStartCommand 双路并发抢绑自残）；
-     * - 抢绑自愈：bind 遇 EADDRINUSE/BindException 先真拆残留（唤醒在途 accept 再关 fd）
-     *   再重试（间隔 500ms，最多 3 次），仍失败才抛（调用方经 runCatching 收敛为 captureError）。
      */
     fun start(width: Int, height: Int, bitrate: Int, fps: Int): Boolean {
-        lifecycle.lock()
-        try {
-            if (isRunning) {
-                Log.i(TAG, "[CaptureSocketLink] start skipped (already running) abstract:$SOCKET_NAME")
-                return true
-            }
-            // 先彻底拆上一代：阻塞在内核 accept/read 的线程持 socket 引用，
-            // 只 close fd 不释放抽象名（fd 没了名字还在 → 下一次 bind 必撞 EADDRINUSE）。
-            teardownLocked("start")
-            var last: Throwable? = null
-            for (attempt in 1..3) {
-                try {
-                    val srv = LocalServerSocket(SOCKET_NAME)
-                    synchronized(lock) {
-                        val gen = generation + 1
-                        generation = gen
-                        server = srv
-                        currentWidth = width
-                        currentHeight = height
-                        currentBitrate = bitrate
-                        currentFps = fps
-                        hasVideo = false
-                        hasAudio = false
-                        videoFrames.set(0)
-                        audioFrames.set(0)
-                        firstFrameLatch = CountDownLatch(1)
-                        lastError = null
-                        isRunning = true
-                        val t = Thread({ acceptLoop(gen) }, "BlindCast-CaptureLink")
-                        t.isDaemon = true
-                        acceptThread = t
-                        t.start()
-                    }
-                    Log.i(TAG, "[CaptureSocketLink] listen ok abstract:$SOCKET_NAME ${width}x${height} attempt=$attempt")
-                    return true
-                } catch (t: Throwable) {
-                    last = t
-                    lastError = t
-                    // 残留 fd/在途 accept 必须先真相拆干净，否则抽象名持续被占重试必撞。
-                    teardownLocked("start-retry")
-                    if (!isBindConflict(t)) {
-                        Log.e(TAG, "[CaptureSocketLink] listen failed (non-bind) abstract:$SOCKET_NAME", t)
-                        throw t
-                    }
-                    if (attempt < 3) {
-                        Log.w(TAG, "[CaptureSocketLink] bind conflict attempt=$attempt/3 err=${t.message}, retry in 500ms")
-                        try {
-                            Thread.sleep(500L)
-                        } catch (_: InterruptedException) {
-                            Thread.currentThread().interrupt()
-                            break
-                        }
-                        teardownLocked("start-retry-2")
-                    }
-                }
-            }
-            val err: Throwable = last
-                ?: IllegalStateException("CaptureSocketLink: bind failed after 3 retries")
-            lastError = err
-            Log.e(TAG, "[CaptureSocketLink] listen failed after 3 retries abstract:$SOCKET_NAME", err)
-            teardownLocked("start-failed")
-            throw err
-        } finally {
-            lifecycle.unlock()
+        val ok = link.start(width, height, bitrate, fps)
+        if (ok) {
+            currentWidth = width
+            currentHeight = height
+            currentBitrate = bitrate
+            currentFps = fps
+            hasVideo = false
+            hasAudio = false
+            lastError = null
+            isRunning = true
+        } else {
+            lastError = link.lastError
         }
+        return ok
     }
 
     /**
      * 等首帧（任意通道）。
      * @return true = 3s 内收到首帧；false = 超时/已停（调用方记 lastError 进状态流）。
      */
-    fun awaitFirstFrame(timeoutMs: Long = FIRST_FRAME_TIMEOUT_MS): Boolean {
-        val latch = firstFrameLatch
-        return try {
-            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-            false
-        }
-    }
+    fun awaitFirstFrame(timeoutMs: Long = FIRST_FRAME_TIMEOUT_MS): Boolean = link.awaitFirstFrame(timeoutMs)
 
-    /**
-     * 停止搬运（幂等）：真唤醒在途 accept/read 再关 fd，抽象名当次真正释放。
-     * 不 close 引擎复用 Channel。重复 stop 无害。
-     */
+    /** 停止搬运（幂等）。不 close 引擎复用 Channel。重复 stop 无害。 */
     fun stop() {
-        lifecycle.lock()
-        try {
-            teardownLocked("stop")
-        } finally {
-            lifecycle.unlock()
-        }
+        link.stop()
+        isRunning = false
+        hasVideo = false
+        hasAudio = false
+        currentWidth = -1
+        currentHeight = -1
+        currentBitrate = -1
+        currentFps = -1
     }
 
     /** 取最近失败文案（状态流/Home 回读用）。 */
     fun errorMessage(): String? = lastError?.message ?: lastError?.toString()
 
-    // ------------------------------------------------------------------
-    // 内部
-    // ------------------------------------------------------------------
-
-    /**
-     * 拆掉当前一代（幂等）：锁内摘引用 + 自增代际 + 清运行态，锁外唤醒/join/关 fd。
-     *
-     * 顺序不可换（真机实证）：Linux 上 close 一个 fd **不会**唤醒阻塞在 `accept()`
-     * 的线程，在途 accept 仍持 socket 引用 → socket 不 destroy → 抽象名继续 LISTEN，
-     * 但 /proc 里已查不到 owner（ss 显示无 users）。因此必须
-     * `shutdown` + 自连唤醒 → 锁外 join 等线程退净 → 最后才关 fd。
-     *
-     * 调用方**必须**持有 [lifecycle]；本函数绝不持 [lock] 做 join。
-     */
-    private fun teardownLocked(reason: String) {
-        var thread: Thread? = null
-        var srv: LocalServerSocket? = null
-        var cli: LocalSocket? = null
-        synchronized(lock) {
-            if (!isRunning && server == null && client == null && acceptThread == null) {
-                return
-            }
-            generation++
-            isRunning = false
-            // 首帧门闩同步清零：停后 `isRunning || hasVideo` 即回到 false，
-            // 状态流/UI/API 不粘旧 true（等帧方持旧 latch 引用不受影响，见 awaitFirstFrame）。
-            hasVideo = false
-            hasAudio = false
-            thread = acceptThread
-            srv = server
-            cli = client
-            acceptThread = null
-            server = null
-            client = null
-            currentWidth = -1
-            currentHeight = -1
-            currentBitrate = -1
-            currentFps = -1
-        }
-        thread?.interrupt()
-        // 1) read 阻塞：对已连接端 shutdown 必定唤醒（读到 EOF）。
-        shutdownQuietly(cli?.fileDescriptor)
-        // 2) accept 阻塞：先试 listen fd shutdown；AF_UNIX 上未必唤醒，故补自连。
-        shutdownQuietly(srv?.fileDescriptor)
-        wakeAccept()
-        // 3) 锁外 join：accept 线程退出路径要拿 lock，持 lock join 会互等。
-        if (thread != null) {
-            try {
-                thread.join(JOIN_TIMEOUT_MS)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
-            if (thread.isAlive) {
-                Log.w(TAG, "[CaptureSocketLink] accept thread alive after ${JOIN_TIMEOUT_MS}ms " +
-                    "($reason) abstract:$SOCKET_NAME")
-            }
-        }
-        // 4) 线程退净后才关 fd：在途 accept 持引用时 close 只会把 socket 变孤儿。
-        runCatching { cli?.close() }
-        runCatching { srv?.close() }
-        Log.i(TAG, "[CaptureSocketLink] teardown done ($reason) gen=$generation " +
-            "threadAlive=${thread?.isAlive == true}")
-    }
-
-    /** 对 fd 做 SHUT_RDWR 唤醒阻塞调用；失败只记 debug（未连接/已关闭均属常态）。 */
-    private fun shutdownQuietly(fd: FileDescriptor?) {
-        if (fd == null || !fd.valid()) return
-        try {
-            Os.shutdown(fd, OsConstants.SHUT_RDWR)
-        } catch (t: Throwable) {
-            Log.d(TAG, "[CaptureSocketLink] shutdown skipped: ${t.message}")
-        }
-    }
-
-    /**
-     * 自连唤醒：向本抽象名 connect 一次。
-     * 这是让 `accept()` 确定性返回的手段（close 不唤醒阻塞 accept），
-     * 使 accept 线程及时退出、socket 引用计数归零、抽象名随 close 释放。
-     */
-    private fun wakeAccept() {
-        var s: LocalSocket? = null
-        try {
-            s = LocalSocket()
-            s.connect(LocalSocketAddress(SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT))
-        } catch (t: Throwable) {
-            Log.d(TAG, "[CaptureSocketLink] wake accept connect skipped: ${t.message}")
-        } finally {
-            runCatching { s?.close() }
-        }
-    }
-
-    /** 抢绑判定：BindException 或链上 message 含 Address already in use / EADDRINUSE。 */
-    private fun isBindConflict(t: Throwable): Boolean {
-        var cur: Throwable? = t
-        while (cur != null) {
-            if (cur is java.net.BindException) return true
-            val msg = cur.message ?: ""
-            if (msg.contains("Address already in use", ignoreCase = true) ||
-                msg.contains("EADDRINUSE", ignoreCase = true)
-            ) return true
-            cur = cur.cause
-        }
-        return false
-    }
-
-    private fun acceptLoop(gen: Int) {
-        while (isRunning && generation == gen && !Thread.currentThread().isInterrupted) {
-            val srv = synchronized(lock) { if (generation == gen) server else null } ?: break
-            // accept 前快照（stop 关闭 server / 自连唤醒都会让 accept 返回）。
-            val sock: LocalSocket = try {
-                srv.accept()
-            } catch (_: InterruptedException) {
-                break
-            } catch (t: Throwable) {
-                if (isRunning && generation == gen) {
-                    lastError = t
-                    Log.e(TAG, "[CaptureSocketLink] accept failed", t)
-                    runCatching { Thread.sleep(200L) }
-                    continue
-                } else break
-            }
-            // 代际校验：stop 后又 start 时本线程属旧代，丢弃连接，绝不写新代际的 client。
-            val stale = synchronized(lock) {
-                if (generation != gen) {
-                    true
-                } else {
-                    runCatching { client?.close() }
-                    client = sock
-                    false
-                }
-            }
-            if (stale) {
-                runCatching { sock.close() }
-                Log.i(TAG, "[CaptureSocketLink] drop stale client gen=$gen cur=$generation")
-                break
-            }
-            Log.i(TAG, "[CaptureSocketLink] client connected")
-            try {
-                readLoop(sock, gen)
-            } finally {
-                runCatching { sock.close() }
-                synchronized(lock) { if (client === sock) client = null }
-                Log.i(TAG, "[CaptureSocketLink] client disconnected video=${videoFrames.get()} audio=${audioFrames.get()}")
-            }
-        }
-    }
-
-    private fun readLoop(sock: LocalSocket, gen: Int) {
-        val input = DataInputStream(sock.inputStream)
-        while (isRunning && generation == gen && !Thread.currentThread().isInterrupted) {
-            val channel: Byte
-            val len: Int
-            try {
-                channel = input.readByte()
-                len = input.readInt()
-            } catch (t: Throwable) {
-                // EOF/断连为常态（特权侧 stop 关流），只记 debug 不记 lastError 污染状态流。
-                Log.d(TAG, "[CaptureSocketLink] read header eof/err: ${t.message}")
-                break
-            }
-            if (len <= 0 || len > MAX_FRAME_BYTES) {
-                Log.w(TAG, "[CaptureSocketLink] bad frame len=$len ch=$channel, drop conn")
-                lastError = IllegalStateException("CaptureSocketLink: bad frame len=$len")
-                break
-            }
-            if (channel != CHANNEL_VIDEO && channel != CHANNEL_AUDIO) {
-                Log.w(TAG, "[CaptureSocketLink] unknown channel=$channel len=$len, drop conn")
-                lastError = IllegalStateException("CaptureSocketLink: unknown channel=$channel")
-                break
-            }
-            val payload = ByteArray(len)
-            try {
-                input.readFully(payload)
-            } catch (t: Throwable) {
-                Log.d(TAG, "[CaptureSocketLink] read payload eof/err: ${t.message}")
-                break
-            }
-            try {
-                if (channel == CHANNEL_VIDEO) onVideoFrame(payload) else onAudioFrame(payload)
-            } catch (t: Throwable) {
-                lastError = t
-                Log.e(TAG, "[CaptureSocketLink] dispatch failed", t)
-            }
-        }
-    }
-
-    private fun onVideoFrame(payload: ByteArray) {
-        if (payload.isEmpty()) return
+    private fun onVideoFrame(payload: ByteArray, isKey: Boolean) {
         hasVideo = true
-        firstFrameLatch.countDown()
-        videoFrames.incrementAndGet()
-        // NALU 类型解析（与 ScreenCaptureEngine.parseNaluType 同规则，供 FramePacket.type）。
-        val type = parseNaluType(payload)
-        // Smooth-1：isKey 必须扫描全包（特权侧关键帧为 sps+pps+idr 内联，首 NALU
-        // 为 SPS=7 而非 IDR=5；只看首 NALU 则 isKey 恒 false，JpegTranscoder 永等
-        // 不到 SPS/PPS 建解码器，H264 泵活着也零 JPEG。H264 老路只透传 payload 不动）。
-        val isKey = type == FramePacket.NALU_TYPE_IDR || containsNaluType(payload, FramePacket.NALU_TYPE_IDR)
         val pkt = FramePacket(
-            type = type,
+            type = if (isKey) FramePacket.NALU_TYPE_IDR else FramePacket.NALU_TYPE_UNKNOWN,
             isKeyFrame = isKey,
             timestampUs = System.nanoTime() / 1000L,
             payload = payload,
@@ -412,17 +136,13 @@ object CaptureSocketLink {
         )
         ScreenCaptureEngine.frameChannel.trySend(pkt)
         runCatching { ScreenCaptureEngine.onFrame?.invoke(pkt) }.onFailure { t -> lastError = t }
-        // JPEG 降级分叉（无订阅时 Jpeg 侧直接丢，仅一次调用开销；异常吞掉不污染搬运）。
         runCatching { videoTap?.invoke(payload, isKey) }
     }
 
     private fun onAudioFrame(payload: ByteArray) {
-        if (payload.isEmpty()) return
         hasAudio = true
-        firstFrameLatch.countDown()
-        // AudioGate 在 App 进程内存内生效：关闸直接丢弃（零网络， drain 侧同样不投递）。
+        // AudioGate 在 App 进程内存内生效：关闸直接丢弃（零网络，drain 侧同样不投递）。
         if (!AudioGate.isAudioEnabled) return
-        audioFrames.incrementAndGet()
         val pkt = AudioPacket(
             timestampUs = System.nanoTime() / 1000L,
             payload = payload,
@@ -432,41 +152,7 @@ object CaptureSocketLink {
         runCatching { AudioCaptureEngine.onPacket?.invoke(pkt) }.onFailure { t -> lastError = t }
     }
 
-    private fun parseNaluType(annexB: ByteArray): Int {
-        var i = 0
-        while (i + 2 < annexB.size) {
-            if (annexB[i] == 0.toByte() && annexB[i + 1] == 0.toByte()) {
-                val headerAt = when {
-                    annexB[i + 2] == 1.toByte() -> i + 3
-                    i + 3 < annexB.size && annexB[i + 2] == 0.toByte() && annexB[i + 3] == 1.toByte() -> i + 4
-                    else -> -1
-                }
-                if (headerAt in 0 until annexB.size) return annexB[headerAt].toInt() and 0x1F
-                if (headerAt >= 0) return FramePacket.NALU_TYPE_UNKNOWN
-            }
-            i++
-        }
-        return FramePacket.NALU_TYPE_UNKNOWN
-    }
-
-    /** 包内是否含指定 NALU 类型（关键帧内联判定用；起始码 3/4 字节通用）。 */
-    private fun containsNaluType(annexB: ByteArray, nalType: Int): Boolean {
-        var i = 0
-        while (i + 2 < annexB.size) {
-            if (annexB[i] == 0.toByte() && annexB[i + 1] == 0.toByte()) {
-                val headerAt = when {
-                    annexB[i + 2] == 1.toByte() -> i + 3
-                    i + 3 < annexB.size && annexB[i + 2] == 0.toByte() && annexB[i + 3] == 1.toByte() -> i + 4
-                    else -> -1
-                }
-                if (headerAt in 0 until annexB.size) {
-                    if ((annexB[headerAt].toInt() and 0x1F) == nalType) return true
-                    i = headerAt + 1
-                    continue
-                }
-            }
-            i++
-        }
-        return false
+    init {
+        Log.i(TAG, "[CaptureSocketLink] facade ready abstract:$SOCKET_NAME")
     }
 }

@@ -65,7 +65,9 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass
  * - 音频 `REMOTE_SUBMIX` PCM 直抓 → AAC-LC（48k 立体声 128k 默认），同 socket 复用。
  *
  * ## socket 帧格式（与 [CaptureSocketLink] / `StreamWsRoute` 对齐）
- * 单条 TCP/LocalSocket 流多路复用：`[1 字节通道 + 4 字节大端长度 + payload]`。
+ * 单条 TCP/LocalSocket 流多路复用：
+ * `[1 字节通道 + 4 字节大端长度 + 8 字节大端 pts 微秒 + payload]`（pts 来自编码器
+ * `presentationTimeUs`，供前端 fMP4 封装 / 解码时间戳；无时间戳时写 0）。
  * - `0x01` 视频：H264 Annex-B NALU（含起始码；关键帧已内联 SPS+PPS，首包必 IDR）；
  * - `0x02` 音频：AAC 裸帧（无 ADTS；config 就绪前丢帧，对外包可独立解码）。
  * App 侧 [CaptureSocketLink] 按此格式读帧后喂入既有 `ScreenCaptureEngine.frameChannel`
@@ -160,6 +162,20 @@ object PrivilegedCapture {
     @Volatile private var spsMissingWarned = false
     @Volatile private var cachedAudioConfig: ByteArray? = null
     @Volatile private var audioStartNs: Long = 0L
+
+    /**
+     * 同步帧请求计数（Request-Sync-1）。
+     *
+     * 客户端接入 / 拥塞丢帧后由 [requestSyncFrame] 自增；[videoDrainLoop] 每轮读一次，
+     * 计数变了就对编码器下 `setParameters({"request-sync":0})` 立刻产一个 IDR。
+     * 为什么用「计数 + drain 内消费」而不是直接 `setParameters`：编码器输出队列由
+     * drain 线程独占，跨线程写参数会把 `MediaCodec` 状态机搅乱；计数是幂等的，
+     * 连发多次只补一个 IDR（丢帧期本来就只需要一个）。
+     */
+    private val syncRequests = java.util.concurrent.atomic.AtomicLong(0L)
+
+    /** drain 线程已消费到的计数（只在 [videoDrainLoop] 内读写）。 */
+    private var syncHandled = 0L
 
     private val lock = Any()
     private val socketLock = Any()
@@ -351,6 +367,22 @@ object PrivilegedCapture {
 
     /** 本次建屏路由快照（诊断/探针用，null=未建屏）。 */
     fun displayRouteSnapshot(): String? = displayRoute
+
+    /**
+     * 请求一个同步帧（IDR / Request-Sync-1）。
+     *
+     * 语义对齐 AndroMeld `MirrorServerMain` 的 `setParameters({"request-sync":0})`：
+     * 客户端接入、或 WS 背压进入「丢到下一个 IDR」态后调用，让编码器立刻吐一个关键帧，
+     * 而不是等 `i-frame-interval` 的周期（那是秒级，用户能感知到卡住）。
+     *
+     * 任意线程可调；真正下发在 [videoDrainLoop] 内，编码器没起来时是空操作。
+     */
+    fun requestSyncFrame() {
+        syncRequests.incrementAndGet()
+    }
+
+    /** 已累计下发的同步帧请求数（探针/日志用）。 */
+    fun syncRequestCount(): Long = syncRequests.get()
 
     /**
      * H264Black-1 可配编码探针（裸 root 进程内跑，无 socket 纯验证）。
@@ -809,6 +841,19 @@ object PrivilegedCapture {
         val info = MediaCodec.BufferInfo()
         while (!stopped.get() && videoRunning && !Thread.currentThread().isInterrupted) {
             val encoder = synchronized(lock) { videoCodec } ?: break
+            // Request-Sync-1：客户端接入 / 拥塞丢帧后立刻补一个 IDR（等周期 I 帧要秒级）。
+            val wantSync = syncRequests.get()
+            if (wantSync != syncHandled) {
+                syncHandled = wantSync
+                try {
+                    val p = android.os.Bundle()
+                    p.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                    encoder.setParameters(p)
+                    Log.i(TAG, "[PrivilegedCapture] request-sync -> IDR (n=$wantSync)")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "[PrivilegedCapture] request-sync failed: ${t.message}")
+                }
+            }
             try {
                 when (val index = encoder.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)) {
                     MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
@@ -868,7 +913,7 @@ object PrivilegedCapture {
         if (!firstKeyFrameEmitted && !isKey) return
         val payload = if (isKey) sps + pps + raw else raw
         if (isKey) firstKeyFrameEmitted = true
-        writeFrame(CHANNEL_VIDEO, payload)
+        writeFrame(CHANNEL_VIDEO, payload, info.presentationTimeUs)
     }
 
     // ------------------------------------------------------------------
@@ -1022,14 +1067,14 @@ object PrivilegedCapture {
             return
         }
         if (cachedAudioConfig == null) return
-        writeFrame(CHANNEL_AUDIO, raw)
+        writeFrame(CHANNEL_AUDIO, raw, info.presentationTimeUs)
     }
 
     // ------------------------------------------------------------------
     // socket 写帧
     // ------------------------------------------------------------------
 
-    private fun writeFrame(channel: Byte, payload: ByteArray) {
+    private fun writeFrame(channel: Byte, payload: ByteArray, ptsUs: Long = 0L) {
         if (payload.isEmpty() || payload.size > MAX_FRAME_BYTES) return
         val out = synchronized(lock) { socketOut } ?: return
         synchronized(socketLock) {
@@ -1039,6 +1084,11 @@ object PrivilegedCapture {
                 out.write((payload.size ushr 16) and 0xFF)
                 out.write((payload.size ushr 8) and 0xFF)
                 out.write(payload.size and 0xFF)
+                // 每帧 pts（微秒，大端 8B，MediaCodec presentationTimeUs）——Win-Stream-1。
+                // 前端 fMP4 封装 / 解码时间戳用它（单位：微秒），缺省 0 交前端用本地时钟。
+                for (shift in intArrayOf(56, 48, 40, 32, 24, 16, 8, 0)) {
+                    out.write(((ptsUs ushr shift) and 0xFF).toInt())
+                }
                 out.write(payload)
                 // 视频关键帧边界 flush，音频每包不 flush（靠视频 flush 捎带，降 syscall）。
                 if (channel == CHANNEL_VIDEO) out.flush()

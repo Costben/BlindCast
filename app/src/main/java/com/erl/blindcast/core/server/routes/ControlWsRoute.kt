@@ -3,6 +3,7 @@ package com.erl.blindcast.core.server.routes
 import com.erl.blindcast.BuildConfig
 import com.erl.blindcast.core.blackout.PowerController
 import com.erl.blindcast.core.priv.DesktopController
+import com.erl.blindcast.core.priv.DesktopWindowController
 import com.erl.blindcast.core.priv.PrivilegedBridge
 import com.erl.blindcast.core.scrcpy.AudioCaptureEngine
 import com.erl.blindcast.core.scrcpy.JpegTranscoder
@@ -60,6 +61,7 @@ object ControlWsRoute {
     private data class PendingTouch(
         val x0: Float, val y0: Float,
         var lastX: Float, var lastY: Float,
+        var wid: Int = 0,
         var moved: Boolean = false,
         var realtime: Boolean = false,
     )
@@ -130,7 +132,7 @@ object ControlWsRoute {
                     if (keyCode == Int.MIN_VALUE) {
                         reply(conn, false, "key", "missing keycode")
                     } else {
-                        val (ok, err) = injectKeyPriv(keyCode)
+                        val (ok, err) = injectKeyPriv(keyCode, json.optInt("wid", 0))
                         reply(conn, ok, "key", err)
                     }
                 }
@@ -143,7 +145,7 @@ object ControlWsRoute {
                     reply(conn, false, "text", "keyboard disabled")
                 } else {
                     val text = json.optString("text", "")
-                    val (ok, err) = injectTextPriv(text)
+                    val (ok, err) = injectTextPriv(text, json.optInt("wid", 0))
                     reply(conn, ok, "text", err)
                 }
             }
@@ -166,6 +168,15 @@ object ControlWsRoute {
                 }
             }
             "ping" -> replyRaw(conn, """{"type":"pong","ok":true}""")
+            // Request-Sync-1：客户端解码出错 / 丢过帧后要一个关键帧。
+            // wid=0（缺省）= 整屏桌面源；wid>0 = 对应窗口源。
+            "requestIDR", "requestSync", "request-sync" -> {
+                val wid = json.optInt("wid", 0)
+                runCatching { StreamWsRoute.requestSync(wid) }
+                // 客户端显式要帧：静态窗口的编码器产不出新帧，必须重发缓存关键帧，否则永久黑窗。
+                if (wid > 0) runCatching { StreamWsRoute.resendWindowKeyFrame(wid) }
+                reply(conn, true, "requestIDR", null)
+            }
             else -> reply(conn, false, null, "unknown type")
         }
     }
@@ -178,18 +189,19 @@ object ControlWsRoute {
         val type = json.optString("type", "")
         val x = json.optDouble("x", Double.NaN).toFloat()
         val y = json.optDouble("y", Double.NaN).toFloat()
+        val wid = json.optInt("wid", 0)
         if (!x.isFinite() || !y.isFinite()) {
             reply(conn, false, type, "missing x|y")
             return
         }
         when (type) {
             "down" -> {
-                val p = PendingTouch(x, y, x, y)
+                val p = PendingTouch(x, y, x, y, wid = wid)
                 pendingGestures[conn] = p
                 // 实时优先：daemon down 透传（~数十 ms），成了后 move/up 直透跟手；
                 // 失败则 realtime=false，up 时回退原子 tap/drag（老路兜底）。
                 // down ack 恒 true（已缓存；实时 best-effort，不阻塞前端手势流）。
-                val (ok, _) = injectDownPriv(x, y)
+                val (ok, _) = injectDownPriv(x, y, wid)
                 p.realtime = ok
                 reply(conn, true, type, null)
             }
@@ -204,7 +216,7 @@ object ControlWsRoute {
                     if (p.realtime) {
                         // 实时直透；透传失败说明 daemon  half-dead：降级批量，
                         // 先 cancel daemon 侧已开手势（防残留按住），up 时走原子。
-                        val (ok, _) = injectMovePriv(x, y)
+                        val (ok, _) = injectMovePriv(x, y, p.wid)
                         if (!ok) {
                             p.realtime = false
                             runCatching { cancelPriv() }
@@ -219,15 +231,15 @@ object ControlWsRoute {
                     reply(conn, false, type, "up without active down")
                 } else if (p.realtime) {
                     // 实时抬起：结束 daemon 侧手势（跟手已在 move 中生效）。
-                    val (ok, err) = injectUpPriv(x, y)
+                    val (ok, err) = injectUpPriv(x, y, p.wid)
                     if (!ok) {
                         // up  miss 极罕见（daemon 在 move 还活）：cancel 解卡后
                         // 回退原子兜底，保证本次手势必有一次生效。
                         runCatching { cancelPriv() }
                         val (ok2, err2) = if (!p.moved) {
-                            injectTapPriv(p.x0, p.y0)
+                            injectTapPriv(p.x0, p.y0, p.wid)
                         } else {
-                            injectDragPriv(p.x0, p.y0, p.lastX, p.lastY)
+                            injectDragPriv(p.x0, p.y0, p.lastX, p.lastY, p.wid)
                         }
                         reply(conn, ok2, type, err2)
                     } else {
@@ -235,9 +247,9 @@ object ControlWsRoute {
                     }
                 } else {
                     val (ok, err) = if (!p.moved) {
-                        injectTapPriv(p.x0, p.y0)
+                        injectTapPriv(p.x0, p.y0, p.wid)
                     } else {
-                        injectDragPriv(p.x0, p.y0, p.lastX, p.lastY)
+                        injectDragPriv(p.x0, p.y0, p.lastX, p.lastY, p.wid)
                     }
                     reply(conn, ok, type, err)
                 }
@@ -250,17 +262,26 @@ object ControlWsRoute {
             reply(conn, false, "click", "touch disabled")
             return
         }
+        val wid = json.optInt("wid", 0)
         when (json.optString("button", "left")) {
             "right" -> {
                 if (!ScrcpyGate.isRightBackEnabled) {
                     reply(conn, false, "click", "right-back disabled")
                     return
                 }
-                val (ok, err) = injectKeyPriv(TouchInjector.MOUSE_BUTTON_RIGHT_KEYCODE)
+                val (ok, err) = injectKeyPriv(TouchInjector.MOUSE_BUTTON_RIGHT_KEYCODE, wid)
                 reply(conn, ok, "click", err)
             }
             "middle" -> {
-                // 桌面源下的「Home」**必须显式启动我们自己的 Home**，不能注入 KEYCODE_HOME：
+                // 逐窗口（wid>0）：该窗口是独立虚拟屏上的单个应用，没有自己的 Home，
+                // 注入 KEYCODE_HOME 只会把该屏清空——语义上等价于「回桌面」，
+                // 客户端最小化窗口即可看到别的窗口，故这里直接注入到该窗口的屏。
+                if (wid > 0) {
+                    val (ok, err) = injectKeyPriv(TouchInjector.MOUSE_BUTTON_MIDDLE_KEYCODE, wid)
+                    reply(conn, ok, "click", err)
+                    return
+                }
+                // 整屏桌面源下的「Home」**必须显式启动我们自己的 Home**，不能注入 KEYCODE_HOME：
                 // 真机实证（displayId 219）KEYCODE_HOME 落在副屏也不会拉起 FusionHome
                 // （ROM 自带 SecondaryDisplayLauncher 抢注），且系统级 home 解析有回落到
                 // 物理主屏的风险。桌面模式 → `am start -W --display <id>` 显式拉起；
@@ -278,7 +299,7 @@ object ControlWsRoute {
                     )
                     reply(conn, res.error.isBlank(), "click", res.error.ifBlank { null })
                 } else {
-                    val (ok, err) = injectKeyPriv(TouchInjector.MOUSE_BUTTON_MIDDLE_KEYCODE)
+                    val (ok, err) = injectKeyPriv(TouchInjector.MOUSE_BUTTON_MIDDLE_KEYCODE, 0)
                     reply(conn, ok, "click", err)
                 }
             }
@@ -290,7 +311,7 @@ object ControlWsRoute {
                     reply(conn, false, "click", "missing x|y")
                     return
                 }
-                val (ok, err) = injectTapPriv(x, y)
+                val (ok, err) = injectTapPriv(x, y, wid)
                 reply(conn, ok, "click", err)
             }
         }
@@ -313,7 +334,20 @@ object ControlWsRoute {
      * `TouchInjector: unknown display size`（桌面会话把特权侧 targetDisplay 改成虚拟屏后，
      * 回到 display 0 没人再 configure 过）。故这里对物理屏取真实像素尺寸一并下发。
      */
-    private fun targetDisplay(): Triple<Int, Int, Int> {
+    private fun targetDisplay(wid: Int = 0): Triple<Int, Int, Int> {
+        // 逐窗口优先：windowId → 该窗口自己的虚拟屏 + 自己的尺寸。
+        // **fail-closed**：wid>0 时若该窗口不存在/未就绪，返回哨兵 `(-1,-1,-1)`，
+        // 由各注入函数直接判失败 —— 绝不回落到整屏桌面/镜像（否则一次点击会落到别的
+        // 窗口或物理主屏，正是「逐窗口输入隔离」要禁止的）。did<0 即哨兵（did==0 是
+        // 合法的物理镜像屏，不能用 <=0 判）。
+        if (wid > 0) {
+            val did = runCatching { DesktopWindowController.displayIdOf(wid) }.getOrDefault(-1)
+            val size = runCatching { DesktopWindowController.sizeOf(wid) }.getOrNull()
+            if (did > 0 && size != null && size.first > 0 && size.second > 0) {
+                return Triple(did, size.first, size.second)
+            }
+            return Triple(-1, -1, -1)
+        }
         val st = runCatching { com.erl.blindcast.core.priv.DesktopController.status() }.getOrNull()
         if (st != null && st.running && st.displayId > 0) {
             return Triple(st.displayId, st.width, st.height)
@@ -385,68 +419,96 @@ object ControlWsRoute {
         )
     }
 
-    private fun injectTapPriv(x: Float, y: Float): Pair<Boolean, String?> {
-        val (did, w, h) = targetDisplay()
+    private fun injectTapPriv(x: Float, y: Float, wid: Int = 0): Pair<Boolean, String?> {
+        val (did, w, h) = targetDisplay(wid)
         lastInjectDisplayId = did
+        if (did < 0) {
+            logInject("fail-closed", did, 0, 0, false, "window $wid not ready", detail = "wid=$wid")
+            return false to "window $wid not ready"
+        }
         val r = runCatching { runBlocking { PrivilegedBridge.injectTap(pkg(), x, y, did, w, h) } }
             .getOrElse { false to (it.message ?: it.toString()) }
-        logInject("tap", did, w, h, r.first, r.second, detail = "x=$x y=$y")
+        logInject("tap", did, w, h, r.first, r.second, detail = "wid=$wid x=$x y=$y")
         return r
     }
 
-    private fun injectDragPriv(x0: Float, y0: Float, x1: Float, y1: Float): Pair<Boolean, String?> {
-        val (did, w, h) = targetDisplay()
+    private fun injectDragPriv(x0: Float, y0: Float, x1: Float, y1: Float, wid: Int = 0): Pair<Boolean, String?> {
+        val (did, w, h) = targetDisplay(wid)
         lastInjectDisplayId = did
+        if (did < 0) {
+            logInject("fail-closed", did, 0, 0, false, "window $wid not ready", detail = "wid=$wid")
+            return false to "window $wid not ready"
+        }
         val r = runCatching { runBlocking { PrivilegedBridge.injectDrag(pkg(), x0, y0, x1, y1, did, w, h) } }
             .getOrElse { false to (it.message ?: it.toString()) }
-        logInject("drag", did, w, h, r.first, r.second, detail = "from=$x0,$y0 to=$x1,$y1")
+        logInject("drag", did, w, h, r.first, r.second, detail = "wid=$wid from=$x0,$y0 to=$x1,$y1")
         return r
     }
 
-    private fun injectKeyPriv(keyCode: Int): Pair<Boolean, String?> {
-        val (did, _, _) = targetDisplay()
+    private fun injectKeyPriv(keyCode: Int, wid: Int = 0): Pair<Boolean, String?> {
+        val (did, _, _) = targetDisplay(wid)
         lastInjectDisplayId = did
+        if (did < 0) {
+            logInject("fail-closed", did, 0, 0, false, "window $wid not ready", detail = "wid=$wid")
+            return false to "window $wid not ready"
+        }
         val r = runCatching { runBlocking { PrivilegedBridge.injectKey(pkg(), keyCode, did) } }
             .getOrElse { false to (it.message ?: it.toString()) }
-        logInject("key", did, 0, 0, r.first, r.second, detail = "keycode=$keyCode")
+        logInject("key", did, 0, 0, r.first, r.second, detail = "wid=$wid keycode=$keyCode")
         return r
     }
 
-    private fun injectTextPriv(text: String): Pair<Boolean, String?> {
-        val (did, _, _) = targetDisplay()
+    private fun injectTextPriv(text: String, wid: Int = 0): Pair<Boolean, String?> {
+        val (did, _, _) = targetDisplay(wid)
         lastInjectDisplayId = did
+        if (did < 0) {
+            logInject("fail-closed", did, 0, 0, false, "window $wid not ready", detail = "wid=$wid")
+            return false to "window $wid not ready"
+        }
         val r = runCatching { runBlocking { PrivilegedBridge.injectText(pkg(), text, did) } }
             .getOrElse { false to (it.message ?: it.toString()) }
-        logInject("text", did, 0, 0, r.first, r.second, detail = "len=${text.length}")
+        logInject("text", did, 0, 0, r.first, r.second, detail = "wid=$wid len=${text.length}")
         return r
     }
 
     // Smooth-1 实时三件套委托（常驻 daemon 直透，无单次/Shizuku 回退；
     // 失败由 handleTouch 降级批量 + up 原子兜底）。
-    private fun injectDownPriv(x: Float, y: Float): Pair<Boolean, String?> {
-        val (did, w, h) = targetDisplay()
+    private fun injectDownPriv(x: Float, y: Float, wid: Int = 0): Pair<Boolean, String?> {
+        val (did, w, h) = targetDisplay(wid)
         lastInjectDisplayId = did
+        if (did < 0) {
+            logInject("fail-closed", did, 0, 0, false, "window $wid not ready", detail = "wid=$wid")
+            return false to "window $wid not ready"
+        }
         val r = runCatching { runBlocking { PrivilegedBridge.injectDown(pkg(), x, y, did, w, h) } }
             .getOrElse { false to (it.message ?: it.toString()) }
-        logInject("down", did, w, h, r.first, r.second, detail = "x=$x y=$y")
+        logInject("down", did, w, h, r.first, r.second, detail = "wid=$wid x=$x y=$y")
         return r
     }
 
-    private fun injectMovePriv(x: Float, y: Float): Pair<Boolean, String?> {
-        val (did, w, h) = targetDisplay()
+    private fun injectMovePriv(x: Float, y: Float, wid: Int = 0): Pair<Boolean, String?> {
+        val (did, w, h) = targetDisplay(wid)
         lastInjectDisplayId = did
+        if (did < 0) {
+            logInject("fail-closed", did, 0, 0, false, "window $wid not ready", detail = "wid=$wid")
+            return false to "window $wid not ready"
+        }
         val r = runCatching { runBlocking { PrivilegedBridge.injectMove(pkg(), x, y, did, w, h) } }
             .getOrElse { false to (it.message ?: it.toString()) }
-        logInject("move", did, w, h, r.first, r.second, detail = "x=$x y=$y")
+        logInject("move", did, w, h, r.first, r.second, detail = "wid=$wid x=$x y=$y")
         return r
     }
 
-    private fun injectUpPriv(x: Float, y: Float): Pair<Boolean, String?> {
-        val (did, w, h) = targetDisplay()
+    private fun injectUpPriv(x: Float, y: Float, wid: Int = 0): Pair<Boolean, String?> {
+        val (did, w, h) = targetDisplay(wid)
         lastInjectDisplayId = did
+        if (did < 0) {
+            logInject("fail-closed", did, 0, 0, false, "window $wid not ready", detail = "wid=$wid")
+            return false to "window $wid not ready"
+        }
         val r = runCatching { runBlocking { PrivilegedBridge.injectUp(pkg(), x, y, did, w, h) } }
             .getOrElse { false to (it.message ?: it.toString()) }
-        logInject("up", did, w, h, r.first, r.second, detail = "x=$x y=$y")
+        logInject("up", did, w, h, r.first, r.second, detail = "wid=$wid x=$x y=$y")
         return r
     }
 

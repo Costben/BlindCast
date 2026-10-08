@@ -122,6 +122,37 @@ object BlindCastServer {
                 com.erl.blindcast.core.service.BlindCastForegroundService.requestCapture(it)
             }
         }
+        // Request-Sync-1：某路进入「丢到下一个 IDR」态 / 新客户端接入 → 让对应宿主的编码器
+        // 立刻补一个 IDR（`setParameters({"request-sync":0})`）。
+        // 走独立单线程：libsu 的 `Shell.cmd(...).exec()` 会阻塞，绝不能在 WS 入队路径上直接跑，
+        // 否则丢帧瞬间会把整个广播泵拖住，慢客户端反而更卡。
+        StreamWsRoute.onRequestSync = { wid -> syncExec.execute { requestSyncFor(wid) } }
+        StreamWsRoute.onSessionAttached = {
+            syncExec.execute {
+                // 整屏桌面源：0。
+                runCatching { com.erl.blindcast.core.priv.DesktopController.requestSync() }
+                // 逐窗口源：只对仍在跑的窗口要 IDR（列表本身会与磁盘对账）。
+                runCatching {
+                    for (w in com.erl.blindcast.core.priv.DesktopWindowController.list()) {
+                        if (w.state == "running") {
+                            com.erl.blindcast.core.priv.DesktopWindowController.requestSync(w.windowId)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** 单线程：序列化 request-sync 的 root shell 调用（见 [init] 里的接线注释）。 */
+    private val syncExec: ExecutorService =
+        Executors.newSingleThreadExecutor { r -> Thread(r, "BlindCast-SyncReq").apply { isDaemon = true } }
+
+    /** 按 windowId 把 IDR 请求落到对应宿主（`0` = 整屏桌面源）。 */
+    private fun requestSyncFor(wid: Int) {
+        runCatching {
+            if (wid <= 0) com.erl.blindcast.core.priv.DesktopController.requestSync()
+            else com.erl.blindcast.core.priv.DesktopWindowController.requestSync(wid)
+        }
     }
 
     /** 设置访问 Token（直通 [TokenAuthenticator]，空白即免密）。 */
@@ -270,7 +301,7 @@ object BlindCastServer {
     private fun dispatch(req: HttpRequest, input: InputStream, output: OutputStream, socket: Socket): Boolean {
         val path = req.path
         return when {
-            path == "/" || path == "/index.html" ->
+            path == "/" || path == "/index.html" || path == com.erl.blindcast.core.server.routes.WebStaticRoutes.H264_PLAYER_ROUTE ->
                 serveStatic(req, output)
             path == "/ws/stream" || path == "/ws/control" || path == "/ws/widgets" ->
                 serveWebSocket(req, input, output, socket)
@@ -319,6 +350,20 @@ object BlindCastServer {
                     serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
                 } else {
                     serveJson(output, req.method, DeviceApiRoute.handleDesktopTasks(req.method, req.body))
+                }
+            }
+            path == "/api/desktop/windows" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveJson(output, req.method, DeviceApiRoute.handleDesktopWindows(req.method, req.body))
+                }
+            }
+            path == "/api/apps" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else {
+                    serveJson(output, req.method, DeviceApiRoute.handleApps(req.method))
                 }
             }
             path == "/api/probe/vd" -> {

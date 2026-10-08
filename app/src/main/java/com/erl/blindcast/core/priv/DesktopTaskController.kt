@@ -65,9 +65,13 @@ object DesktopTaskController {
             return emptyList()
         }
 
-        // 1. 优先尝试 Binder 反射（已由 VirtualDeviceBridge.addHiddenApiExemptions 放行）
+        // 1. 优先尝试 Binder 反射（已由 VirtualDeviceBridge.addHiddenApiExemptions 放行）。
+        //    **非 null 即采信**（含空列表）：`listTasksViaBinder` 只在「displayId 字段读不出来」
+        //    时返回 null；把「binder 正常返回空列表」当成「binder 不可用」会错误回落到
+        //    dumpsys 解析，而建屏瞬间那段 dumpsys 内嵌了全局 supervisor 块，
+        //    于是把物理主屏的 13 个任务全算到新虚拟屏名下（幻影任务，真机实证）。
         val binderTasks = runCatching { listTasksViaBinder(targetDisplayId) }.getOrNull()
-        if (!binderTasks.isNullOrEmpty()) {
+        if (binderTasks != null) {
             return binderTasks.filter { it.displayId == targetDisplayId }
         }
 
@@ -357,6 +361,14 @@ object DesktopTaskController {
         val activityRecordPattern = Pattern.compile("""ActivityRecord\{[0-9a-fA-F]+\s+[^/]+(?:\s+u\d+)?\s+([^/]+)/([^ \t\r\n}]+)""")
         val realActivityPattern = Pattern.compile("""realActivity=([^/]+)/([^ \t\r\n}]+)""")
 
+        // 幻影任务修复：`Display #N` 段落里会**内嵌全局 ATM supervisor 状态块**
+        // （`ActivityTaskSupervisor state:` 与 `Task display areas in top down Z order:`），
+        // 其中列出的全是 `mDisplayId=0`（物理主屏）的任务。旧解析只认 `Display #N` 归属、
+        // 不在 supervisor 块处停止，于是新建虚拟屏后第一次查询会把物理主屏的 13 个任务
+        // 全算到虚拟屏名下（真机实证：`287 13 14152,13474,14144,14148`，第二次起恢复 0）。
+        // 修法：段落内一旦见到 supervisor 标记，就不再收集该段落的 Task，直到下一个 `Display #`。
+        var supervisorBlock = false
+
         fun flushCurrentTask() {
             if (currentDisplay == targetDisplayId && currentTaskId > 0 && currentPkg.isNotBlank()) {
                 if (!(currentPkg == "com.erl.blindcast" && currentAct.contains("FusionHomeActivity"))) {
@@ -388,8 +400,19 @@ object DesktopTaskController {
                 flushCurrentTask()
                 currentDisplay = dm.group(1)?.toIntOrNull() ?: -1
                 isTopTask = true
+                supervisorBlock = false
                 continue
             }
+
+            // supervisor 块起始：本段落内的 Task 行全部属于物理主屏，不可采信。
+            if (trimmed.startsWith("ActivityTaskSupervisor state:") ||
+                trimmed.startsWith("Task display areas in top down Z order:")
+            ) {
+                flushCurrentTask()
+                supervisorBlock = true
+                continue
+            }
+            if (supervisorBlock) continue
 
             if (currentDisplay != targetDisplayId) {
                 continue
@@ -433,14 +456,24 @@ object DesktopTaskController {
         var currentDisplay = 0
         val displayPattern = Pattern.compile("""Display\s+#(\d+)""")
         val taskPattern = Pattern.compile("""(?:Task\{[0-9a-fA-F]+\s+#|Task\s+id\s+#|TaskRecord\s+#|Task\s+#?)(\d+)""")
+        // 同 parseDumpsysActivities：supervisor 块里的 Task 行属于物理主屏，不参与归属映射。
+        var supervisorBlock = false
 
         for (line in lines) {
             val trimmed = line.trim()
             val dm = displayPattern.matcher(trimmed)
             if (dm.find()) {
                 currentDisplay = dm.group(1)?.toIntOrNull() ?: 0
+                supervisorBlock = false
                 continue
             }
+            if (trimmed.startsWith("ActivityTaskSupervisor state:") ||
+                trimmed.startsWith("Task display areas in top down Z order:")
+            ) {
+                supervisorBlock = true
+                continue
+            }
+            if (supervisorBlock) continue
             val tm = taskPattern.matcher(trimmed)
             if (tm.find()) {
                 val tid = tm.group(1)?.toIntOrNull()

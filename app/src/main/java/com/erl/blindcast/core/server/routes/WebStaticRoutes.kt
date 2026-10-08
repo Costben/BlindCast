@@ -19,6 +19,18 @@ object WebStaticRoutes {
     /** 4.2 产物在 assets 中的相对路径。 */
     const val WEB_INDEX_ASSET_PATH = "web/index.html"
 
+    /**
+     * 并行解码模块（Phase E）在 assets 中的相对路径。
+     *
+     * 由 `index.html` 以 `<script src="h264-player.js">` 同步加载（在控制台内联脚本之前），
+     * 提供 `window.H264Player`：普通 LAN HTTP（非安全上下文，无 WebCodecs）下走
+     * MSE + fMP4 兜底，安全上下文走 `VideoDecoder`。
+     */
+    const val H264_PLAYER_ASSET_PATH = "web/h264-player.js"
+
+    /** 模块对外路径（与 assets 相对路径同名，便于同目录引用）。 */
+    const val H264_PLAYER_ROUTE = "/h264-player.js"
+
     /** 占位页单文件上限兜底：assets 体积超过此值视为异常包，改走占位（防 OOM）。 */
     private const val MAX_ASSET_BYTES = 5 * 1024 * 1024
 
@@ -29,30 +41,38 @@ object WebStaticRoutes {
         if (method != "GET" && method != "HEAD") {
             return StaticResult(405, "text/plain; charset=utf-8", "method not allowed".toByteArray())
         }
+        // 解码模块：单独按路径服务，缺失时 404（不回落占位页，否则浏览器会把 HTML 当 JS 解析）。
+        if (path == H264_PLAYER_ROUTE) {
+            val js = loadAsset(appContext, H264_PLAYER_ASSET_PATH)
+                ?: return StaticResult(404, "text/plain; charset=utf-8", "h264-player.js not found".toByteArray())
+            return StaticResult(200, "application/javascript; charset=utf-8", js)
+        }
         val body = loadIndex(appContext)
         return StaticResult(200, "text/html; charset=utf-8", body)
     }
 
-    private fun loadIndex(appContext: Context?): ByteArray {
-        if (appContext != null) {
-            runCatching {
-                appContext.assets.open(WEB_INDEX_ASSET_PATH).use { ins ->
-                    val out = java.io.ByteArrayOutputStream()
-                    val tmp = ByteArray(8192)
-                    var total = 0
-                    while (true) {
-                        val r = ins.read(tmp)
-                        if (r < 0) break
-                        total += r
-                        if (total > MAX_ASSET_BYTES) return@runCatching null
-                        out.write(tmp, 0, r)
-                    }
-                    return out.toByteArray()
+    /** 通用 assets 读取（超限/缺失返回 null，不抛）。 */
+    private fun loadAsset(appContext: Context?, assetPath: String): ByteArray? {
+        if (appContext == null) return null
+        return runCatching {
+            appContext.assets.open(assetPath).use { ins ->
+                val out = java.io.ByteArrayOutputStream()
+                val tmp = ByteArray(8192)
+                var total = 0
+                while (true) {
+                    val r = ins.read(tmp)
+                    if (r < 0) break
+                    total += r
+                    if (total > MAX_ASSET_BYTES) return@runCatching null
+                    out.write(tmp, 0, r)
                 }
-            }.getOrNull()?.let { return it }
-        }
-        return PLACEHOLDER_HTML.toByteArray(Charsets.UTF_8)
+                out.toByteArray()
+            }
+        }.getOrNull()
     }
+
+    private fun loadIndex(appContext: Context?): ByteArray =
+        loadAsset(appContext, WEB_INDEX_ASSET_PATH) ?: PLACEHOLDER_HTML.toByteArray(Charsets.UTF_8)
 
     /**
      * 4.2 落子前的占位页（内嵌常量，不占 assets）。

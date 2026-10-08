@@ -992,6 +992,11 @@ class BlindCastForegroundService : Service() {
      * Phase C 桌面源同理但多一步：虚拟屏与 VDM 设备活在特权宿主进程里，
      * 只关搬运服会让宿主对着死 socket 白写，故先 [DesktopController.off] 让宿主
      * **自拆屏 + 关设备 + 清自己的关联**，再收搬运服；下一次接入自动重新拉起。
+     *
+     * 逐窗口宿主同理，空闲回收必须一并关掉，否则 N 路 4Mbps 窗口编码器会一直空转。
+     * 顺序上**先关窗口再关桌面**：两者共用同一条 companion 关联，
+     * [DesktopController.off] 见到还有活跃窗口会保留关联，若反过来先 off 后关窗，
+     * 关联就没人再摘了。
      */
     private fun recycleIdleCapture() {
         val now = System.currentTimeMillis()
@@ -1007,6 +1012,9 @@ class BlindCastForegroundService : Service() {
             desktopSocketReadyAt = 0L
             desktopWanted = false
             scope.launch {
+                // 先关逐窗口宿主（各自的虚拟屏 + 编码器 + socket），再关整屏桌面：两者共用
+                // 同一条 companion 关联，先 off 会让关联在窗口仍活跃时被保留、随后无人摘。
+                runCatching { com.erl.blindcast.core.priv.DesktopWindowController.closeAll() }
                 runCatching { com.erl.blindcast.core.priv.DesktopController.off(packageName) }
                 runCatching { stopPrivilegedCapture() }
                 runCatching { _status.value = snapshot() }
