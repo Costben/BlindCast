@@ -235,6 +235,8 @@ object BlindCastServer {
         var upgraded = false
         try {
             socket.soTimeout = HTTP_SOCKET_TIMEOUT_MS
+            // 实时流需要低延迟：关 Nagle，避免小帧每包多等一个 RTT（升级 WS 后同一个 socket 生效）。
+            runCatching { socket.tcpNoDelay = true }
             val input = BufferedInputStream(socket.getInputStream())
             val output = socket.getOutputStream()
             val head = readHttpHead(input) ?: run {

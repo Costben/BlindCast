@@ -230,28 +230,42 @@ class WsConnection(
         sendFrame(opcode, payload, 0, payload.size, null)
     }
 
+    /**
+     * 组一帧后**一次** `write` 落出。
+     *
+     * 逐字节小写会让每帧多耗数次 syscall；socket 无用户态缓冲时（见 [BlindCastServer]）
+     * 配合 Nagle 更会每帧多等一个 RTT——实时流下这是直接可见的卡顿来源，
+     * 故帧头 / 通道前缀 / 负载先合并进单块再写。
+     */
     private fun sendFrame(opcode: Int, payload: ByteArray, offset: Int, length: Int, prefix: ByteArray?) {
         synchronized(output) {
             if (!isOpen) throw EOFException("ws closed")
             val prefixLen = prefix?.size ?: 0
             val total = prefixLen + length
-            output.write(0x80 or opcode)
-            when {
-                total <= MAX_CONTROL_BYTES -> output.write(total)
-                total <= 0xFFFF -> {
-                    output.write(126)
-                    output.write(total shr 8)
-                    output.write(total and 0xFF)
+            val headerLen = when {
+                total <= MAX_CONTROL_BYTES -> 2
+                total <= 0xFFFF -> 4
+                else -> 10
+            }
+            val buf = ByteArray(headerLen + total)
+            buf[0] = (0x80 or opcode).toByte()
+            when (headerLen) {
+                2 -> buf[1] = total.toByte()
+                4 -> {
+                    buf[1] = 126
+                    buf[2] = (total shr 8).toByte()
+                    buf[3] = total.toByte()
                 }
                 else -> {
-                    output.write(127)
-                    for (shift in 56 downTo 0 step 8) {
-                        output.write((total.toLong() shr shift).toInt() and 0xFF)
+                    buf[1] = 127
+                    for (i in 0 until 8) {
+                        buf[2 + i] = ((total.toLong() shr (56 - i * 8)) and 0xFF).toByte()
                     }
                 }
             }
-            prefix?.let { output.write(it) }
-            output.write(payload, offset, length)
+            prefix?.copyInto(buf, headerLen)
+            payload.copyInto(buf, headerLen + prefixLen, offset, offset + length)
+            output.write(buf)
             output.flush()
         }
     }

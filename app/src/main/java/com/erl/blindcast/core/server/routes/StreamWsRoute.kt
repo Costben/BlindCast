@@ -31,8 +31,10 @@ import java.util.concurrent.CopyOnWriteArraySet
  * ## 线程模型
  * - 每会话的 [handle] 独占一个连接池线程做读循环（只为消费 Ping/Close，心跳保活）；
  * - 音视频各一条 daemon 广播泵线程（`tryReceive` 轮询 + 2ms 退避，无会话时 50ms 空转，
- *   停服即停，不 close 引擎的复用 Channel）；
- * - 会话集合 `CopyOnWriteArraySet`，发送失败即摘除 + 关闭，永不影响其他客户端；
+ *   停服即停，不 close 引擎的复用 Channel）；泵只向各会话**有界队列**入队，永不阻塞；
+ * - 每会话一条 daemon 写线程（`BlindCast-WsSession`）独占该 socket 的发送，队列满丢最旧，
+ *   慢客户端只丢自己的帧；发送失败即摘除 + 关闭，永不影响其他客户端；
+ * - 会话集合 `CopyOnWriteArraySet`；
  * - 仅做推流封装：不启动采集（采集启停归前台 Service，Slice 6.1）。
  */
 object StreamWsRoute {
@@ -58,15 +60,140 @@ object StreamWsRoute {
     /** 零会话时空转步长 50ms（采集侧 Channel 自带 64/128 缓冲丢最旧，不堆积）。 */
     private const val NO_SESSION_IDLE_MS = 50L
 
+    /** 单会话视频队列容量：满则丢最旧（实时优先，重同步靠下一个关键帧）。 */
+    private const val VIDEO_QUEUE_CAP = 8
+
+    /** 单会话音频队列容量：一帧 <100ms，留 32 帧余量。 */
+    private const val AUDIO_QUEUE_CAP = 32
+
+    /** 单会话 JPEG 队列容量：只留最新一帧（旧的整帧已无意义）。 */
+    private const val JPEG_QUEUE_CAP = 2
+
+    /** 写线程空等上限 1s（只为周期性检查 [Session.closed]，非延迟来源）。 */
+    private const val WRITER_WAIT_MS = 1000L
+
     /**
-     * 推流会话：包一层 [WsConnection] 记「视频是否已起头」。
-     * 半路接入的客户端若先收到 P 帧，WebCodecs `VideoDecoder` 未 configure 会直接报错，
-     * 画面恒黑（真机实证：控制台 ● 已连接、streamClients=2、canvas 采样全 0）。
-     * 故每条会话的视频必须从关键帧（内联 SPS/PPS 的 IDR）开始。
+     * 单会话待发帧：通道头 + 负载（写线程按 kind 走
+     * [WsConnection.sendBinaryWithPrefix]）。
+     */
+    private class QueuedFrame(val kind: Byte, val payload: ByteArray)
+
+    /**
+     * 推流会话：自带三条有界队列 + 独立写线程（丢帧保实时，对齐 scrcpy/WebRTC 语义）。
+     *
+     * 为什么不再由泵线程直接写 socket：泵是全局唯一的，任何一个「连上不读」的慢客户端
+     * 都会把 `sendBinaryWithPrefix` 阻塞在那里，所有人一起卡（真机实测 20s 收帧 499→155）。
+     * 现在泵只做**不阻塞**的入队，慢客户端只丢自己的帧，且永远拿到最新帧。
+     *
+     * **视频必须从关键帧起头**：半路接入的客户端若先收到 P 帧，WebCodecs `VideoDecoder`
+     * 未 configure 会直接报错，画面恒黑（真机实证：控制台 ● 已连接、streamClients=2、
+     * canvas 采样全 0）。故关键帧入队先清空视频队列，天然重同步。
+     *
+     * 锁约定：本类所有队列/计数只在 [lock] 内读写；[closed]/[videoPrimed] 为 [Volatile]
+     * 便于外部无锁速判。写线程在锁外发帧（绝不在持锁时做 IO）。
      */
     private class Session(val conn: WsConnection) {
+
+        // 必须是 java.lang.Object：Kotlin 的 Any 不暴露 wait/notify，而本会话的写线程要一个真监视器。
+        @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
+        private val lock = java.lang.Object()
+        private val videoQueue = ArrayDeque<ByteArray>()
+        private val audioQueue = ArrayDeque<ByteArray>()
+        private val jpegQueue = ArrayDeque<ByteArray>()
+
         @Volatile
         var videoPrimed: Boolean = false
+
+        @Volatile
+        var closed: Boolean = false
+            private set
+
+        /** 因队列满/关键帧重同步丢弃的帧数（只在 [lock] 内自增，日志读取容忍竞态）。 */
+        @Volatile
+        var drops: Long = 0L
+            private set
+
+        /**
+         * 入队一帧（不阻塞，只抢锁）。
+         * 视频关键帧入队先清空视频队列；队列满丢最旧；[closed] 后直接丢弃。
+         */
+        fun enqueue(kind: Byte, payload: ByteArray, isKeyFrame: Boolean = false) {
+            synchronized(lock) {
+                if (closed) return
+                val queue = when (kind) {
+                    StreamWsRoute.KIND_VIDEO -> videoQueue
+                    StreamWsRoute.KIND_AUDIO -> audioQueue
+                    else -> jpegQueue
+                }
+                if (kind == StreamWsRoute.KIND_VIDEO && isKeyFrame && videoQueue.isNotEmpty()) {
+                    drops += videoQueue.size
+                    videoQueue.clear()
+                }
+                if (queue.size >= capOf(kind)) {
+                    queue.removeFirst()
+                    drops++
+                }
+                queue.addLast(payload)
+                lock.notifyAll()
+            }
+        }
+
+        /**
+         * 取下一帧：三队皆空且未关闭时在 [lock] 上等（上限 [WRITER_WAIT_MS]）。
+         * 优先级 video > audio > jpeg；返回 null 表示会话已关闭且队列排空，写线程应退出。
+         */
+        fun poll(): QueuedFrame? {
+            synchronized(lock) {
+                while (videoQueue.isEmpty() && audioQueue.isEmpty() && jpegQueue.isEmpty() && !closed) {
+                    try {
+                        lock.wait(WRITER_WAIT_MS)
+                    } catch (_: InterruptedException) {
+                        closed = true
+                        break
+                    }
+                }
+                return when {
+                    videoQueue.isNotEmpty() -> QueuedFrame(StreamWsRoute.KIND_VIDEO, videoQueue.removeFirst())
+                    audioQueue.isNotEmpty() -> QueuedFrame(StreamWsRoute.KIND_AUDIO, audioQueue.removeFirst())
+                    jpegQueue.isNotEmpty() -> QueuedFrame(StreamWsRoute.KIND_JPEG, jpegQueue.removeFirst())
+                    else -> null
+                }
+            }
+        }
+
+        /**
+         * 会话接入补发：**未起头**才在锁内入队缓存关键帧（[enqueue] 同锁，
+         * 避免与泵的起头路径各自清队、把已排队的 P 帧丢掉造成解码缺口）。
+         * @return 是否由本次调用完成起头。
+         */
+        fun primeWith(keyFrame: ByteArray): Boolean {
+            synchronized(lock) {
+                if (closed || videoPrimed) return false
+                drops += videoQueue.size
+                videoQueue.clear()
+                videoQueue.addLast(keyFrame)
+                videoPrimed = true
+                lock.notifyAll()
+                return true
+            }
+        }
+
+        /** 判定会话死亡：置位 + 清队 + 唤醒写线程（幂等，任意线程可调）。 */
+        fun kill() {
+            synchronized(lock) {
+                closed = true
+                videoQueue.clear()
+                audioQueue.clear()
+                jpegQueue.clear()
+                lock.notifyAll()
+            }
+        }
+
+        private fun capOf(kind: Byte): Int = when (kind) {
+            StreamWsRoute.KIND_VIDEO -> VIDEO_QUEUE_CAP
+            StreamWsRoute.KIND_AUDIO -> AUDIO_QUEUE_CAP
+            else -> JPEG_QUEUE_CAP
+        }
     }
 
     private val sessions = CopyOnWriteArraySet<Session>()
@@ -111,6 +238,7 @@ object StreamWsRoute {
         if (sessions.isEmpty()) runCatching { onFirstSession?.invoke() }
         val session = Session(conn)
         sessions.add(session)
+        daemon("BlindCast-WsSession") { writerLoop(session) }.start()
         try {
             ensurePump()
             try {
@@ -118,6 +246,9 @@ object StreamWsRoute {
             } catch (_: Exception) {
                 return
             }
+            // 新会话接入即补发缓存关键帧：静态桌面下不必等下一次内容变化才出画。
+            // 放在 hello 之后，保证协议里「首条文本 hello」不被二进制抢跑。
+            cachedKeyFrame()?.let { session.primeWith(it) }
             while (conn.isOpen && pumpRunning) {
                 try {
                     if (conn.receive() == null) break
@@ -129,8 +260,7 @@ object StreamWsRoute {
                 }
             }
         } finally {
-            sessions.remove(session)
-            runCatching { conn.close() }
+            killSession(session)
         }
     }
 
@@ -143,13 +273,40 @@ object StreamWsRoute {
             videoPump = null
             audioPump = null
         }
-        for (s in sessions) runCatching { s.conn.close(1001, "server stopping") }
+        for (s in sessions) killSession(s, 1001, "server stopping")
         sessions.clear()
     }
 
     // ------------------------------------------------------------------
     // 内部实现
     // ------------------------------------------------------------------
+
+    /**
+     * 会话唯一的写线程：锁内取帧（空则 wait），**锁外**发帧。
+     * 通道序固定 video > audio > jpeg；发帧抛异常即判定会话死亡。
+     * [Session.poll] 返回 null 说明会话已关闭且队列排空，线程退出。
+     */
+    private fun writerLoop(s: Session) {
+        while (true) {
+            val frame = s.poll() ?: return
+            try {
+                s.conn.sendBinaryWithPrefix(frame.kind, frame.payload)
+            } catch (t: Exception) {
+                sessions.remove(s)
+                s.kill()
+                runCatching { s.conn.close() }
+                Log.d(TAG, "drop dead session ${s.conn.remoteAddress}: ${t.message} (drops=${s.drops})")
+                return
+            }
+        }
+    }
+
+    /** 摘会话 + 置 closed（唤醒写线程退出）+ 关连接；幂等，任意线程可调。 */
+    private fun killSession(s: Session, code: Int = 1000, reason: String = "") {
+        sessions.remove(s)
+        s.kill()
+        runCatching { s.conn.close(code, reason) }
+    }
 
     private fun ensurePump() {
         if (pumpRunning) return
@@ -207,30 +364,24 @@ object StreamWsRoute {
     }
 
     /**
-     * 广播一帧。
+     * 广播一帧（**只入队，不阻塞**——实际写 socket 交给各会话的写线程）。
      *
      * 视频会话**必须从关键帧起头**：未起头的会话先补发缓存关键帧（或当前这帧本身就是
-     * 关键帧），补发成功后才开始收后续帧；缓存缺失就本帧跳过、等下一个关键帧——
+     * 关键帧），补发后才开始收后续帧；缓存缺失就本帧跳过、等下一个关键帧——
      * 宁可不发，也不让 P 帧先到（P 帧先到 = 解码器未 configure = 画面恒黑）。
      */
     private fun broadcast(kind: Byte, payload: ByteArray, isKeyFrame: Boolean = false) {
         if (payload.isEmpty()) return
         for (s in sessions) {
-            try {
-                if (kind == KIND_VIDEO && !s.videoPrimed) {
-                    val prime: ByteArray? = if (isKeyFrame) payload else cachedKeyFrame()
-                    if (prime == null) continue
-                    s.conn.sendBinaryWithPrefix(KIND_VIDEO, prime)
-                    s.videoPrimed = true
-                    if (prime !== payload) s.conn.sendBinaryWithPrefix(KIND_VIDEO, payload)
-                    continue
-                }
-                s.conn.sendBinaryWithPrefix(kind, payload)
-            } catch (t: Exception) {
-                sessions.remove(s)
-                runCatching { s.conn.close() }
-                Log.d(TAG, "drop dead session ${s.conn.remoteAddress}: ${t.message}")
+            if (kind == KIND_VIDEO && !s.videoPrimed) {
+                val prime: ByteArray? = if (isKeyFrame) payload else cachedKeyFrame()
+                if (prime == null) continue
+                s.enqueue(KIND_VIDEO, prime, isKeyFrame = true)
+                s.videoPrimed = true
+                if (prime !== payload) s.enqueue(KIND_VIDEO, payload)
+                continue
             }
+            s.enqueue(kind, payload, isKeyFrame)
         }
     }
 

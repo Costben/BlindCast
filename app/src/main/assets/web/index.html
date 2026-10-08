@@ -53,7 +53,8 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:
 #dock .lbl{font-size:10px;color:var(--dim);font-family:var(--mono)}
 /* ---- 遮罩 / 弹窗 ---- */
 .overlay{position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;
-  background:rgba(5,6,10,.66);backdrop-filter:blur(6px)}
+  background:rgba(5,6,10,.66);backdrop-filter:blur(6px);pointer-events:none}
+.overlay .card{pointer-events:auto}
 .overlay.hide{display:none}
 .card{background:rgba(20,24,33,.78);border:1px solid var(--line);border-radius:18px;
   padding:28px 30px;max-width:400px;width:92vw;text-align:center;backdrop-filter:blur(18px);
@@ -149,6 +150,77 @@ footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,23
 #deskTaskMenu .dt-item:hover{background:rgba(255,255,255,.08)}
 #deskTaskMenu .dt-item.active{color:var(--neon);font-weight:700;background:rgba(52,211,153,.12)}
 #deskTaskMenu .dt-tag{margin-left:auto;font-size:10px;color:var(--dim);font-family:var(--mono)}
+/* ---- 非安全上下文提示条（局域网 http 打开时的 JPEG 降级说明，不遮挡画面） ---- */
+#secBanner{position:absolute;left:8px;right:8px;top:8px;z-index:8;display:flex;align-items:center;gap:10px;
+  padding:7px 12px;border-radius:11px;pointer-events:none;font-size:12px;line-height:1.6;color:#fcd34d;
+  background:rgba(251,191,36,.13);border:1px solid rgba(251,191,36,.4);backdrop-filter:blur(10px)}
+#secBanner.hide{display:none}
+#secBanner span{flex:1}
+#secBanner button{pointer-events:auto;flex:0 0 auto;border:1px solid rgba(251,191,36,.45);border-radius:8px;
+  background:rgba(251,191,36,.14);color:#fcd34d;padding:4px 10px;font-size:11px;cursor:pointer}
+body.desk .hint{display:none}
+/* ---- Fusion 桌面外壳（客户端多窗口；画面仍来自 /ws/stream 那一路） ----
+ * 尺寸按 720 宽参考稿换算：--s 由 JS 写入（renderWidth/720），交互件用 max() 兜住 24px 命中区。 */
+#deskShell{position:absolute;left:0;right:0;top:0;bottom:76px;z-index:4;display:flex;flex-direction:column;overflow:hidden}
+#deskShell.hide{display:none}
+.desk-bg{position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(160deg,#141033 0%,#1a1552 22%,#0a0a12 52%,#241b36 74%,#3a2564 100%)}
+.desk-bg::after{content:"";position:absolute;inset:0;
+  background:radial-gradient(130% 100% at 50% 35%,transparent 38%,rgba(0,0,0,.62) 100%)}
+.desk-area{position:relative;flex:1;min-height:0;overflow:hidden}
+.desk-win{position:absolute;display:flex;flex-direction:column;overflow:hidden;background:rgba(18,20,28,.74);
+  border:1px solid rgba(255,255,255,.1);border-radius:calc(var(--s,1) * 20px);
+  box-shadow:0 4px 14px rgba(0,0,0,.3);backdrop-filter:blur(6px)}
+.desk-win.foc{border-color:rgba(139,124,255,.62);box-shadow:0 0 0 2px rgba(124,108,255,.42),0 14px 34px rgba(0,0,0,.5)}
+.desk-win.min{display:none}
+.dw-bar{flex:0 0 auto;height:max(32px,calc(var(--s,1) * 36px));display:flex;align-items:center;gap:6px;padding:0 6px;
+  cursor:move;user-select:none;touch-action:none;border-bottom:1px solid rgba(255,255,255,.08);
+  background:linear-gradient(180deg,rgba(38,40,58,.92),rgba(24,26,38,.92))}
+.dw-title{font-size:max(11px,calc(var(--s,1) * 13px));font-weight:600;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;max-width:44%}
+.dw-sub{flex:1;margin-left:2px;font-family:var(--mono);font-size:max(9px,calc(var(--s,1) * 10px));color:var(--dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dw-btn{flex:0 0 auto;width:max(24px,calc(var(--s,1) * 30px));height:max(24px,calc(var(--s,1) * 28px));
+  display:flex;align-items:center;justify-content:center;border:0;border-radius:8px;cursor:pointer;color:var(--fg);
+  background:rgba(255,255,255,.06);font-size:max(11px,calc(var(--s,1) * 13px));line-height:1}
+.dw-btn:hover{background:rgba(255,255,255,.14)}
+.dw-close:hover{background:rgba(248,113,113,.28);color:#fecaca}
+.dw-body{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;background:#04050a}
+.dw-ph{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  padding:0 18px;text-align:center;color:rgba(232,234,240,.5);font-size:max(11px,calc(var(--s,1) * 12px));
+  line-height:1.7;pointer-events:none;white-space:pre-line}
+.dw-cv{max-width:100%;max-height:100%;background:#04050a;touch-action:none;cursor:crosshair;outline:none}
+#canvas.dw-live{border-radius:0;box-shadow:none;background:#04050a}
+.desk-bar{flex:0 0 auto;height:max(44px,calc(var(--s,1) * 56px));margin:0 8px 6px;padding:0 8px;display:flex;
+  align-items:center;gap:6px;overflow:hidden;border:1px solid rgba(255,255,255,.1);background:rgba(12,14,22,.68);
+  border-radius:calc(var(--s,1) * 14px);backdrop-filter:blur(14px)}
+.db-list{flex:1;display:flex;align-items:center;gap:6px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.db-list::-webkit-scrollbar{height:0}
+.db-item{flex:0 0 auto;display:flex;align-items:center;gap:6px;max-width:200px;cursor:pointer;color:var(--fg);
+  height:max(32px,calc(var(--s,1) * 40px));padding:0 10px;border-radius:10px;border:1px solid transparent;
+  background:rgba(255,255,255,.05);font-size:max(11px,calc(var(--s,1) * 12px))}
+.db-item.on{border-color:rgba(139,124,255,.6);background:rgba(124,108,255,.2);color:#cbc3ff}
+.db-item.min{opacity:.5}
+.db-ico{flex:0 0 auto;width:max(20px,calc(var(--s,1) * 24px));height:max(20px,calc(var(--s,1) * 24px));
+  display:flex;align-items:center;justify-content:center;border-radius:7px;font-weight:800;color:#fff;
+  font-size:max(10px,calc(var(--s,1) * 11px));background:linear-gradient(135deg,#5b46d6,#2c2a72)}
+.db-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.db-tools{flex:0 0 auto;display:flex;align-items:center;gap:6px}
+.db-tag{font-family:var(--mono);font-size:max(9px,calc(var(--s,1) * 10px));color:var(--dim);white-space:nowrap}
+.db-btn{height:max(30px,calc(var(--s,1) * 34px));padding:0 10px;border-radius:9px;cursor:pointer;white-space:nowrap;
+  border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--fg);font-size:max(11px,calc(var(--s,1) * 12px))}
+.db-btn:hover{background:rgba(124,108,255,.2);border-color:rgba(139,124,255,.5)}
+.db-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;padding:0 30px;text-align:center;color:rgba(232,234,240,.55);font-size:13px;line-height:1.9}
+.db-empty.hide{display:none}
+#deskStatus{position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;
+  background:rgba(6,7,14,.55);backdrop-filter:blur(4px)}
+#deskStatus.hide{display:none}
+.ds-box{width:min(360px,88%);padding:22px;border-radius:16px;border:1px solid var(--line);text-align:center;
+  background:rgba(18,20,30,.94);box-shadow:0 18px 50px rgba(0,0,0,.6)}
+.ds-box p{margin:0 0 14px;color:var(--dim);font-size:13px;line-height:1.85}
+.ds-box .row{display:flex;gap:10px}
 </style>
 </head>
 <body>
@@ -192,6 +264,40 @@ footer{padding:5px 14px;font-family:var(--mono);font-size:10px;color:rgba(232,23
           <button class="wp-btn" id="wpCancel">取消</button>
           <button class="wp-btn danger" id="wpConfirmOk">解绑</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 非安全上下文提示条（局域网 http：只有 JPEG 降级路可用） -->
+  <div id="secBanner" class="hide">
+    <span>非安全上下文：已降级 JPEG（实测约 3 FPS）。用 http://127.0.0.1:19001 或 HTTPS 入口可获得 60 FPS 硬解</span>
+    <button id="secBannerX">隐藏</button>
+  </div>
+
+  <!-- Fusion 桌面外壳：多窗口由前端摆放，活画面（#canvas）跟随聚焦窗口 -->
+  <div id="deskShell" class="hide">
+    <div class="desk-bg"></div>
+    <div class="desk-area" id="deskArea">
+      <div class="db-empty hide" id="deskEmpty"></div>
+    </div>
+    <div class="desk-bar" id="deskBar">
+      <div class="db-list" id="deskList"></div>
+      <div class="db-tools">
+        <span class="db-tag" id="deskTag">--</span>
+        <button class="db-btn" id="deskRefresh" title="重新读取副屏已开应用">刷新</button>
+        <button class="db-btn" id="deskToMirror" title="切回物理屏镜像">切回镜像</button>
+      </div>
+    </div>
+    <div id="deskPark" style="display:none"></div>
+  </div>
+
+  <!-- 桌面状态卡：放在 #deskShell 外面，启动期（壳还没亮）也要能看见 -->
+  <div id="deskStatus" class="hide">
+    <div class="ds-box">
+      <p id="deskStatusMsg">正在启动独立桌面…</p>
+      <div class="row">
+        <button class="btn ghost" id="deskStatusMirror">切回镜像</button>
+        <button class="btn" id="deskStatusRetry">重试</button>
       </div>
     </div>
   </div>
@@ -383,16 +489,19 @@ async function wakeStreaming() {
   }
   return false;
 }
-/* 进入门禁：采集没开就先自动唤醒，唤不动才亮手动兜底 */
+/* 进入门禁：采集没开就先自动唤醒，唤不动才亮手动兜底。
+ * 返回 true = 可以进去（调用方随后自动开会话，不再需要点「进入控制台」）；
+ * false = 采集没起来，已亮 #bootOverlay 的「开启投屏」兜底，等用户手动处理。 */
 async function gateEnter(msg) {
   let st = await queryStreaming();
   if (st === false) {
     showBoot(STREAM_WAKE_MSG);
     st = await wakeStreaming();
-    if (st === false) { showStreamOff(); return; }
+    if (st === false) { showStreamOff(); return false; }
   }
   hideStreamOffRestore();
   showBoot(msg);
+  return true;
 }
 
 /* ---------------- 全局连接态 ---------------- */
@@ -416,6 +525,9 @@ function wsBase() {
 
 /* ---------------- H.264 解码管线 ---------------- */
 const KIND_VIDEO = 1, KIND_AUDIO = 2, KIND_JPEG = 3;
+// 预留：逐窗口编码 [0x11][1字节 windowId][H.264 Annex-B]。服务端尚未实现，
+// 收到即按 windowId 建/找窗口并喂该窗口自己的解码器（见 feedWindowVideo）。
+const KIND_WINDOW_VIDEO = 0x11;
 // Universal-1: 裸浏览器经 http 局域网为非安全源，VideoDecoder undefined 即黑屏，
 // 故无硬解时自动订阅 JPEG (createImageBitmap→drawImage)，有硬解走老路不动。
 const HAS_WEBCODECS = (typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined");
@@ -478,20 +590,60 @@ function ensureDecoder() {
     return true;
   } catch (e) { console.warn("[vdec configure]", e); return false; }
 }
-function onVideoFrame(frame) {
-  try {
-    const w = frame.displayWidth || frame.codedWidth, h = frame.displayHeight || frame.codedHeight;
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; fitCanvas(); }
-    ctx.drawImage(frame, 0, 0, w, h);
-    if (!S.firstFrameTs) {
-      S.firstFrameTs = performance.now();
-      const ms = Math.round(S.firstFrameTs - S.streamOpenTs);
-      $("footFrame").textContent = "首帧 " + ms + "ms";
-      $("bootOverlay").classList.add("hide");
+/* 渲染合并：解码回调只留最新一帧，统一在 rAF 里画一次；被覆盖的旧 VideoFrame 立刻 close
+ * （WebCodecs 帧不 close 会一直占着解码器输出，几帧就卡死）。屏幕以外的逐窗口流
+ * （KIND_WINDOW_VIDEO）各自一个帧槽，共用同一个 rAF。 */
+let rafScheduled = 0;
+const pendingFrames = [];   // [{win: Win|null, frame}]
+function queueFrame(win, frame) {
+  for (let i = 0; i < pendingFrames.length; i++) {
+    if (pendingFrames[i].win === win) {
+      try { pendingFrames[i].frame.close(); } catch (e) {}
+      pendingFrames[i].frame = frame;
+      scheduleFlush();
+      return;
     }
-    S.fpsCount++;
-  } finally { try { frame.close(); } catch (e) {} }
+  }
+  pendingFrames.push({ win: win, frame: frame });
+  scheduleFlush();
 }
+function scheduleFlush() { if (!rafScheduled) rafScheduled = requestAnimationFrame(flushFrames); }
+function flushFrames() {
+  rafScheduled = 0;
+  const list = pendingFrames.splice(0, pendingFrames.length);
+  for (const it of list) {
+    try { if (it.win) paintWinFrame(it.win, it.frame); else paintMainFrame(it.frame); }
+    catch (e) { console.warn("[paint]", e); }
+    finally { try { it.frame.close(); } catch (e) {} }
+  }
+}
+function dropPendingFrames() {
+  if (rafScheduled) { cancelAnimationFrame(rafScheduled); rafScheduled = 0; }
+  while (pendingFrames.length) { const it = pendingFrames.pop(); try { it.frame.close(); } catch (e) {} }
+}
+function firstFrameDone(tag) {
+  S.firstFrameTs = performance.now();
+  const ms = Math.round(S.firstFrameTs - S.streamOpenTs);
+  $("footFrame").textContent = "首帧 " + ms + "ms" + (tag || "");
+  $("bootOverlay").classList.add("hide");
+  deskStreamUp();
+}
+function paintMainFrame(frame) {
+  const w = frame.displayWidth || frame.codedWidth, h = frame.displayHeight || frame.codedHeight;
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; fitCanvas(); }
+  ctx.drawImage(frame, 0, 0, w, h);
+  if (!S.firstFrameTs) firstFrameDone("");
+  S.fpsCount++;
+}
+/* 逐窗口流（预留 0x11）：各窗口自己的 canvas，不抢主画面 */
+function paintWinFrame(win, frame) {
+  if (!win || !win.cv || win.id === 0) return;
+  const w = frame.displayWidth || frame.codedWidth, h = frame.displayHeight || frame.codedHeight;
+  if (win.cv.width !== w || win.cv.height !== h) { win.cv.width = w; win.cv.height = h; }
+  win.ctx.drawImage(frame, 0, 0, w, h);
+  if (!win.hasOwnStream) { win.hasOwnStream = true; deskUpdateWinChrome(win); deskSyncCanvasHost(); fitCanvas(); }
+}
+function onVideoFrame(frame) { queueFrame(null, frame); }
 function feedVideo(payload) {
   const nalus = splitAnnexB(payload);
   if (!nalus.length) return;
@@ -505,7 +657,7 @@ function feedVideo(payload) {
   if (dirty || !vdec || vdec.state === "closed") { if (!ensureDecoder()) return; }
   if (!vdec || vdec.state !== "playing" && vdec.state !== "configured") { if (!ensureDecoder()) return; }
   if (!hasIdr && !vdecHasKey) return; // 等待关键帧（I帧间隔1s内自愈）
-  if (vdec.decodeQueueSize > 10 && !hasIdr) return; // 背压：丢delta保实时
+  if (vdec.decodeQueueSize > 4 && !hasIdr) return; // 背压收紧到 4：丢 delta 保实时（关键帧仍优先过）
   let total = 0;
   for (const n of nalus) total += 4 + (n.end - n.hdr);
   const mp4 = new Uint8Array(total);
@@ -523,15 +675,22 @@ function feedVideo(payload) {
     if (hasIdr) vdecHasKey = true;
   } catch (e) { /* 坏帧丢弃，下轮I帧自愈 */ }
 }
+/* 画面容器：镜像模式铺满舞台（让开 #dock）；桌面模式跟随聚焦窗口的内容区。
+ * #canvas 在桌面模式下会被搬进聚焦窗口的 .dw-body，尺寸按窗口内容区等比适配。 */
+function canvasHostRect() {
+  const w = DESK.on ? DESK.wins.get(DESK.focus) : null;
+  if (w && w.body && !w.min) return { w: w.body.clientWidth, h: w.body.clientHeight };
+  return { w: stage.clientWidth, h: stage.clientHeight - 76 };
+}
 function fitCanvas() {
   const vw = canvas.width || 9, vh = canvas.height || 20;
-  const sw = stage.clientWidth, sh = stage.clientHeight;
-  const dockH = 76;
-  const scale = Math.min(sw / vw, (sh - dockH) / vh);
+  const host = canvasHostRect();
+  if (host.w < 8 || host.h < 8) return; // 容器还没量出来（被 park / 未布局）就先不缩
+  const scale = Math.min(host.w / vw, host.h / vh);
   const w = Math.max(1, Math.floor(vw * scale)), h = Math.max(1, Math.floor(vh * scale));
   canvas.style.width = w + "px"; canvas.style.height = h + "px";
 }
-window.addEventListener("resize", fitCanvas);
+window.addEventListener("resize", () => { deskOnResize(); fitCanvas(); });
 
 /* ---------------- JPEG 降级管线 (Universal-1) ----------------
  * 服务端线格式 [1字节0x03+4字节大端长+JPEG]，此处剥长后
@@ -541,12 +700,7 @@ function drawJpegBitmap(bmp) {
     const w = bmp.width || 720, h = bmp.height || 1600;
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; fitCanvas(); }
     ctx.drawImage(bmp, 0, 0, w, h);
-    if (!S.firstFrameTs) {
-      S.firstFrameTs = performance.now();
-      const ms = Math.round(S.firstFrameTs - S.streamOpenTs);
-      $("footFrame").textContent = "首帧 " + ms + "ms (JPEG)";
-      $("bootOverlay").classList.add("hide");
-    }
+    if (!S.firstFrameTs) firstFrameDone(" (JPEG)");
     S.fpsCount++;
   } finally { try { bmp.close && bmp.close(); } catch (e) {} S.jpegBusy = false; }
 }
@@ -673,6 +827,8 @@ function closeSockets() {
   vdec = null; vdecHasKey = false; spsCache = ppsCache = null;
   try { if (adec) adec.close(); } catch (e) {}
   adec = null;
+  dropPendingFrames();
+  DESK.wins.forEach(w => winDropDecoder(w));
   S.firstFrameTs = 0; videoTs = 0; lastVideoTsWall = 0; audioTs = 0;
   S.jpegBusy = false;
 }
@@ -700,8 +856,15 @@ function connect() {
     if (kind === KIND_VIDEO) { if (S.videoMode === "jpeg") return; feedVideo(payload); }
     else if (kind === KIND_AUDIO) feedAudio(payload);
     else if (kind === KIND_JPEG) { if (S.videoMode !== "jpeg") return; feedJpeg(payload); }
+    else if (kind === KIND_WINDOW_VIDEO) { if (S.videoMode === "jpeg") return; feedWindowVideo(payload); }
   };
-  sws.onclose = () => { if (S.streamWs === sws) { setConn(false); hideStreamOffRestore(); showBoot("推流中断，点击重连"); $("bootOverlay").classList.remove("hide"); } };
+  sws.onclose = () => {
+    if (S.streamWs !== sws) return;
+    setConn(false);
+    // 桌面外壳里断流不能盖启动遮罩（会盖住整个桌面）：改成壳内状态卡 + 自动重连
+    if (DESK.on) { deskStreamLost(); return; }
+    hideStreamOffRestore(); showBoot("推流中断，点击重连"); $("bootOverlay").classList.remove("hide");
+  };
   sws.onerror = () => { try { sws.close(); } catch (e) {} };
 
   const cws = new WebSocket(wsBase() + "/ws/control" + (token ? "?token=" + encodeURIComponent(token) : ""));
@@ -751,8 +914,13 @@ async function pollStatus() {
     if (typeof j.streaming === "boolean") {
       updateStreamUI(j.streaming);
       // 会话中途被关（插件/APP 侧手动关）：亮提示遮罩；那边再打开后自动重连续流。
-      if (!j.streaming && S.connected) showStreamOff();
-      else if (j.streaming && streamOffShown && S.connected) {
+      // 桌面壳里不能盖整屏遮罩（会盖掉整个桌面），改用壳内状态卡。
+      if (!j.streaming && S.connected) {
+        if (DESK.on) deskStatusShow(STREAM_STOPPED_MSG, "stop");
+        else showStreamOff();
+      } else if (j.streaming && DESK.on && DESK.statusKind === "stop") {
+        deskStatusHide();
+      } else if (j.streaming && streamOffShown && S.connected) {
         hideStreamOffRestore();
         hideBoot();
         connect();
@@ -797,12 +965,16 @@ function updateDesktopUI(info) {
 
   const btnDesk = $("btnDesktop");
   if (btnDesk) {
+    const lab = btnDesk.querySelector("span");
     if (isDesk) {
       btnDesk.classList.add("on");
-      btnDesk.title = "当前为独立桌面 (Display " + info.displayId + ")，点击切回物理屏镜像";
+      if (lab) lab.textContent = "桌面 ⇄ 镜像";
+      btnDesk.title = "当前：Fusion 独立桌面" + (info.displayId > 0 ? " (Display " + info.displayId + ")" : "") + "，点击切回物理屏镜像";
     } else {
       btnDesk.classList.remove("on");
-      btnDesk.title = "当前为物理屏镜像，点击开启 Fusion 独立桌面";
+      if (lab) lab.textContent = "镜像 ⇄ 桌面";
+      btnDesk.title = "当前：物理屏镜像，点击开启 Fusion 独立桌面"
+        + (DESK.lastError ? "（上次自动进入失败：" + DESK.lastError + "）" : "");
     }
   }
 
@@ -822,27 +994,42 @@ function updateDesktopUI(info) {
     const errTag = info.error ? " · 异常: " + info.error : "";
     footStat.textContent = " BlindCast WebConsole · " + modeTag + errTag + " · single-file · no CDN ·";
   }
+
+  // 桌面壳与真实状态对齐：壳还开着但桌面已经不在（APP/另一端关了）→ 回退镜像，不黑屏卡死
+  if (isDesk) DESK.missCount = 0;
+  else if (DESK.on && ++DESK.missCount >= 2) {
+    DESK.missCount = 0;
+    deskFallbackMirror("桌面已关闭（mode=" + (info.mode || "?") + "）");
+  }
 }
 
 async function pollDesktop() {
   const info = await queryDesktop();
   if (info) updateDesktopUI(info);
+  deskMaybeSyncTasks(); // 副屏新开/退出应用 → 桌面窗口跟着增删
 }
 
 async function toggleDesktop() {
   const btn = $("btnDesktop");
   if (btn) btn.disabled = true;
   try {
-    toast("正在切换桌面模式…");
+    toast(DESK.on ? "正在切回物理屏镜像…" : "正在切换桌面模式…");
     const r = await fetch(apiUrl("api/desktop"), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "toggle" }),
     });
     const j = await r.json().catch(() => ({}));
     if (r.ok && j.ok !== false) {
-      const isDesk = (j.mode === "desktop" && j.running === true);
-      toast(isDesk ? "🖥 已开启 Fusion 独立桌面 (D" + j.displayId + ")" : "📱 已切回物理屏镜像");
+      const on = isDeskOn(j);
       updateDesktopUI(j);
+      deskPrefSet(on ? "desktop" : "mirror"); // 记住用户这一次的明确选择（刷新后不再自作主张）
+      if (on) {
+        toast("🖥 已开启 Fusion 独立桌面 (D" + j.displayId + ")");
+        deskEnter(j);
+      } else {
+        toast("📱 已切回物理屏镜像");
+        deskExit();
+      }
     } else {
       toast("桌面切换失败: " + (j.error || r.status));
       if (j) updateDesktopUI(j);
@@ -888,18 +1075,20 @@ async function fetchDeskTasks() {
   } catch (e) { return null; }
 }
 
-async function switchDeskTask(taskId) {
+async function switchDeskTask(taskId, opts) {
+  const quiet = !!(opts && opts.quiet); // 桌面壳内聚焦窗口触发的切换：不刷 toast
   try {
-    toast("正在切回任务 #" + taskId + "…");
+    if (!quiet) toast("正在切回任务 #" + taskId + "…");
     const r = await fetch(apiUrl("api/desktop/tasks"), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "switch", taskId: taskId })
     });
     const j = await r.json().catch(() => ({}));
     if (r.ok && j.ok !== false) {
-      toast("✔ 已切回副屏任务 #" + taskId);
+      if (!quiet) toast("✔ 已切回副屏任务 #" + taskId);
       const ov = $("tasksOverlay");
       if (ov) ov.classList.add("hide");
+      if (DESK.on) setTimeout(() => deskSyncTasks(), 900); // 前台标记刷新
     } else {
       toast("任务切换被拦截: " + (j.error || r.status));
     }
@@ -965,6 +1154,582 @@ async function showDeskTasksModal() {
   }
 }
 
+/* ===================== Fusion 桌面外壳（客户端多窗口） =====================
+ * 模型：Windows = Map<windowId, Win>。windowId 0 = 当前那一路整屏流（今天只有这一路），
+ * 其余 id 对应 /api/desktop/tasks 里的副屏应用窗口（服务端以后用 KIND_WINDOW_VIDEO 0x11 逐窗口编码）。
+ * 每个 Win 有自己的 DOM / 几何 / 自己的 canvas + VideoDecoder；0 号窗口的 canvas 就是全局 #canvas。
+ * 画面摆放策略「跟随聚焦窗口」：#canvas 会被搬进当前聚焦窗口的 body —— 于是现有
+ * normPos()（canvas.getBoundingClientRect）天然给出「该窗口 → display 归一化坐标」，
+ * /ws/control 的 down/move/up 协议一个字都不用改，服务端按当前桌面 displayId 落的注入目标也不变。
+ * 最小化/最大化/关闭只动本地布局；只有「切前台」和「关应用」才碰服务端 API。
+ * ======================================================================== */
+const DESK_PREF_KEY = "bc_desk_pref";
+const DESK = {
+  on: false, focus: -1, z: 10, wins: new Map(), tasks: [],
+  s: 1, areaW: 0, areaH: 0, displayId: 0,
+  drag: null, statusKind: "", missCount: 0, lastError: "",
+  lastSwitchTask: -1, lastSwitchTs: 0, lastSyncTs: 0,
+  closeNoSupport: false, streamTimer: 0, streamTry: 0,
+};
+
+function isDeskOn(info) { return !!(info && info.mode === "desktop" && info.running === true); }
+function deskPrefGet() { try { return localStorage.getItem(DESK_PREF_KEY) || ""; } catch (e) { return ""; } }
+function deskPrefSet(v) { try { if (v) localStorage.setItem(DESK_PREF_KEY, v); else localStorage.removeItem(DESK_PREF_KEY); } catch (e) {} }
+
+/* ---- 尺寸换算：参考稿 720×1280，--s = 渲染宽/720（交互件用 max() 兜住 24px 命中区） ---- */
+function deskScale() {
+  const sh = $("deskShell");
+  const w = sh.clientWidth || 720, h = sh.clientHeight || 1280;
+  return Math.max(0.62, Math.min(1.7, Math.min(w / 720, h / 900)));
+}
+function deskApplyScale() {
+  DESK.s = deskScale();
+  document.documentElement.style.setProperty("--s", String(DESK.s));
+}
+function deskAppName(pkg) {
+  if (!pkg) return "应用";
+  const seg = String(pkg).split(".").filter(Boolean);
+  return seg.length ? seg[seg.length - 1] : String(pkg);
+}
+function deskInitial(name) {
+  const s = String(name || "?").trim();
+  return s ? s.charAt(0).toUpperCase() : "?";
+}
+
+/* ---- 窗口几何 ---- */
+function deskFreeId() {
+  for (let i = 1; i <= 255; i++) if (!DESK.wins.has(i)) return i;
+  return null;
+}
+function deskDefaultRect(idx) {
+  const a = $("deskArea"), s = DESK.s || 1;
+  const W = a.clientWidth || 720, H = a.clientHeight || 1280;
+  const w = Math.max(Math.round(300 * s), Math.min(Math.round(W * 0.62), Math.round(680 * s)));
+  const h = Math.max(Math.round(210 * s), Math.min(Math.round(H * 0.66), Math.round(760 * s)));
+  const k = idx % 6;
+  return { x: Math.round(W * (0.04 + (k % 3) * 0.13)), y: Math.round(H * (0.05 + (k % 4) * 0.14)), w: w, h: h };
+}
+function deskPlace(win, r) {
+  if (!win || !r) return;
+  if (typeof r.x === "number") win.x = Math.round(r.x);
+  if (typeof r.y === "number") win.y = Math.round(r.y);
+  if (typeof r.w === "number") win.w = Math.max(140, Math.round(r.w));
+  if (typeof r.h === "number") win.h = Math.max(110, Math.round(r.h));
+  const a = $("deskArea");
+  const W = a.clientWidth || 720, H = a.clientHeight || 1280;
+  win.x = Math.min(Math.max(win.x, 72 - win.w), Math.max(0, W - 72)); // 至少留 72px 抓得住标题栏
+  win.y = Math.min(Math.max(win.y, 0), Math.max(0, H - 32));
+  win.el.style.left = win.x + "px"; win.el.style.top = win.y + "px";
+  win.el.style.width = win.w + "px"; win.el.style.height = win.h + "px";
+  if (DESK.focus === win.id) fitCanvas();
+}
+function deskUpdateWinChrome(win) {
+  if (!win) return;
+  win.titleEl.textContent = win.title || ("窗口 " + win.id);
+  win.subEl.textContent = win.sub || "";
+  win.el.classList.toggle("min", !!win.min);
+  win.maxBtn.title = win.max ? "还原窗口" : "最大化窗口";
+}
+
+/* ---- 建窗 / 撤窗 ---- */
+function deskNewWin(o) {
+  o = o || {};
+  const id = (typeof o.id === "number" && o.id >= 0 && o.id <= 255 && !DESK.wins.has(o.id)) ? o.id : deskFreeId();
+  if (id === null) { toast("窗口数已达上限（255）"); return null; }
+  const el = document.createElement("div");
+  el.className = "desk-win";
+  el.dataset.wid = String(id);
+  el.innerHTML =
+    '<div class="dw-bar">' +
+      '<button class="dw-btn dw-back" title="返回（注入 Back）">\u25c0</button>' +
+      '<span class="dw-title"></span><span class="dw-sub"></span>' +
+      '<button class="dw-btn dw-min" title="最小化">\u2013</button>' +
+      '<button class="dw-btn dw-max" title="最大化 / 还原">\u25a1</button>' +
+      '<button class="dw-btn dw-close" title="关闭窗口">\u2715</button>' +
+    '</div><div class="dw-body"><div class="dw-ph"></div></div>';
+  const cv = (id === 0) ? canvas : document.createElement("canvas");
+  const win = {
+    id: id, taskId: (typeof o.taskId === "number" ? o.taskId : 0),
+    title: o.title || "", sub: o.sub || "",
+    kind: o.kind || (o.taskId ? "app" : "desk"),
+    x: 0, y: 0, w: 0, h: 0, min: false, max: false, prev: null,
+    el: el, bar: el.querySelector(".dw-bar"), body: el.querySelector(".dw-body"),
+    ph: el.querySelector(".dw-ph"), titleEl: el.querySelector(".dw-title"),
+    subEl: el.querySelector(".dw-sub"), maxBtn: el.querySelector(".dw-max"),
+    cv: cv, ctx: (id === 0 ? ctx : cv.getContext("2d")),
+    dec: null, decKey: "", hasKey: false, sps: null, pps: null, _sps: null, _pps: null,
+    ts: 0, lastTs: 0, hasOwnStream: false,
+  };
+  if (id !== 0) {
+    cv.className = "dw-cv"; cv.tabIndex = 0; cv.style.display = "none";
+    win.body.appendChild(cv);
+    bindInputSurface(cv); // 该窗口自己的流（将来 0x11）可独立注入触控
+  }
+  $("deskArea").appendChild(el);
+  DESK.wins.set(id, win);
+  deskBindWin(win);
+  deskPlace(win, deskDefaultRect(DESK.wins.size - 1));
+  deskUpdateWinChrome(win);
+  return win;
+}
+function deskRemoveWin(id, silent) {
+  const win = DESK.wins.get(id);
+  if (!win) return;
+  winDropDecoder(win);
+  const hostedCanvas = (canvas.parentElement === win.body);
+  try { win.el.remove(); } catch (e) {}
+  DESK.wins.delete(id);
+  if (hostedCanvas) $("deskPark").appendChild(canvas);
+  if (DESK.focus === id) {
+    if (silent) DESK.focus = -1;
+    else deskFocusNext(id);
+  }
+  deskBarRender();
+  deskSyncCanvasHost();
+  fitCanvas();
+}
+function deskFindByTask(taskId) {
+  let hit = null;
+  DESK.wins.forEach(w => { if (!hit && w.taskId === taskId) hit = w; });
+  return hit;
+}
+
+/* ---- 焦点 / 层级 / 活画面的落点 ---- */
+function deskRaiseTask(win) {
+  if (!win || !win.taskId) return;
+  const now = performance.now();
+  if (DESK.lastSwitchTask === win.taskId && now - DESK.lastSwitchTs < 3000) return;
+  DESK.lastSwitchTask = win.taskId; DESK.lastSwitchTs = now;
+  switchDeskTask(win.taskId, { quiet: true }); // 复用切前台 API：把副屏对应应用拉到前台
+}
+function deskSyncCanvasHost() {
+  const f = DESK.on ? DESK.wins.get(DESK.focus) : null;
+  // 活画面落点：聚焦窗口没有自己的逐窗口流时，把 #canvas 搬进去；否则先 park 起来
+  const target = (f && !f.min && !f.hasOwnStream) ? f.body : $("deskPark");
+  if (canvas.parentElement !== target) target.appendChild(canvas);
+  canvas.classList.toggle("dw-live", target !== $("deskPark"));
+  DESK.wins.forEach(w => {
+    if (w.id !== 0) w.cv.style.display = w.hasOwnStream ? "" : "none";
+    const here = (canvas.parentElement === w.body);
+    const covered = here || w.hasOwnStream;
+    w.ph.style.display = covered ? "none" : "";
+    if (!covered) {
+      w.ph.textContent = (w.kind === "desk")
+        ? "整屏流正显示在聚焦窗口"
+        : (w.title || ("窗口 " + w.id)) + "\n后台窗口 · 单路整屏流跟随聚焦窗口";
+    }
+  });
+}
+function deskFocusNext(exceptId) {
+  const arr = Array.from(DESK.wins.values()).filter(w => w.id !== exceptId && !w.min);
+  if (!arr.length) {
+    DESK.focus = -1;
+    deskBarRender(); deskSyncCanvasHost(); fitCanvas();
+    return;
+  }
+  const pick = arr[arr.length - 1];
+  DESK.focus = -1;
+  // 焦点换人就得把对应应用也拉到前台：单路整屏流跟随聚焦窗口，两边不一致会「窗口里装着别人的画面」
+  deskFocus(pick.id);
+}
+function deskFocus(id, opts) {
+  opts = opts || {};
+  const win = DESK.wins.get(id);
+  if (!win) return;
+  const same = (DESK.focus === id) && !win.min;
+  if (win.min) { win.min = false; deskUpdateWinChrome(win); deskBarRender(); }
+  DESK.focus = id;
+  win.el.style.zIndex = String(++DESK.z);
+  if (same) { deskSyncCanvasHost(); fitCanvas(); return; }
+  DESK.wins.forEach(o => o.el.classList.toggle("foc", o.id === id));
+  deskSyncCanvasHost();
+  deskBarRender();
+  fitCanvas();
+  if (!opts.noSwitch) deskRaiseTask(win);
+}
+function deskMinimize(id) {
+  const win = DESK.wins.get(id);
+  if (!win) return;
+  win.min = true;
+  deskUpdateWinChrome(win);
+  if (DESK.focus === id) deskFocusNext(id);
+  deskBarRender(); deskSyncCanvasHost(); fitCanvas();
+}
+function deskToggleMax(win) {
+  if (!win) return;
+  const a = $("deskArea");
+  if (!win.max) {
+    win.prev = { x: win.x, y: win.y, w: win.w, h: win.h };
+    win.max = true;
+    deskPlace(win, { x: 0, y: 0, w: a.clientWidth, h: a.clientHeight });
+  } else {
+    win.max = false;
+    const p = win.prev || deskDefaultRect(0);
+    win.prev = null;
+    deskPlace(win, p);
+  }
+  deskUpdateWinChrome(win);
+}
+async function deskCloseWin(id) {
+  const win = DESK.wins.get(id);
+  if (!win) return;
+  if (win.taskId > 0) {
+    let ok = false, err = "";
+    try {
+      const r = await fetch(apiUrl("api/desktop/tasks"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "close", taskId: win.taskId }),
+      });
+      const j = await r.json().catch(() => ({}));
+      ok = r.ok && j.ok !== false;
+      err = j.error || ("HTTP " + r.status);
+    } catch (e) { err = "请求失败"; }
+    if (!ok) {
+      // 服务端暂无 close：只隐藏本地窗口，说清一次，别刷屏
+      toast(DESK.closeNoSupport ? "已仅从桌面隐藏窗口（服务端仍未支持关闭应用）"
+        : "服务端未支持关闭应用（" + err + "），已仅从桌面隐藏该窗口", DESK.closeNoSupport ? 2000 : 4200);
+      DESK.closeNoSupport = true;
+    }
+  }
+  deskRemoveWin(id, false);
+}
+
+/* ---- 任务栏 / 空态 ---- */
+function deskBarRender() {
+  const list = $("deskList");
+  if (!list) return;
+  list.innerHTML = "";
+  const arr = Array.from(DESK.wins.values()).sort((a, b) => a.id - b.id);
+  for (const w of arr) {
+    const b = document.createElement("button");
+    b.className = "db-item" + ((w.id === DESK.focus && !w.min) ? " on" : "") + (w.min ? " min" : "");
+    b.title = (w.title || ("窗口 " + w.id)) + (w.sub ? " · " + w.sub : "") + "（右键关闭）";
+    const ico = document.createElement("span");
+    ico.className = "db-ico"; ico.textContent = deskInitial(w.title || ("窗口 " + w.id));
+    const nm = document.createElement("span");
+    nm.className = "db-name"; nm.textContent = w.title || ("窗口 " + w.id);
+    b.appendChild(ico); b.appendChild(nm);
+    b.onclick = () => deskFocus(w.id);
+    b.oncontextmenu = e => { e.preventDefault(); deskCloseWin(w.id); };
+    list.appendChild(b);
+  }
+  const tag = $("deskTag");
+  if (tag) tag.textContent = (DESK.displayId ? "D" + DESK.displayId + " · " : "") + "窗口 " + DESK.wins.size + " / 应用 " + DESK.tasks.length;
+  deskUpdateEmpty();
+}
+function deskUpdateEmpty() {
+  const el = $("deskEmpty");
+  if (!el) return;
+  const empty = DESK.wins.size === 0;
+  el.classList.toggle("hide", !empty);
+  if (empty) el.innerHTML = "副屏暂无已开应用<br>在手机上把应用拉到虚拟屏后点「刷新」（不提供假的开应用入口）";
+}
+
+/* ---- 与 /api/desktop/tasks 对账（打开的应用 → 窗口） ---- */
+async function deskSyncTasks(opts) {
+  opts = opts || {};
+  DESK.lastSyncTs = performance.now();
+  const res = await fetchDeskTasks();
+  if (!res) return false;
+  const tasks = Array.isArray(res.tasks) ? res.tasks : [];
+  if (res.ok !== true && !tasks.length) return false; // 「桌面未运行」等失败态：保持现状，别清空桌面
+  DESK.tasks = tasks;
+  const byId = new Map();
+  tasks.forEach(t => { if (typeof t.taskId === "number") byId.set(t.taskId, t); });
+
+  Array.from(DESK.wins.values()).forEach(w => {
+    if (w.taskId > 0 && !byId.has(w.taskId)) deskRemoveWin(w.id, true);
+  });
+  for (const t of tasks) {
+    let w = deskFindByTask(t.taskId);
+    if (!w) {
+      const want = (typeof t.taskId === "number" && t.taskId >= 1 && t.taskId <= 255 && !DESK.wins.has(t.taskId)) ? t.taskId : undefined;
+      w = deskNewWin({ id: want, taskId: t.taskId, kind: "app" });
+      if (!w) continue;
+    }
+    w.taskId = t.taskId;
+    w.kind = "app";
+    w.title = deskAppName(t.packageName);
+    w.sub = (t.packageName || "") + " #" + t.taskId + (t.isTop ? " · 前台" : "");
+    deskUpdateWinChrome(w);
+  }
+  // 有应用窗口了就撤掉「桌面」占位窗（它只是没应用时活画面的落脚点）
+  if (tasks.length) {
+    Array.from(DESK.wins.values()).forEach(w => { if (w.kind === "desk" && !w.taskId) deskRemoveWin(w.id, true); });
+  }
+  if (!DESK.wins.size) deskNewWin({ id: 0, kind: "desk", title: "桌面", sub: "整屏流" });
+
+  if (!DESK.wins.has(DESK.focus)) {
+    const top = tasks.find(t => t.isTop);
+    let pick = (top && deskFindByTask(top.taskId)) || null;
+    if (!pick) pick = DESK.wins.values().next().value || null;
+    if (pick) deskFocus(pick.id, { noSwitch: true });
+  }
+  deskBarRender(); deskSyncCanvasHost(); fitCanvas();
+  return true;
+}
+function deskMaybeSyncTasks() {
+  if (!DESK.on) return;
+  if (performance.now() - DESK.lastSyncTs < 9000) return;
+  deskSyncTasks();
+}
+
+/* ---- 进 / 出桌面外壳 ---- */
+function deskEnter(info) {
+  if (!DESK.on) {
+    DESK.on = true;
+    DESK.focus = -1;
+    DESK.missCount = 0;
+    document.body.classList.add("desk");
+    $("deskShell").classList.remove("hide");
+    deskApplyScale();
+    const a = $("deskArea");
+    DESK.areaW = a.clientWidth; DESK.areaH = a.clientHeight;
+    deskStatusHide();
+    toast("🖥 已进入 Fusion 独立桌面" + (info && info.displayId > 0 ? " (D" + info.displayId + ")" : ""), 3200);
+  }
+  DESK.displayId = (info && info.displayId > 0) ? info.displayId : 0;
+  deskSyncTasks({ initial: true });
+  deskBarRender();
+}
+function deskExit() {
+  if (!DESK.on) return;
+  DESK.on = false;
+  document.body.classList.remove("desk");
+  DESK.drag = null;
+  Array.from(DESK.wins.keys()).forEach(id => deskRemoveWin(id, true));
+  $("deskShell").classList.add("hide");
+  deskStatusHide();
+  stage.insertBefore(canvas, stage.firstChild);
+  canvas.classList.remove("dw-live");
+  DESK.focus = -1;
+  fitCanvas();
+}
+function deskFallbackMirror(reason) {
+  const was = DESK.on;
+  deskExit();
+  // 启动失败时壳从没亮过（was=false），也得给一句可读的提示，不能静默
+  if (was || reason) toast("已回退物理屏镜像：" + (reason || "桌面已关闭"), 4200);
+  DESK.lastError = reason || "";
+}
+function deskOnResize() {
+  if (!DESK.on) return;
+  deskApplyScale();
+  const a = $("deskArea");
+  const W = a.clientWidth, H = a.clientHeight;
+  if (!W || !H) return;
+  if (DESK.areaW && DESK.areaH && (Math.abs(W - DESK.areaW) > 2 || Math.abs(H - DESK.areaH) > 2)) {
+    const kx = W / DESK.areaW, ky = H / DESK.areaH;
+    DESK.wins.forEach(w => {
+      if (w.max) deskPlace(w, { x: 0, y: 0, w: W, h: H });
+      else deskPlace(w, { x: w.x * kx, y: w.y * ky, w: w.w * kx, h: w.h * ky });
+    });
+  }
+  DESK.areaW = W; DESK.areaH = H;
+  fitCanvas();
+}
+
+/* ---- 壳内状态卡（启动中 / 断流 / 停采） ---- */
+function deskStatusShow(msg, kind) {
+  DESK.statusKind = kind || "";
+  const el = $("deskStatusMsg");
+  if (el) el.textContent = msg;
+  $("deskStatus").classList.remove("hide");
+}
+function deskStatusHide() {
+  DESK.statusKind = "";
+  const el = $("deskStatus");
+  if (el) el.classList.add("hide");
+}
+function deskStreamLost() {
+  if (DESK.streamTimer) return;
+  if (DESK.streamTry >= 5) {
+    deskStatusShow("推流中断，已自动重连 5 次仍未恢复。点「重试」再连一次，或先切回镜像。", "error");
+    return;
+  }
+  const n = ++DESK.streamTry;
+  deskStatusShow("推流中断，正在自动重连…（第 " + n + " 次）", "retry");
+  DESK.streamTimer = setTimeout(() => { DESK.streamTimer = 0; connect(); }, 1500);
+}
+function deskStreamUp() {
+  if (DESK.streamTimer) { clearTimeout(DESK.streamTimer); DESK.streamTimer = 0; }
+  DESK.streamTry = 0;
+  if (DESK.statusKind === "retry" || DESK.statusKind === "boot") deskStatusHide();
+}
+
+/* ---- 启动桌面模式（默认路径） ---- */
+async function deskEnsureOn(ms) {
+  let last = null;
+  try {
+    const r = await fetch(apiUrl("api/desktop"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "on" }),
+    });
+    last = await r.json().catch(() => null);
+    if (r.ok && isDeskOn(last)) return last;
+    if (last && last.error) DESK.lastError = last.error;
+  } catch (e) { DESK.lastError = "请求失败"; }
+  const deadline = Date.now() + ms;
+  let fails = 0;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 600));
+    const j = await queryDesktop();
+    if (j) { last = j; fails = 0; if (isDeskOn(j)) return j; if (j.error) DESK.lastError = j.error; }
+    else if (++fails >= 3) break;
+  }
+  return last;
+}
+/* 打开控制台后的默认路径：能进桌面就进桌面；服务端不支持 / 起不来就留在镜像（绝不黑屏卡死）。 */
+async function desktopAutoEnter() {
+  const info = await queryDesktop();
+  if (info === null) return;                 // 老服务端没有 /api/desktop：镜像照旧，不打扰
+  if (isDeskOn(info)) { deskEnter(info); return; }
+  if (deskPrefGet() === "mirror") return;    // 用户明确选过镜像：刷新后不硬拉回桌面
+  deskStatusShow("正在启动独立桌面…", "boot");
+  const j = await deskEnsureOn(9000);
+  if (isDeskOn(j)) { deskStatusHide(); deskEnter(j); return; }
+  deskStatusHide();
+  deskFallbackMirror(DESK.lastError || "独立桌面 9s 内未起来");
+}
+
+/* ---- 交互绑定 ---- */
+function deskBindWin(win) {
+  const bar = win.bar;
+  bar.addEventListener("pointerdown", e => {
+    if (e.target && e.target.closest && e.target.closest(".dw-btn")) return;
+    if (e.button !== 0) return;
+    e.preventDefault();
+    deskFocus(win.id);
+    if (win.max) deskToggleMax(win); // 最大化状态拖动先还原成窗口
+    DESK.drag = { win: win, pid: e.pointerId, sx: e.clientX, sy: e.clientY, x0: win.x, y0: win.y };
+    try { bar.setPointerCapture(e.pointerId); } catch (x) {}
+  });
+  bar.addEventListener("pointermove", e => {
+    const d = DESK.drag;
+    if (!d || d.win !== win || d.pid !== e.pointerId) return;
+    deskPlace(win, { x: d.x0 + (e.clientX - d.sx), y: d.y0 + (e.clientY - d.sy) });
+  });
+  const endDragWin = e => {
+    const d = DESK.drag;
+    if (!d || d.win !== win || d.pid !== e.pointerId) return;
+    DESK.drag = null;
+    try { bar.releasePointerCapture(e.pointerId); } catch (x) {}
+  };
+  bar.addEventListener("pointerup", endDragWin);
+  bar.addEventListener("pointercancel", endDragWin);
+
+  const b = sel => win.el.querySelector(sel);
+  b(".dw-back").addEventListener("click", e => { e.stopPropagation(); deskFocus(win.id); sendCtl({ type: "click", button: "right" }); });
+  b(".dw-min").addEventListener("click", e => { e.stopPropagation(); deskMinimize(win.id); });
+  b(".dw-max").addEventListener("click", e => { e.stopPropagation(); deskToggleMax(win); });
+  b(".dw-close").addEventListener("click", e => { e.stopPropagation(); deskCloseWin(win.id); });
+  win.el.addEventListener("pointerdown", () => deskFocus(win.id), true); // 点哪都先聚焦（含内容区）
+}
+
+/* ---- 逐窗口视频（预留 0x11）：每个窗口自己的 VideoDecoder ---- */
+function winEnsureDecoder(win) {
+  if (typeof VideoDecoder === "undefined") return false;
+  if (!win.sps || !win.pps || win.sps.length < 4) return false;
+  const key = win.sps.length + ":" + win.sps[1] + "," + win.sps[2] + "," + win.sps[3];
+  if (win.dec && win.dec.state !== "closed" && win.decKey === key &&
+      eqBytes(win.sps, win._sps) && eqBytes(win.pps, win._pps)) return true;
+  try { if (win.dec) win.dec.close(); } catch (e) {}
+  win.dec = null; win.hasKey = false;
+  try {
+    const dec = new VideoDecoder({
+      output: f => queueFrame(win, f),
+      error: e => console.warn("[vdec win " + win.id + "]", e),
+    });
+    dec.configure({
+      codec: "avc1." + hex(win.sps[1]) + hex(win.sps[2]) + hex(win.sps[3]),
+      description: buildAvcC(win.sps, win.pps), optimizeForLatency: true,
+    });
+    win.dec = dec; win.decKey = key;
+    win._sps = win.sps.slice(); win._pps = win.pps.slice();
+    return true;
+  } catch (e) { console.warn("[vdec win " + win.id + " configure]", e); return false; }
+}
+function winDropDecoder(win) {
+  if (!win) return;
+  try { if (win.dec) win.dec.close(); } catch (e) {}
+  win.dec = null; win.decKey = ""; win.hasKey = false;
+  win.sps = win.pps = win._sps = win._pps = null;
+}
+function winDecode(win, payload) {
+  const nalus = splitAnnexB(payload);
+  if (!nalus.length) return;
+  let hasIdr = false, dirty = false;
+  for (const n of nalus) {
+    const t = payload[n.hdr] & 0x1F;
+    if (t === 7) { const b = payload.slice(n.hdr, n.end); if (!eqBytes(b, win.sps)) { win.sps = b; dirty = true; } }
+    else if (t === 8) { const b = payload.slice(n.hdr, n.end); if (!eqBytes(b, win.pps)) { win.pps = b; dirty = true; } }
+    else if (t === 5) hasIdr = true;
+  }
+  if (dirty || !win.dec || win.dec.state === "closed") { if (!winEnsureDecoder(win)) return; }
+  if (!win.dec || (win.dec.state !== "playing" && win.dec.state !== "configured")) { if (!winEnsureDecoder(win)) return; }
+  if (!hasIdr && !win.hasKey) return;
+  if (win.dec.decodeQueueSize > 4 && !hasIdr) return;
+  let total = 0;
+  for (const n of nalus) total += 4 + (n.end - n.hdr);
+  const mp4 = new Uint8Array(total);
+  let o = 0;
+  for (const n of nalus) {
+    const len = n.end - n.hdr;
+    mp4[o++] = (len >>> 24) & 0xFF; mp4[o++] = (len >>> 16) & 0xFF;
+    mp4[o++] = (len >>> 8) & 0xFF; mp4[o++] = len & 0xFF;
+    mp4.set(payload.subarray(n.hdr, n.end), o); o += len;
+  }
+  const wall = performance.now() * 1000;
+  win.ts = Math.max(wall, win.lastTs + 1); win.lastTs = win.ts;
+  try {
+    win.dec.decode(new EncodedVideoChunk({ type: (hasIdr || !win.hasKey) ? "key" : "delta", timestamp: Math.round(win.ts), data: mp4 }));
+    if (hasIdr) win.hasKey = true;
+  } catch (e) { /* 坏帧丢弃，等 I 帧自愈 */ }
+}
+/* 通道 0x11 负载：[1字节 windowId][H.264 Annex-B…]。服务端还没实现，收到即按此解析。 */
+function feedWindowVideo(payload) {
+  if (!payload || payload.length < 2) return;
+  const wid = payload[0];
+  const nalu = payload.subarray(1);
+  if (wid === 0) { feedVideo(nalu); return; } // 0 = 整屏流那一路，并回主画面
+  let win = DESK.wins.get(wid);
+  if (!win) {
+    if (!DESK.on) return; // 没在桌面模式就先忽略，别凭空造壳
+    win = deskNewWin({ id: wid, kind: "auto", title: "窗口 " + wid, sub: "服务端逐窗口流" });
+    if (!win) return;
+    deskUpdateWinChrome(win);
+    deskBarRender();
+    if (DESK.focus < 0) deskFocus(win.id, { noSwitch: true });
+  }
+  winDecode(win, nalu);
+}
+
+/* ---- 外壳按钮 ---- */
+$("deskRefresh").onclick = () => { toast("正在刷新副屏应用列表…", 1400); deskSyncTasks(); };
+$("deskToMirror").onclick = () => { toggleDesktop(); };
+$("deskStatusMirror").onclick = () => { deskStatusHide(); toggleDesktop(); };
+$("deskStatusRetry").onclick = async () => {
+  deskStatusHide();
+  try {
+    await fetch(apiUrl("api/stream"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "on" }),
+    });
+  } catch (e) {}
+  connect(); startStatusPoll(); pollStatus();
+};
+
+/* ---- 非安全上下文提示条（局域网 http 只能走 JPEG 降级） ---- */
+(function initSecBanner() {
+  let hidden = false;
+  try { hidden = localStorage.getItem("bc_secbanner_hide") === "1"; } catch (e) {}
+  if (!hidden && window.isSecureContext === false) $("secBanner").classList.remove("hide");
+})();
+$("secBannerX").onclick = () => {
+  $("secBanner").classList.add("hide");
+  try { localStorage.setItem("bc_secbanner_hide", "1"); } catch (e) {}
+};
+
 /* FPS 统计 */
 setInterval(() => {
   $("pillFps").textContent = "FPS " + S.fpsCount;
@@ -972,34 +1737,70 @@ setInterval(() => {
   S.fpsCount = 0;
 }, 1000);
 
-/* ---------------- 反向操控输入 ---------------- */
+/* ---------------- 反向操控输入 ----------------
+ * 输入面 = 当前聚焦窗口里那块「画布即画面」（桌面模式）或 #canvas（镜像模式）。
+ * 画布矩形就是 display 上那块区域，所以归一化坐标一路不变，control 协议无需改动。 */
+function inputSurface(e) {
+  const el = e && e.currentTarget;
+  if (el && el.tagName === "CANVAS") return el;
+  const f = DESK.on ? DESK.wins.get(DESK.focus) : null;
+  if (f && f.hasOwnStream && f.cv) return f.cv;
+  return canvas;
+}
 function normPos(e) {
-  const r = canvas.getBoundingClientRect();
+  const r = inputSurface(e).getBoundingClientRect();
+  if (!r.width || !r.height) return { x: 0.5, y: 0.5 };
   return { x: clamp01((e.clientX - r.left) / r.width), y: clamp01((e.clientY - r.top) / r.height) };
 }
-canvas.addEventListener("contextmenu", e => e.preventDefault());
-canvas.addEventListener("mousedown", e => { if (e.button === 1) e.preventDefault(); }); // 拦截中键自动滚动
-canvas.addEventListener("auxclick", e => e.preventDefault());
+function bindInputSurface(el) {
+  el.addEventListener("contextmenu", e => e.preventDefault());
+  el.addEventListener("mousedown", e => { if (e.button === 1) e.preventDefault(); }); // 拦截中键自动滚动
+  el.addEventListener("auxclick", e => e.preventDefault());
 
-canvas.addEventListener("pointerdown", e => {
-  ensureActx();
-  try { canvas.focus(); } catch (x) {}
-  if (e.button === 2) { sendCtl({ type: "click", button: "right" }); return; } // 右键=返回
-  if (e.button === 1) { sendCtl({ type: "click", button: "middle" }); return; } // 中键=Home
-  if (e.button !== 0) return;
-  const p = normPos(e);
-  S.dragging = true;
-  try { canvas.setPointerCapture(e.pointerId); } catch (x) {}
-  sendCtl({ type: "down", x: +p.x.toFixed(4), y: +p.y.toFixed(4) });
-});
-canvas.addEventListener("pointermove", e => {
-  if (!S.dragging || e.buttons === 0 && e.pointerType === "mouse") return;
-  const now = performance.now();
-  if (now - S.lastMoveTs < 16) return; // ~60Hz节流
-  S.lastMoveTs = now;
-  const p = normPos(e);
-  sendCtl({ type: "move", x: +p.x.toFixed(4), y: +p.y.toFixed(4) });
-});
+  el.addEventListener("pointerdown", e => {
+    ensureActx();
+    try { el.focus(); } catch (x) {}
+    if (e.button === 2) { sendCtl({ type: "click", button: "right" }); return; } // 右键=返回
+    if (e.button === 1) { sendCtl({ type: "click", button: "middle" }); return; } // 中键=Home
+    if (e.button !== 0) return;
+    const p = normPos(e);
+    S.dragging = true;
+    try { el.setPointerCapture(e.pointerId); } catch (x) {}
+    sendCtl({ type: "down", x: +p.x.toFixed(4), y: +p.y.toFixed(4) });
+  });
+  el.addEventListener("pointermove", e => {
+    if (!S.dragging || e.buttons === 0 && e.pointerType === "mouse") return;
+    const now = performance.now();
+    if (now - S.lastMoveTs < 16) return; // ~60Hz节流
+    S.lastMoveTs = now;
+    const p = normPos(e);
+    sendCtl({ type: "move", x: +p.x.toFixed(4), y: +p.y.toFixed(4) });
+  });
+  el.addEventListener("pointerup", endDrag);
+  el.addEventListener("pointercancel", () => { if (S.dragging) { S.dragging = false; sendCtl({ type: "up", x: 0.5, y: 0.5 }); } });
+
+  /* 滚轮 = 定向滑动 */
+  el.addEventListener("wheel", e => {
+    e.preventDefault();
+    const horiz = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+    const d = horiz ? e.deltaX : e.deltaY;
+    if (!d) return;
+    const r = el.getBoundingClientRect();
+    const rangePx = Math.min(220, Math.max(80, (horiz ? r.width : r.height) * 0.25));
+    const sign = d > 0 ? 1 : -1;
+    const p = normPos(e);
+    let x0 = p.x, y0 = p.y, x1 = p.x, y1 = p.y;
+    if (horiz) { const s = rangePx / r.width / 2; x0 = clamp01(p.x + s * sign); x1 = clamp01(p.x - s * sign); }
+    else { const s = rangePx / r.height / 2; y0 = clamp01(p.y + s * sign); y1 = clamp01(p.y - s * sign); }
+    sendCtl({ type: "down", x: +x0.toFixed(4), y: +y0.toFixed(4) });
+    const steps = 3;
+    for (let i = 1; i <= steps; i++) {
+      setTimeout(((xx, yy) => () => sendCtl({ type: "move", x: +xx.toFixed(4), y: +yy.toFixed(4) }))
+        (x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps), i * 18);
+    }
+    setTimeout(() => sendCtl({ type: "up", x: +x1.toFixed(4), y: +y1.toFixed(4) }), (steps + 1) * 18);
+  }, { passive: false });
+}
 function endDrag(e) {
   if (!S.dragging) return;
   S.dragging = false;
@@ -1007,30 +1808,7 @@ function endDrag(e) {
   const p = e ? normPos(e) : { x: 0.5, y: 0.5 };
   sendCtl({ type: "up", x: +p.x.toFixed(4), y: +p.y.toFixed(4) });
 }
-canvas.addEventListener("pointerup", endDrag);
-canvas.addEventListener("pointercancel", () => { if (S.dragging) { S.dragging = false; sendCtl({ type: "up", x: 0.5, y: 0.5 }); } });
-
-/* 滚轮 = 定向滑动 */
-canvas.addEventListener("wheel", e => {
-  e.preventDefault();
-  const horiz = Math.abs(e.deltaX) > Math.abs(e.deltaY);
-  const d = horiz ? e.deltaX : e.deltaY;
-  if (!d) return;
-  const r = canvas.getBoundingClientRect();
-  const rangePx = Math.min(220, Math.max(80, (horiz ? r.width : r.height) * 0.25));
-  const sign = d > 0 ? 1 : -1;
-  const p = normPos(e);
-  let x0 = p.x, y0 = p.y, x1 = p.x, y1 = p.y;
-  if (horiz) { const s = rangePx / r.width / 2; x0 = clamp01(p.x + s * sign); x1 = clamp01(p.x - s * sign); }
-  else { const s = rangePx / r.height / 2; y0 = clamp01(p.y + s * sign); y1 = clamp01(p.y - s * sign); }
-  sendCtl({ type: "down", x: +x0.toFixed(4), y: +y0.toFixed(4) });
-  const steps = 3;
-  for (let i = 1; i <= steps; i++) {
-    setTimeout(((xx, yy) => () => sendCtl({ type: "move", x: +xx.toFixed(4), y: +yy.toFixed(4) }))
-      (x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps), i * 18);
-  }
-  setTimeout(() => sendCtl({ type: "up", x: +x1.toFixed(4), y: +y1.toFixed(4) }), (steps + 1) * 18);
-}, { passive: false });
+bindInputSurface(canvas);
 
 /* 键盘: 可打印字符走text批量注入, 功能键走key */
 const KEYMAP = {
@@ -1167,7 +1945,14 @@ $("btnJpeg").onclick = () => {
 };
 $("btnReconnect").onclick = () => { hideStreamOffRestore(); showBoot("正在重连…"); connect(); };
 $("btnStream").onclick = toggleStream;
-$("btnEnter").onclick = () => { hideStreamOffRestore(); $("bootOverlay").classList.add("hide"); connect(); startStatusPoll(); };
+/* 会话入口：连接两路 WS + 状态轮询 + 默认进入独立桌面。
+ * 只出现在「兜底手动点进入控制台」这一条路（自动路径鉴权后直接开）。 */
+function startSession() {
+  connect();
+  startStatusPoll();
+  desktopAutoEnter(); // 不 await：画面先出来，桌面外壳随后顶上（失败会回退镜像）
+}
+$("btnEnter").onclick = () => { hideStreamOffRestore(); $("bootOverlay").classList.add("hide"); startSession(); };
 $("btnStreamOn").onclick = async () => {
   const btn = $("btnStreamOn");
   btn.disabled = true;
@@ -1181,8 +1966,7 @@ $("btnStreamOn").onclick = async () => {
       toast("🎬 已开启投屏采集，正在进入");
       hideStreamOffRestore();
       hideBoot();
-      connect();
-      startStatusPoll();
+      startSession();
     } else toast("开启投屏失败: " + (j.error || r.status));
   } catch (e) { toast("开启投屏请求失败"); }
   finally { btn.disabled = false; }
@@ -1707,7 +2491,7 @@ async function submitPair() {
   if (r.ok && j.token) {
     rememberToken(j.token);
     hideAuth();
-    await gateEnter("配对成功，点击进入控制台");
+    if (await gateEnter("配对成功，正在进入")) { hideBoot(); startSession(); }
     return;
   }
   $("btnPair").disabled = false;
@@ -1737,8 +2521,11 @@ async function submitAuth() {
   const t = $("tokenInput").value.trim();
   if (!t) { $("authErr").textContent = "请输入 Token"; return; }
   $("authErr").textContent = "校验中…";
-  if (await apiVerify(t)) { rememberToken(t); hideAuth(); await gateEnter("鉴权通过，点击进入控制台"); }
-  else {
+  if (await apiVerify(t)) {
+    rememberToken(t);
+    hideAuth();
+    if (await gateEnter("鉴权通过，正在进入")) { hideBoot(); startSession(); }
+  } else {
     $("authErr").textContent = "Token 错误，请重试";
     authShake();
   }
@@ -1746,7 +2533,12 @@ async function submitAuth() {
 $("btnAuth").onclick = submitAuth;
 $("tokenInput").addEventListener("keydown", e => { if (e.key === "Enter") submitAuth(); });
 
-/* ---------------- 启动 ---------------- */
+/* ---------------- 启动 ----------------
+ * 鉴权一过就直接开会话（默认目标 = 独立桌面），不再要求「进入控制台」+「独立桌面」两次点击；
+ * 只有投屏采集起不来时才退化成手动入口。 */
+async function autoEnter() {
+  if (await gateEnter("正在进入控制台…")) { hideBoot(); startSession(); }
+}
 (async function boot() {
   fitCanvas();
   let st = null;
@@ -1755,12 +2547,12 @@ $("tokenInput").addEventListener("keydown", e => { if (e.key === "Enter") submit
   if (!st.authRequired) {
     if (qsToken) rememberToken(qsToken); // 免密模式也记住URL携带的token(供WS/REST透传)
     dropPairParam(); // 免密模式配对码无用，别留在地址栏
-    await gateEnter("服务运行中，点击进入低延迟控制台");
+    await autoEnter();
     return;
   }
   // 设密模式: ?token= > localStorage > 弹窗
-  if (qsToken && await apiVerify(qsToken)) { rememberToken(qsToken); dropPairParam(); await gateEnter("Token 免密通过，点击进入控制台"); return; }
-  if (token && await apiVerify(token)) { dropPairParam(); await gateEnter("已记住 Token，点击进入控制台"); return; }
+  if (qsToken && await apiVerify(qsToken)) { rememberToken(qsToken); dropPairParam(); await autoEnter(); return; }
+  if (token && await apiVerify(token)) { dropPairParam(); await autoEnter(); return; }
   showAuth("");
   if (!qsPair) return;
   // 二维码链接带入的配对码：填好直接提交一次，成败都要从地址栏抹掉
