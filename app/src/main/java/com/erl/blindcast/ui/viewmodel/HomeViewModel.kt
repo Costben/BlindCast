@@ -23,7 +23,6 @@ import com.erl.blindcast.core.blackout.PowerController
 import com.erl.blindcast.core.blackout.UserActivityKeeper
 import com.erl.blindcast.core.ha.HaSensorReporter
 import com.erl.blindcast.core.priv.PrivilegedBridge
-import com.erl.blindcast.core.server.BlindCastServer
 import com.erl.blindcast.core.service.BlindCastForegroundService
 import com.erl.blindcast.permission.PermissionManager
 import com.erl.blindcast.permission.PermissionState
@@ -33,9 +32,10 @@ import com.erl.blindcast.ui.screen.home.LanState
 import com.erl.blindcast.ui.screen.home.ServiceCardState
 import com.erl.blindcast.ui.screen.home.SystemInfo
 import com.erl.blindcast.ui.screen.home.getAppVersion
+import com.erl.blindcast.ui.screen.home.readLanIp
+import com.erl.blindcast.ui.screen.home.resolveLanPort
 import com.erl.blindcast.ui.util.LatestVersionInfo
 import com.erl.blindcast.ui.util.checkNewVersion
-import java.net.NetworkInterface
 import java.net.URLEncoder
 
 class HomeViewModel : ViewModel() {
@@ -129,42 +129,9 @@ class HomeViewModel : ViewModel() {
 
     // ------------------------------------------------------------------
     // 快捷操作（Slice 6.1）
+    // 服务开关已下线：端口恒开、采集按需自动起停（见 BlindCastForegroundService），
+    // 首页不再持有 toggleService / toggleHttp / toggleStreaming 三个入口。
     // ------------------------------------------------------------------
-
-    /** 串流总服务开关（一键启动/关闭录屏编码与 HTTP 监听服务）。 */
-    fun toggleService(enable: Boolean) {
-        if (enable) {
-            BlindCastForegroundService.start(app)
-        } else {
-            BlindCastForegroundService.stop(app)
-        }
-        viewModelScope.launch(Dispatchers.IO) { updateFromSnapshot() }
-    }
-
-    /**
-     * HTTP 端口开关（轻量：只开端口，可远程息屏/点亮，不起录屏编码）。
-     * 关即总停（串流同关，服务退出）。
-     */
-    fun toggleHttp(enable: Boolean) {
-        if (enable) {
-            BlindCastForegroundService.startHttp(app)
-        } else {
-            BlindCastForegroundService.stop(app)
-        }
-        viewModelScope.launch(Dispatchers.IO) { updateFromSnapshot() }
-    }
-
-    /**
-     * 串流采集开关（开隐含开 HTTP；关只停采集不断端口）。
-     */
-    fun toggleStreaming(enable: Boolean) {
-        if (enable) {
-            BlindCastForegroundService.startStreaming(app)
-        } else {
-            BlindCastForegroundService.stopStreaming(app)
-        }
-        viewModelScope.launch(Dispatchers.IO) { updateFromSnapshot() }
-    }
 
     /**
      * 立即息屏挂机：经 Shizuku 特权路由物理熄屏 + 启动 4s 喂狗（后台执行，含跨进程绑定）。
@@ -263,10 +230,6 @@ class HomeViewModel : ViewModel() {
     /** 同步装配一次服务/LAN/硬件快照（IO 线程调用）。 */
     private fun updateFromSnapshot() {
         val svc = BlindCastForegroundService.status.value
-        // 服务未运行时读引擎实时值同样有效（停止态为 -1/0），端口回退偏好值。
-        val port = svc.port
-            .takeIf { it in 1..65535 }
-            ?: BlindCastServer.DEFAULT_PORT
         val prefs = runCatching {
             app.getSharedPreferences(
                 BlindCastForegroundService.PREFS_NAME,
@@ -274,16 +237,11 @@ class HomeViewModel : ViewModel() {
             )
         }.getOrNull()
         val token = prefs?.getString(BlindCastForegroundService.KEY_TOKEN, "") ?: ""
-        val prefPort = prefs?.getInt(
-            BlindCastForegroundService.KEY_PORT,
-            BlindCastServer.DEFAULT_PORT,
-        ) ?: BlindCastServer.DEFAULT_PORT
-        val effectivePort = port.takeIf { svc.isRunning }
-            ?: prefPort.takeIf { it in 1..65535 }
-            ?: BlindCastServer.DEFAULT_PORT
+        // 端口口径与配对页共用（服务未运行时读引擎实时值同样有效，停止态回退偏好值）。
+        val effectivePort = resolveLanPort(app.applicationContext)
         val tokenProtected = token.isNotBlank()
 
-        val ip = readLanIp()
+        val ip = readLanIp(app.applicationContext)
         val hasIp = ip != null
         val baseUrl = if (hasIp) "http://$ip:$effectivePort/" else ""
         val urlWithToken = when {
@@ -350,33 +308,6 @@ class HomeViewModel : ViewModel() {
             missing.add(runCatching { app.getString(R.string.blindcast_home_missing_battery) }.getOrDefault("电池白名单"))
         }
         return missing
-    }
-
-    /**
-     * 读取局域网 IPv4：优先 WifiManager（当前连接），回退枚举网卡首个
-     * site-local 非回环 IPv4（兼容有线/USB 网络共享），均无则 null。
-     */
-    private fun readLanIp(): String? {
-        runCatching {
-            val wm = app.applicationContext.getSystemService(WifiManager::class.java)
-            val raw = wm?.connectionInfo?.ipAddress ?: 0
-            if (raw != 0) {
-                return "${raw and 0xFF}.${raw shr 8 and 0xFF}.${raw shr 16 and 0xFF}.${raw shr 24 and 0xFF}"
-            }
-        }
-        runCatching {
-            val ifaces = NetworkInterface.getNetworkInterfaces() ?: return null
-            for (iface in ifaces) {
-                if (!iface.isUp || iface.isLoopback) continue
-                for (addr in iface.inetAddresses) {
-                    val host = addr.hostAddress ?: continue
-                    if (addr.isLoopbackAddress || addr.isLinkLocalAddress) continue
-                    if (host.contains(':')) continue // 跳过 IPv6。
-                    if (addr.isSiteLocalAddress) return host
-                }
-            }
-        }
-        return null
     }
 
     /** 读取硬件监控：电量/充电/温度（复用 HaSensorReporter）+ 内存 + WiFi 速率。 */

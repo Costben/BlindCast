@@ -69,10 +69,23 @@ object StreamWsRoute {
     val sessionCount: Int get() = sessions.size
 
     /**
+     * 首个会话接入回调（会话数 0→1 时触发；并发下可能重复触发，实现方须幂等）。
+     *
+     * 开关下线后采集改为按需：由 [com.erl.blindcast.core.server.BlindCastServer]
+     * 注册成「拉起采集」，任何客户端连上 `/ws/stream` 都能等到画面，
+     * 不必先调 `/api/stream` 或依赖自家页面的唤醒逻辑。
+     */
+    @Volatile
+    var onFirstSession: (() -> Unit)? = null
+
+    /**
      * 接管一条已升级连接（阻塞直到对端关闭 / 出错 / 服务停止）。
      * 调用方为 [BlindCastServer] 连接池线程；返回后连接已关闭。
      */
     fun handle(conn: WsConnection) {
+        // 0→1：有人接入才需要采集（开关下线后的按需语义，收尾见 BlindCastForegroundService.recycleIdleCapture）。
+        // 并发下可能重复触发，requestCapture 幂等，无害。
+        if (sessions.isEmpty()) runCatching { onFirstSession?.invoke() }
         sessions.add(conn)
         try {
             ensurePump()

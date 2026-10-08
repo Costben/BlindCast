@@ -67,13 +67,9 @@ class BootReceiver : BroadcastReceiver() {
         Log.i(TAG, "Boot auto-start triggered: streamWant=$streamWant, httpWant=$httpWant")
 
         try {
-            if (streamWant) {
-                Log.i(TAG, "Restoring streaming foreground service...")
-                BlindCastForegroundService.startStreaming(targetContext)
-            } else if (httpWant) {
-                Log.i(TAG, "Restoring HTTP foreground service...")
-                BlindCastForegroundService.startHttp(targetContext)
-            }
+            // 采集按需：开机只恢复端口服务，录屏编码等首个 /ws/stream 会话接入再起。
+            Log.i(TAG, "Restoring HTTP foreground service...")
+            BlindCastForegroundService.startHttp(targetContext)
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to auto-start BlindCast service on boot", t)
         }

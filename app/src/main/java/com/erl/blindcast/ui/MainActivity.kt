@@ -51,6 +51,7 @@ import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import kotlinx.coroutines.flow.MutableStateFlow
 import com.erl.blindcast.R
+import com.erl.blindcast.core.service.BlindCastForegroundService
 import com.erl.blindcast.ui.component.bottombar.BottomBar
 import com.erl.blindcast.ui.component.bottombar.MainPagerState
 import com.erl.blindcast.ui.component.bottombar.SideRail
@@ -85,6 +86,11 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 服务开关已下线：打开 App 即保证端口服务在线（幂等；采集仍按需，不在这里起）。
+        if (!BlindCastForegroundService.status.value.isRunning) {
+            runCatching { BlindCastForegroundService.startHttp(this) }
+        }
 
         setContent {
             val viewModel = viewModel<MainActivityViewModel>()

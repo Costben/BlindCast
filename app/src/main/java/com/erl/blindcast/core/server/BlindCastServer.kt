@@ -2,13 +2,18 @@ package com.erl.blindcast.core.server
 
 import android.content.Context
 import android.util.Log
+import com.erl.blindcast.core.server.auth.CredentialStore
 import com.erl.blindcast.core.server.auth.TokenAuthenticator
 import com.erl.blindcast.core.server.routes.AuthRoute
 import com.erl.blindcast.core.server.routes.ControlWsRoute
 import com.erl.blindcast.core.server.routes.DeviceApiRoute
+import com.erl.blindcast.core.server.routes.PairRoute
 import com.erl.blindcast.core.server.routes.StreamWsRoute
 import com.erl.blindcast.core.server.routes.WebStaticRoutes
+import com.erl.blindcast.core.server.routes.WidgetWsRoute
 import com.erl.blindcast.core.server.routes.WsConnection
+import com.erl.blindcast.core.widget.WidgetHostManager
+import com.erl.blindcast.core.widget.WidgetRenderer
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -37,7 +42,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * - `GET /`、`/index.html` → [WebStaticRoutes]（公开；4.2 落子前占位页）；
  * - `GET /ws/stream` → [StreamWsRoute]（鉴权后升级，NALU/AAC 二进制下发）；
  * - `GET /ws/control` → [ControlWsRoute]（鉴权后升级，JSON 指令上行）；
+ * - `GET /ws/widgets` → [WidgetWsRoute]（鉴权后升级，桌面 widget WebP 静帧下行 + 触摸注入上行）；
  * - `GET /api/auth/status`、`GET|POST /api/auth/verify` → [AuthRoute]（公开）；
+ * - `POST /api/pair` → [PairRoute]（**公开**，本就为取得凭据而存在，靠 per-IP 退避约束）；
+ * - `GET /api/clients`、`POST /api/clients/revoke` → [PairRoute]（需鉴权）；
  * - `GET|POST /api/screen`、`GET /api/status`、`GET|POST /api/stream` → [DeviceApiRoute]（需鉴权）；
  * - 其余 → 404；鉴权失败 → 401 JSON（WS 升级前同样先验，失败直接 401 不升级）。
  *
@@ -103,6 +111,16 @@ object BlindCastServer {
     fun init(context: Context) {
         appContextRef = WeakReference(context.applicationContext ?: context)
         DeviceApiRoute.init(context)
+        CredentialStore.init(context)
+        WidgetHostManager.init(context)
+        WidgetRenderer.probeInteractionApi()
+        // 采集按需：有人连 /ws/stream 才起特权采集（收尾由服务侧空闲回收负责，
+        // 见 BlindCastForegroundService.recycleIdleCapture）。
+        StreamWsRoute.onFirstSession = {
+            appContextRef?.get()?.let {
+                com.erl.blindcast.core.service.BlindCastForegroundService.requestCapture(it)
+            }
+        }
     }
 
     /** 设置访问 Token（直通 [TokenAuthenticator]，空白即免密）。 */
@@ -188,6 +206,7 @@ object BlindCastServer {
         }
         StreamWsRoute.shutdown()
         ControlWsRoute.shutdown()
+        WidgetWsRoute.shutdown()
         actualPort = -1
     }
 
@@ -250,12 +269,26 @@ object BlindCastServer {
         return when {
             path == "/" || path == "/index.html" ->
                 serveStatic(req, output)
-            path == "/ws/stream" || path == "/ws/control" ->
+            path == "/ws/stream" || path == "/ws/control" || path == "/ws/widgets" ->
                 serveWebSocket(req, input, output, socket)
             path == "/api/auth/status" ->
                 serveJson(output, req.method, AuthRoute.handleStatus())
             path == "/api/auth/verify" ->
                 serveJson(output, req.method, AuthRoute.handleVerify(req.method, req.rawQuery, req.headers, req.body))
+            path == "/api/pair" -> {
+                // 体上限单独收紧：配对请求只是一个小 JSON，超大 body 直接当畸形处理。
+                val body = if (req.body.size > PairRoute.MAX_BODY) ByteArray(0) else req.body
+                serveJson(output, req.method, PairRoute.handlePair(req.method, body, remoteKeyOf(socket)))
+            }
+            path == "/api/clients" || path == "/api/clients/revoke" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else if (path == "/api/clients") {
+                    serveJson(output, req.method, PairRoute.handleClients(req.method))
+                } else {
+                    serveJson(output, req.method, PairRoute.handleRevoke(req.method, req.body))
+                }
+            }
             path == "/api/screen" || path == "/api/status" || path == "/api/stream" -> {
                 if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
                     serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
@@ -274,6 +307,13 @@ object BlindCastServer {
             else -> serveJson(output, req.method, 404 to """{"ok":false,"error":"not found"}""")
         }
     }
+
+    /**
+     * 退避键：取对端 IP（不带端口，同一台机器的不同源端口共享配额）。
+     * 拿不到地址时回 `"?"`（退避表会把它当同一个来源，宁可严格不可放任）。
+     */
+    private fun remoteKeyOf(socket: Socket): String =
+        runCatching { socket.inetAddress?.hostAddress ?: "?" }.getOrDefault("?")
 
     private fun serveStatic(req: HttpRequest, output: OutputStream): Boolean {
         val result = WebStaticRoutes.handle(req.method, req.path, appContextOrNull())
@@ -329,7 +369,11 @@ object BlindCastServer {
         output.flush()
         socket.soTimeout = WS_SOCKET_TIMEOUT_MS
         val conn = WsConnection(socket, input, output)
-        if (req.path == "/ws/stream") StreamWsRoute.handle(conn) else ControlWsRoute.handle(conn)
+        when (req.path) {
+            "/ws/stream" -> StreamWsRoute.handle(conn)
+            "/ws/widgets" -> WidgetWsRoute.handle(conn)
+            else -> ControlWsRoute.handle(conn)
+        }
         return true
     }
 

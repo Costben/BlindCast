@@ -52,13 +52,15 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * 常驻前台保活服务（Slice 6.1 · MVP.md 第四章 core/service）。
  *
- * ## 开关分离（HTTP 端口 vs 串流采集）
- * - HTTP 开关 = 轻量端口在线（静态页/状态 API/息屏点亮 API/WS 信令可用，
- *   不起录屏编码，省电）；串流开关 = 特权采集（录屏 + 转码推流，重耗电）。
- * - 串流开隐含 HTTP 开（先保端口再起采集）；HTTP 关则串流同关；
- *   只停串流不断端口（可继续远程息屏/点亮）。
- * - 期望态双落盘（`service_http_enabled`/`service_stream_enabled`），
- *   START_STICKY 粘性重启按盘恢复；后台重试只看本代际 + 期望态，过期自弃。
+ * ## 端口恒开 · 采集按需（开关已下线）
+ * - HTTP 端口：服务一拉起就在线（静态页/状态 API/息屏点亮 API/WS 信令/配对），
+ *   没有用户开关，也不随会话变化——它是所有远程能力的入口。
+ * - 特权采集（录屏 + 转码推流，重耗电）：**只在有人看的时候跑**。
+ *   接入方一过来就拉起（`/ws/stream` 首个会话 → [requestCapture]，
+ *   控制台首屏也会自动唤醒），最后一个会话离开 [IDLE_STOP_MS] 后
+ *   [recycleIdleCapture] 自动收掉；服务启动/粘性重启都不再主动起采集。
+ * - 期望态仍双落盘（`service_http_enabled`/`service_stream_enabled`）供
+ *   `onTaskRemoved` 与开机自启判据使用；后台重试只看本代际 + 期望态，过期自弃。
  *
  * ## FGS 类型为什么是 dataSync（Fix-FGS-1）
  * - `connectedDevice` 不可用：targetSDK=37 上以该类型起 FGS 要求
@@ -135,10 +137,11 @@ class BlindCastForegroundService : Service() {
         const val KEY_PORT = "server_port"
 
         /**
-         * 开关持久化（与 sticky 重启恢复共用，键名冻结）：
-         * - [KEY_HTTP_ENABLED] = 端口开关期望态；
-         * - [KEY_STREAM_ENABLED] = 串流采集期望态（含隐含 HTTP）。
-         * 语义：串流开必含 HTTP 开；HTTP 关必含串流关；只停串流不断端口。
+         * 服务期望态持久化（键名冻结，跨版本/开机自启判据共用）：
+         * - [KEY_HTTP_ENABLED] = 端口在线期望态，服务一拉起即恒为 true；
+         * - [KEY_STREAM_ENABLED] = 采集期望态，按需拉起时置 true、显式停串流（`/api/stream off`）后置 false；
+         *   空闲回收只停采集、不改期望态（下一个会话进来照样按需再起）。
+         * 语义：串流开必含 HTTP 开；只停串流不断端口。
          */
         const val KEY_HTTP_ENABLED = "service_http_enabled"
         const val KEY_STREAM_ENABLED = "service_stream_enabled"
@@ -148,6 +151,9 @@ class BlindCastForegroundService : Service() {
 
         /** 状态轮询间隔 2s。 */
         const val POLL_INTERVAL_MS = 2_000L
+
+        /** 空闲回收阈值：采集在跑但连续这么久没有 `/ws/stream` 会话就自动停采集（端口不动）。 */
+        const val IDLE_STOP_MS = 30_000L
 
         private val _status = MutableStateFlow(snapshot())
         val status: StateFlow<ServiceStatus> = _status.asStateFlow()
@@ -186,7 +192,7 @@ class BlindCastForegroundService : Service() {
 
         /**
          * 只开 HTTP 端口（轻量：可远程息屏/点亮，不起录屏编码；串流期望清零）。
-         * 任意线程；HTTP 开关 UI 唯一入口。
+         * 任意线程；快捷操作与开机自启入口（首页已无 HTTP 开关）。
          */
         fun startHttp(context: Context) {
             setHttpWanted(context, true)
@@ -200,7 +206,7 @@ class BlindCastForegroundService : Service() {
 
         /**
          * 开串流（含隐含 HTTP：端口先在线，再起特权采集）。
-         * 任意线程；串流开关 UI 唯一入口。
+         * 任意线程；控制台「开启投屏」与 `/api/stream` 远控入口。
          */
         fun startStreaming(context: Context) {
             setHttpWanted(context, true)
@@ -209,6 +215,24 @@ class BlindCastForegroundService : Service() {
             val intent = Intent(context, BlindCastForegroundService::class.java)
                 .setAction(ACTION_START_STREAM)
             ContextCompat.startForegroundService(context, intent)
+        }
+
+        /**
+         * 按需起采集（控制台自动唤醒 / `/ws/stream` 首个会话接入触发）。
+         *
+         * 与 [startStreaming] 只差失败姿态：本入口从服务线程或网络线程被调，
+         * 服务没在跑时 `startService` 会撞后台启动限制，静默放弃即可——
+         * 端口都不在线，也就不存在「有人接入」这回事。
+         */
+        fun requestCapture(context: Context) {
+            runCatching {
+                setHttpWanted(context, true)
+                setStreamWanted(context, true)
+                streamWanted = true
+                val intent = Intent(context, BlindCastForegroundService::class.java)
+                    .setAction(ACTION_START_STREAM)
+                context.startService(intent)
+            }
         }
 
         /**
@@ -227,12 +251,6 @@ class BlindCastForegroundService : Service() {
                 .setAction(ACTION_STOP_STREAM)
             context.startService(intent)
         }
-
-        /** 读 HTTP 期望态（缺键默认 false；服务被显式拉起即视为 true）。 */
-        private fun readHttpWanted(context: Context): Boolean = runCatching {
-            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getBoolean(KEY_HTTP_ENABLED, false)
-        }.getOrDefault(false)
 
         private fun readStreamWanted(context: Context): Boolean = runCatching {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -358,6 +376,14 @@ class BlindCastForegroundService : Service() {
     private var captureActive = false
     private var captureJob: kotlinx.coroutines.Job? = null
 
+    /**
+     * 最近一次观测到「有人在看」的时刻（[recycleIdleCapture] 用）。
+     * 起采集时先刷新一次，保证刚起的采集至少活过 [IDLE_STOP_MS]，
+     * 不会因为「首帧还没出就被判空闲」而自停。
+     */
+    @Volatile
+    private var lastSessionSeenAt = 0L
+
     // ScreenSync-1：手动电源键同步（广播为主 + DisplayListener 兜底 Doze 过渡）。
     // binder 熄屏是 SF 级断电、DM 恒报 ON，故此处只处理系统广播的真实亮灭，
     // 不用 DisplayManager.getState() 直接覆盖缓存（会把真黑误报成亮）。
@@ -388,25 +414,16 @@ class BlindCastForegroundService : Service() {
         }
         runCatching { acquireLocks() }
         runCatching { registerScreenStateSync() }
-        // 开关分离：onCreate 按持久化期望恢复（HTTP 与串流独立）。
-        // 公开 start* 入口均先落盘后发 intent，故此处读盘即得本次期望；
-        // 双盘皆空视为未知拉起，兼容旧行为默认全开并落盘。
+        // 开关已下线：HTTP 端口恒开——服务一拉起端口就在线（远程息屏/点亮、配对、控制台都靠它）。
+        // 采集不再随服务启动：由接入方按需拉起（[requestCapture]），
+        // 无会话持续 [IDLE_STOP_MS] 后由 [recycleIdleCapture] 自动收掉。
+        // 服务重建时可能残留上一轮的采集（如 root 常驻 daemon），同样交给空闲回收处理。
+        setHttpWanted(this, true)
         streamWanted = readStreamWanted(this)
-        var httpWanted = readHttpWanted(this)
-        if (!httpWanted && !streamWanted) {
-            httpWanted = true
-            streamWanted = true
-            setHttpWanted(this, true)
-            setStreamWanted(this, true)
-        }
+        captureActive = false
+        lastSessionSeenAt = System.currentTimeMillis()
         try {
-            if (httpWanted) ensureServerStarted()
-            if (streamWanted) {
-                ensureCaptureStarted()
-            } else {
-                runCatching { stopPrivilegedCapture() }
-                captureActive = false
-            }
+            ensureServerStarted()
             ensureInputDaemon()
             syncKeeper()
             _status.value = snapshot()
@@ -424,6 +441,7 @@ class BlindCastForegroundService : Service() {
         scope.launch {
             while (isActive) {
                 _status.value = snapshot()
+                recycleIdleCapture()
                 delay(POLL_INTERVAL_MS)
             }
         }
@@ -530,16 +548,13 @@ class BlindCastForegroundService : Service() {
                 }
             }
             else -> {
-                // 粘性重启（系统杀死后拉起，action=null）与未知 action：按持久化期望恢复。
+                // 粘性重启（系统杀死后拉起，action=null）与未知 action：只恢复 HTTP 端口；
+                // 采集一律不在这里起，等接入方按需拉起（按需语义，见 [requestCapture]）。
                 streamWanted = readStreamWanted(this)
-                val httpWanted = readHttpWanted(this) || streamWanted
                 return try {
-                    if (httpWanted && !BlindCastServer.isRunning) ensureServerStarted()
-                    if (streamWanted && BlindCastServer.isRunning) ensureCaptureStarted()
-                    if (BlindCastServer.isRunning) {
-                        ensureInputDaemon()
-                        syncKeeper()
-                    }
+                    if (!BlindCastServer.isRunning) ensureServerStarted()
+                    ensureInputDaemon()
+                    syncKeeper()
                     _status.value = snapshot()
                     START_STICKY
                 } catch (se: SecurityException) {
@@ -786,11 +801,35 @@ class BlindCastForegroundService : Service() {
     }
 
     /**
+     * 空闲回收：采集在跑但连续 [IDLE_STOP_MS] 没有 `/ws/stream` 会话，就把采集停掉。
+     *
+     * 开关下线后的默认形态是「端口恒开 · 采集按需」：有人看才录屏，没人看就收掉，
+     * 免得挂机时白白编码耗电。只停采集，HTTP / 输入守护 / 小部件一律不动；
+     * 显式停（[ACTION_STOP_STREAM]）仍走原路径，本回收只覆盖「没人看」这一种。
+     * 这里不做自动重开——重开是接入方的事（[requestCapture] / 控制台唤醒），
+     * 否则会跟控制台的「停止投屏」打架。
+     */
+    private fun recycleIdleCapture() {
+        val now = System.currentTimeMillis()
+        if (StreamWsRoute.sessionCount > 0) {
+            lastSessionSeenAt = now
+            return
+        }
+        // 采集可能不是本实例起的（服务重建时残留的 root 常驻 daemon），故用链路实际态判据。
+        if (!captureActive && !CaptureSocketLink.isRunning && !CaptureSocketLink.hasVideo) return
+        val idleMs = now - lastSessionSeenAt
+        if (idleMs < IDLE_STOP_MS) return
+        Log.i(TAG, "[CaptureRoute] idle ${idleMs}ms without stream client, stop capture (port stays up)")
+        stopCaptureAsync()
+    }
+
+    /**
      * 起串流采集（主线程调用，幂等）。
      * [captureActive]/链路运行中重复进入直接返回，避免同代际双任务抢绑；
      * 停串流由 [captureGen] 自增 + [stopPrivilegedCapture] 使旧任务自弃。
      */
     private fun ensureCaptureStarted() {
+        lastSessionSeenAt = System.currentTimeMillis()
         if (CaptureSocketLink.isRunning && CaptureSocketLink.hasVideo) {
             Log.i(TAG, "[CaptureRoute] ensureCapture skipped (already streaming)")
             return
