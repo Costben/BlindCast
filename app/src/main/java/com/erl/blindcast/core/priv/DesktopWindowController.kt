@@ -152,7 +152,9 @@ object DesktopWindowController {
             reconcileLocked()
             entries.values.sortedBy { it.windowId }.toList()
         }
-        return snapshot.map { it.toInfo(taskIdOf(it.displayId)) }
+        // 批量取各窗任务 id：单次抓取，避免逐窗 shell/dumpsys（前端 1.5s 轮询下的主要延迟来源）。
+        val taskIds = DesktopTaskController.firstTaskIdsFor(snapshot.map { it.displayId })
+        return snapshot.map { it.toInfo(taskIds[it.displayId] ?: -1) }
     }
 
     /**
@@ -370,6 +372,13 @@ object DesktopWindowController {
         val live = runCatching {
             Shell.cmd("ls -1 $RUN_DIR/${FILE_PREFIX}*.stop.status 2>/dev/null").exec()
         }.getOrNull()?.out?.map { it.trim() }?.filter { it.startsWith("/") } ?: emptyList()
+        // 一次读出所有存活窗口宿主的 windowId（argv 末位）。逐窗 pgrep 是 O(N) 次 shell spawn，
+        // 在 1.5s 轮询下会堆积成十几秒延迟；这里把对账的进程存活判定降为常数次 shell。
+        val alive = runCatching {
+            Shell.cmd("for p in \$(pgrep -f 'FusionDesktopMain window'); do tr '\\0' ' ' < /proc/\$p/cmdline; echo; done").exec()
+        }.getOrNull()?.out?.mapNotNull { line ->
+            line.trim().split(' ').lastOrNull()?.trim()?.toIntOrNull()
+        }?.filter { it in 1..255 }?.toSet() ?: emptySet()
         val liveIds = mutableSetOf<Int>()
         for (path in live) {
             val wid = Regex("""${FILE_PREFIX}(\d+)\.stop\.status""").find(path)?.groupValues?.get(1)?.toIntOrNull()
@@ -378,7 +387,7 @@ object DesktopWindowController {
             // 状态文件是唯一真源，但「文件说 running」不等于「宿主还活着」：
             // App 换进程 / 宿主崩溃后文件会残留。故加进程存活判定，死了就当陈旧清掉，不纳管。
             val stopPath = path.removeSuffix(".status")
-            if (m["state"] != "running" || !hostAlive(wid)) {
+            if (m["state"] != "running" || wid !in alive) {
                 runCatching { Shell.cmd("rm -f $path $stopPath $stopPath.sync").exec() }
                 continue
             }

@@ -96,6 +96,31 @@ object DesktopTaskController {
     }
 
     /**
+     * 批量取一组虚拟屏各自的首个任务 id（单次抓取，避免每屏一次 shell/dumpsys）。
+     *
+     * [DesktopWindowController.list] 里逐窗口调用 [listTasks] 会 O(N) 次 shell spawn，实测 3 窗时
+     * `GET /api/desktop/windows` 达 16s，而前端以 1.5s 轮询 → 请求堆积、窗口 UI 抖动。这里优先走
+     * binder（无 shell）；任一屏 binder 不可用则**一次**抓取 `dumpsys activity activities` 文本，
+     * 再对各屏做内存解析。语义与 [listTasks] 一致（排除 FusionHomeActivity 的自家任务）。
+     */
+    fun firstTaskIdsFor(displayIds: Collection<Int>): Map<Int, Int> {
+        val want = displayIds.filter { it > 0 }.distinct()
+        if (want.isEmpty()) return emptyMap()
+        val viaBinder = HashMap<Int, Int>()
+        var binderOk = true
+        for (d in want) {
+            val t = runCatching { listTasksViaBinder(d) }.getOrNull()
+            if (t == null) { binderOk = false; break }
+            viaBinder[d] = t.firstOrNull { it.displayId == d }?.taskId ?: -1
+        }
+        if (binderOk) return viaBinder
+        val raw = runCatching { runBlocking { PrivilegedBridge.dumpActivities() } }.getOrNull()
+        val lines = if (!raw.isNullOrBlank()) raw.lines() else Shell.cmd("dumpsys activity activities").exec().out
+        if (lines.isEmpty()) return want.associateWith { -1 }
+        return want.associateWith { d -> parseDumpsysActivities(lines, d).firstOrNull()?.taskId ?: -1 }
+    }
+
+    /**
      * 切换/恢复任务到目标副屏前台。
      *
      * 强安全校验：
