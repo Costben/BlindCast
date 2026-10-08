@@ -16,3 +16,5 @@ MVP.md
 PASEO_AUTONOMOUS_ORCHESTRATOR_PLAYBOOK.md
 bltest.png
 *.png.bak
+# 逆向样本（第三方闭源 APK 组合包）不入库
+*.apks
