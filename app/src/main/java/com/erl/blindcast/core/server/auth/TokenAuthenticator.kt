@@ -7,11 +7,24 @@ import java.security.MessageDigest
  * Token 鉴权拦截器（Slice 4.1 · MVP.md 二(5) + 四(二)(4)）。
  *
  * ## 语义（铁线）
- * - Token 留空（空串 / 全空白归一为空）→ 免密直通，所有请求直接放行；
- * - 设置密码后 → 校验请求携带的 Token：
- *   1. 查询串 `?token=xxx`（HA 设备链接预埋免密秒进即走此通道）；
- *   2. `Authorization` 请求头（`Bearer xxx` 或裸 Token 二者兼容）；
- * - 任一通道命中即放行；缺失 / 失配 → 401（由 [BlindCastServer] 统一回包）。
+ * - **免密直通**：Token 留空（空串 / 全空白归一为空）**且**没有任何有效配对凭据
+ *   （[CredentialStore.hasActive]）→ 所有请求直接放行；
+ * - 设置密码后 → 校验请求携带的 Token，两条通道任一命中即放行：
+ *   1. 与 master token 常量时间相等（[token]）；
+ *   2. 命中 [CredentialStore] 里某条未吊销的配对凭据；
+ * - Token 提取优先级：查询串 `?token=xxx`（HA 设备链接预埋免密秒进即走此通道）
+ *   → `Authorization` 请求头（`Bearer xxx` 或裸 Token 二者兼容）；
+ * - 缺失 / 失配 → 401（由 [BlindCastServer] 统一回包）。
+ *
+ * ## Phase A 变更：从单 Token 到「master + 多凭据」
+ * 原先只有一个全局 Token：改一次全体掉线、无法单独吊销、也认不出是哪台设备。
+ * 现在并入了配对凭据表（每设备一条，可单独吊销，落盘只存 SHA-256）。
+ * 语义上 master token 仍是「总钥匙」，配对凭据是「各设备的独立钥匙」，
+ * 两者权限等价，但后者可逐条吊销。
+ *
+ * 注意 [isAuthRequired] 的新语义：**一旦存在有效配对凭据，鉴权即自动生效**，
+ * 即使 master token 为空。这是「配对即开启鉴权」的直接体现，也是防止
+ * 未来危险能力（文件系统 / 终端）在局域网裸奔的前提。
  *
  * ## 线程模型
  * - [token] 为 `@Volatile`，设置页（Slice 6.2）与服务线程可任意时刻读写；
@@ -40,8 +53,11 @@ object TokenAuthenticator {
         token = if (value.isBlank()) "" else value
     }
 
-    /** 是否要求鉴权（Token 非空即要求）。 */
-    fun isAuthRequired(): Boolean = token.isNotEmpty()
+    /**
+     * 是否要求鉴权。
+     * master token 非空 **或** 存在有效配对凭据（Phase A 变更，见类注释）。
+     */
+    fun isAuthRequired(): Boolean = token.isNotEmpty() || CredentialStore.hasActive()
 
     /**
      * 从查询串 + 请求头中提取调用方携带的 Token（无则 null）。
@@ -65,16 +81,22 @@ object TokenAuthenticator {
 
     /**
      * 鉴权判定（供 HTTP 路由与 WebSocket 升级前调用）。
-     * 免密模式直接 true；设密后任一通道命中即 true。
+     *
+     * 免密直通（master 为空且无有效凭据）直接 true；
+     * 否则先比 master token，再查配对凭据表 —— 任一命中即 true。
      */
     fun isAuthorized(rawQuery: String?, headers: Map<String, String>): Boolean {
         val expected = token
-        if (expected.isEmpty()) return true
+        if (expected.isEmpty() && !CredentialStore.hasActive()) return true
         val actual = extractToken(rawQuery, headers) ?: return false
-        return MessageDigest.isEqual(
-            actual.toByteArray(Charsets.UTF_8),
-            expected.toByteArray(Charsets.UTF_8),
-        )
+        if (expected.isNotEmpty() && MessageDigest.isEqual(
+                actual.toByteArray(Charsets.UTF_8),
+                expected.toByteArray(Charsets.UTF_8),
+            )
+        ) {
+            return true
+        }
+        return CredentialStore.verify(actual) != null
     }
 
     /**

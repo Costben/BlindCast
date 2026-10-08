@@ -65,12 +65,6 @@
     <string name="blindcast_home_stats_idle" translatable="false">帧率 — | 码率 — | 在线 %1$d 人 | Token保护：%2$s</string>
     <string name="blindcast_home_token_on" translatable="false">开启</string>
     <string name="blindcast_home_token_off" translatable="false">关闭</string>
-    <string name="blindcast_home_service_switch" translatable="false">串流后台总服务</string>
-    <string name="blindcast_home_service_switch_summary" translatable="false">一键启动 / 关闭录屏编码与 HTTP 监听服务</string>
-    <string name="blindcast_home_http_switch" translatable="false">HTTP 端口服务</string>
-    <string name="blindcast_home_http_switch_summary" translatable="false">只开端口：可远程息屏 / 点亮，不录屏不转码</string>
-    <string name="blindcast_home_stream_switch" translatable="false">串流采集服务</string>
-    <string name="blindcast_home_stream_switch_summary" translatable="false">开启录屏编码与推流（会自动打开 HTTP 端口）</string>
     <string name="blindcast_home_blackout_summary" translatable="false">彻底关闭物理屏幕，进入极致省电无感前台挂机</string>
     <string name="blindcast_home_restore_summary" translatable="false">恢复屏幕显示（亦支持按两次物理电源键唤醒）</string>
     <string name="blindcast_home_screen_off" translatable="false">屏幕：已熄屏</string>
@@ -212,4 +206,33 @@
     <string name="settings_floating_bottom_bar_summary">Use Apple style floating bottom bar.</string>
     <string name="settings_enable_glass">Liquid glass</string>
     <string name="settings_enable_glass_summary">Enable liquid glass effect for floating bottom bar.</string>
+    <!-- BlindCast Phase A: 配对鉴权（配对码 + 已配对设备管理）文案 -->
+    <string name="blindcast_pairing_title" translatable="false">配对与设备</string>
+    <string name="blindcast_pairing_generate" translatable="false">生成配对码</string>
+    <string name="blindcast_pairing_generate_hint" translatable="false">生成后，在浏览器里输入这个码即可配对该设备。生成的码 5 分钟内有效，用过一次即失效。</string>
+    <string name="blindcast_pairing_master_hint" translatable="false">首次生成会自动设置一个访问口令（可在设置页查看/修改），此后访问需要凭据。</string>
+    <string name="blindcast_pairing_remaining" translatable="false">剩余 %1$s</string>
+    <string name="blindcast_pairing_copy" translatable="false">复制码</string>
+    <string name="blindcast_pairing_refresh" translatable="false">刷新</string>
+    <string name="blindcast_pairing_copied" translatable="false">已复制到剪贴板</string>
+    <string name="blindcast_pairing_qr_hint" translatable="false">扫码直达配对页（需同一局域网）</string>
+    <string name="blindcast_pairing_devices_title" translatable="false">已配对设备</string>
+    <string name="blindcast_pairing_devices_active" translatable="false">有效 %1$d 台</string>
+    <string name="blindcast_pairing_devices_empty" translatable="false">还没有设备配对</string>
+    <string name="blindcast_pairing_device_unnamed" translatable="false">未命名设备</string>
+    <string name="blindcast_pairing_added_via_pairing" translatable="false">配对码</string>
+    <!-- 两行分开写：单行太窄，中文换行会把「分钟前」拆成孤行 -->
+    <string name="blindcast_pairing_device_meta" translatable="false">%1$s · 创建于 %2$s\n最近活跃 %3$s</string>
+    <string name="blindcast_pairing_revoke" translatable="false">吊销</string>
+    <string name="blindcast_pairing_revoked" translatable="false">已吊销</string>
+    <string name="blindcast_pairing_revoke_all" translatable="false">全部吊销</string>
+    <string name="blindcast_pairing_revoke_all_confirm_title" translatable="false">吊销全部设备？</string>
+    <string name="blindcast_pairing_revoke_all_confirm_text" translatable="false">所有已配对浏览器将立即失去访问权限，需重新配对才能接入，此操作不可撤销。</string>
+    <string name="blindcast_pairing_cancel" translatable="false">取消</string>
+    <string name="blindcast_pairing_time_just_now" translatable="false">刚刚</string>
+    <string name="blindcast_pairing_time_minutes" translatable="false">%1$d 分钟前</string>
+    <string name="blindcast_pairing_time_hours" translatable="false">%1$d 小时前</string>
+    <string name="blindcast_pairing_time_days" translatable="false">%1$d 天前</string>
+    <string name="blindcast_pairing_home_summary" translatable="false">配对码 %1$s · 剩余 %2$s</string>
+    <string name="blindcast_pairing_home_subtitle" translatable="false">生成配对码，让浏览器安全接入</string>
     </resources>

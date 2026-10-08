@@ -1,5 +1,7 @@
 package com.erl.blindcast.ui.screen.home
 
+import android.content.Intent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,12 +15,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarScrollBehavior
@@ -28,11 +32,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.erl.blindcast.R
 import com.erl.blindcast.ui.component.material.TonalCard
+import com.erl.blindcast.ui.screen.pairing.PairingActivity
 
 @Composable
 fun HomePagerMaterial(
@@ -66,8 +72,6 @@ fun HomePagerMaterial(
                 privResult = state.privResult,
                 onBlackout = actions.onBlackout,
                 onRestore = actions.onRestore,
-                onToggleHttp = actions.onToggleHttp,
-                onToggleStreaming = actions.onToggleStreaming,
             )
             LanCard(
                 lan = state.lan,
@@ -158,8 +162,6 @@ private fun ActionsCard(
     privResult: String? = null,
     onBlackout: () -> Unit,
     onRestore: () -> Unit,
-    onToggleHttp: (Boolean) -> Unit,
-    onToggleStreaming: (Boolean) -> Unit,
 ) {
     val screenSummary = if (service.blackedOut) {
         stringResource(R.string.blindcast_home_screen_off)
@@ -174,42 +176,6 @@ private fun ActionsCard(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.blindcast_home_http_switch),
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Text(
-                        text = stringResource(R.string.blindcast_home_http_switch_summary),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline,
-                    )
-                }
-                Switch(checked = service.isRunning, onCheckedChange = onToggleHttp)
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.blindcast_home_stream_switch),
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Text(
-                        text = stringResource(R.string.blindcast_home_stream_switch_summary),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline,
-                    )
-                }
-                Switch(checked = service.isStreaming, onCheckedChange = onToggleStreaming)
-            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onClick = onBlackout, modifier = Modifier.weight(1f)) {
                     Text(stringResource(R.string.blindcast_home_action_start))
@@ -233,6 +199,7 @@ private fun LanCard(
     onCopyLanUrl: (String) -> Unit,
     onOpenUrl: (String) -> Unit,
 ) {
+    val context = LocalContext.current
     TonalCard {
         Column(
             modifier = Modifier
@@ -282,6 +249,31 @@ private fun LanCard(
                     text = stringResource(R.string.blindcast_home_qr_title),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline,
+                )
+            }
+            // Phase A：配对与设备入口（生成配对码 / 吊销已配对浏览器），置于卡片末尾。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { context.startActivity(Intent(context, PairingActivity::class.java)) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.blindcast_pairing_title),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        text = pairingEntrySummary(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.outline,
                 )
             }
         }

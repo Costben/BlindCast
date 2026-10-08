@@ -1,5 +1,6 @@
 package com.erl.blindcast.ui.screen.home
 
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,12 +27,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.erl.blindcast.R
+import com.erl.blindcast.ui.screen.pairing.PairingActivity
 import com.erl.blindcast.ui.theme.LocalEnableBlur
 import com.erl.blindcast.ui.util.BlurredBar
 import com.erl.blindcast.ui.util.rememberBlurBackdrop
@@ -46,7 +49,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.blur.LayerBackdrop
 import top.yukonga.miuix.kmp.blur.layerBackdrop
-import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
@@ -102,8 +104,6 @@ fun HomePagerMiuix(
                             privResult = state.privResult,
                             onBlackout = actions.onBlackout,
                             onRestore = actions.onRestore,
-                            onToggleHttp = actions.onToggleHttp,
-                            onToggleStreaming = actions.onToggleStreaming,
                         )
                         BlindCastLanCard(
                             lan = state.lan,
@@ -246,8 +246,6 @@ private fun BlindCastActionsCard(
     privResult: String? = null,
     onBlackout: () -> Unit,
     onRestore: () -> Unit,
-    onToggleHttp: (Boolean) -> Unit,
-    onToggleStreaming: (Boolean) -> Unit,
 ) {
     val screenSummary = if (service.blackedOut) {
         stringResource(R.string.blindcast_home_screen_off)
@@ -266,18 +264,6 @@ private fun BlindCastActionsCard(
             summary = "${stringResource(R.string.blindcast_home_restore_summary)} · $screenSummary",
             onClick = onRestore,
         )
-        SwitchPreference(
-            title = stringResource(R.string.blindcast_home_http_switch),
-            summary = stringResource(R.string.blindcast_home_http_switch_summary),
-            checked = service.isRunning,
-            onCheckedChange = onToggleHttp,
-        )
-        SwitchPreference(
-            title = stringResource(R.string.blindcast_home_stream_switch),
-            summary = stringResource(R.string.blindcast_home_stream_switch_summary),
-            checked = service.isStreaming,
-            onCheckedChange = onToggleStreaming,
-        )
     }
 }
 
@@ -287,6 +273,7 @@ private fun BlindCastLanCard(
     onCopyLanUrl: (String) -> Unit,
     onOpenUrl: (String) -> Unit,
 ) {
+    val context = LocalContext.current
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
@@ -342,6 +329,14 @@ private fun BlindCastLanCard(
                     modifier = Modifier.padding(16.dp),
                 )
             }
+            // Phase A：配对与设备入口（生成配对码 / 吊销已配对浏览器），置于卡片末尾。
+            BasicComponent(
+                title = stringResource(R.string.blindcast_pairing_title),
+                summary = pairingEntrySummary(),
+                onClick = {
+                    context.startActivity(Intent(context, PairingActivity::class.java))
+                },
+            )
         }
     }
 }

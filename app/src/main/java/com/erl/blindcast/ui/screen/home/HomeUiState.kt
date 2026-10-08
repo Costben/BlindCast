@@ -67,10 +67,7 @@ data class HomeActions(
     val onPermissionsClick: () -> Unit,
     val onOpenUrl: (String) -> Unit,
     // Slice 6.1 快捷操作（由 HomeScreen 接入 HomeViewModel / 剪贴板）。
-    val onToggleService: (Boolean) -> Unit = {},
-    // 开关分离：HTTP 端口（轻量）与串流采集（重耗电）独立。
-    val onToggleHttp: (Boolean) -> Unit = {},
-    val onToggleStreaming: (Boolean) -> Unit = {},
+    // 服务开关已下线：端口恒开、采集按需，首页不再有任何开关回调。
     val onBlackout: () -> Unit = {},
     val onRestore: () -> Unit = {},
     val onCopyLanUrl: (String) -> Unit = {},

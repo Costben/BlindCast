@@ -64,9 +64,6 @@ fun HomePager(
     val actions = HomeActions(
         onPermissionsClick = { navigator.push(Route.Permissions) },
         onOpenUrl = uriHandler::openUri,
-        onToggleService = viewModel::toggleService,
-        onToggleHttp = viewModel::toggleHttp,
-        onToggleStreaming = viewModel::toggleStreaming,
         onBlackout = viewModel::blackoutNow,
         onRestore = viewModel::restoreScreen,
         onCopyLanUrl = { url ->

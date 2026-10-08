@@ -80,6 +80,24 @@
             </intent-filter>
         </activity>
 
+        <!-- Desktop-Widget-1 桌面小部件绑定入口：把桌面小部件交给 BlindCast 渲染前，
+             必须由用户在此授权一次（ACTION_APPWIDGET_BIND 系统弹窗，无法静默完成）。
+             exported=true 供 adb 直达（am start -n com.erl.blindcast/.core.widget.WidgetPickerActivity），
+             接入应用内设置页入口后可收紧为 false。 -->
+        <activity
+            android:name=".core.widget.WidgetPickerActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.BlindCast" />
+
+        <!-- Phase A 配对与设备管理页：生成配对码 / 查看与吊销已配对凭据。
+             仅应用内入口（首页局域网卡片）可达，故 exported=false。 -->
+        <activity
+            android:name=".ui.screen.pairing.PairingActivity"
+            android:exported="false"
+            android:label="@string/blindcast_pairing_title"
+            android:theme="@style/Theme.BlindCast" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
