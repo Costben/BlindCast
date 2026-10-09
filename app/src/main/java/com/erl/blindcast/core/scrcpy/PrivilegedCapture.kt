@@ -708,7 +708,7 @@ object PrivilegedCapture {
                 densityDpi = desktopDensityDpi,
                 flags = desktopFlags,
                 home = desktopHome,
-                ime = null,
+                ime = android.content.ComponentName("com.erl.blindcast", "com.erl.blindcast.core.input.FusionInputMethodService"),
                 surface = surface,
             )
             if (!ok) {

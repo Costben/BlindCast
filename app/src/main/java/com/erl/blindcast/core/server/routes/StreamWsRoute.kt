@@ -47,6 +47,9 @@ object StreamWsRoute {
     /** 音频通道头（AAC 裸帧）。 */
     const val KIND_AUDIO: Byte = 0x02
 
+    /** Original-panel PCM16LE: sampleRate:u32, channels:u32, ptsUs:u64, samples. */
+    const val KIND_PCM_AUDIO: Byte = 0x04
+
     /**
      * JPEG 通道头（Universal-1 · 无 WebCodecs 降级，`[0x03+4字节大端长+JPEG]`）。
      * 前端 `typeof VideoDecoder==="undefined"` 时订阅本通道，
@@ -110,6 +113,13 @@ object StreamWsRoute {
         private val lock = java.lang.Object()
         private val videoQueue = ArrayDeque<ByteArray>()
         private val audioQueue = ArrayDeque<ByteArray>()
+        private val pcmQueue = ArrayDeque<ByteArray>()
+        @Volatile var pcmEnabled = false
+
+        fun enablePcm(enabled: Boolean) = synchronized(lock) {
+            pcmEnabled = enabled
+            if (!enabled) pcmQueue.clear()
+        }
         private val jpegQueue = ArrayDeque<ByteArray>()
 
         /**
@@ -155,6 +165,7 @@ object StreamWsRoute {
             var wantSync = -1
             synchronized(lock) {
                 if (closed) return
+                if (kind == KIND_PCM_AUDIO && !pcmEnabled) return
                 if (kind == StreamWsRoute.KIND_WINDOW_VIDEO) {
                     if (payload.isEmpty()) return
                     val wid = payload[0].toInt() and 0xFF
@@ -178,6 +189,7 @@ object StreamWsRoute {
                     val queue = when (kind) {
                         StreamWsRoute.KIND_VIDEO -> videoQueue
                         StreamWsRoute.KIND_AUDIO -> audioQueue
+                        StreamWsRoute.KIND_PCM_AUDIO -> pcmQueue
                         else -> jpegQueue
                     }
                     if (kind == StreamWsRoute.KIND_VIDEO) {
@@ -235,7 +247,7 @@ object StreamWsRoute {
         fun poll(): QueuedFrame? {
             synchronized(lock) {
                 while (videoQueue.isEmpty() && winQueues.values.all { it.isEmpty() } &&
-                    audioQueue.isEmpty() && jpegQueue.isEmpty() && !closed
+                    audioQueue.isEmpty() && pcmQueue.isEmpty() && jpegQueue.isEmpty() && !closed
                 ) {
                     try {
                         lock.wait(WRITER_WAIT_MS)
@@ -253,6 +265,7 @@ object StreamWsRoute {
                     return QueuedFrame(StreamWsRoute.KIND_WINDOW_VIDEO, f)
                 }
                 if (audioQueue.isNotEmpty()) return QueuedFrame(StreamWsRoute.KIND_AUDIO, audioQueue.removeFirst())
+                if (pcmQueue.isNotEmpty()) return QueuedFrame(StreamWsRoute.KIND_PCM_AUDIO, pcmQueue.removeFirst())
                 if (jpegQueue.isNotEmpty()) return QueuedFrame(StreamWsRoute.KIND_JPEG, jpegQueue.removeFirst())
                 return null
             }
@@ -296,6 +309,7 @@ object StreamWsRoute {
                 videoQueue.clear()
                 winQueues.clear()
                 audioQueue.clear()
+                pcmQueue.clear()
                 jpegQueue.clear()
                 lock.notifyAll()
             }
@@ -303,7 +317,7 @@ object StreamWsRoute {
 
         private fun capOf(kind: Byte): Int = when (kind) {
             StreamWsRoute.KIND_VIDEO -> VIDEO_QUEUE_CAP
-            StreamWsRoute.KIND_AUDIO -> AUDIO_QUEUE_CAP
+            StreamWsRoute.KIND_AUDIO, StreamWsRoute.KIND_PCM_AUDIO -> AUDIO_QUEUE_CAP
             StreamWsRoute.KIND_WINDOW_VIDEO -> WINDOW_QUEUE_CAP
             else -> JPEG_QUEUE_CAP
         }
@@ -413,8 +427,13 @@ object StreamWsRoute {
             runCatching { onSessionAttached?.invoke() }
             while (conn.isOpen && pumpRunning) {
                 try {
-                    if (conn.receive() == null) break
-                    // 推流通道忽略上行业务数据（读循环只为处理 Ping/Close）。
+                    val frame = conn.receive() ?: break
+                    if (frame.isText) {
+                        val request = runCatching { org.json.JSONObject(frame.text()) }.getOrNull()
+                        if (request?.optString("type") == "pcmAudio") {
+                            session.enablePcm(request.optBoolean("enabled"))
+                        }
+                    }
                 } catch (_: SocketTimeoutException) {
                     continue
                 } catch (_: Exception) {
@@ -501,7 +520,8 @@ object StreamWsRoute {
     }
 
     private fun audioLoop() {
-        while (pumpRunning && !Thread.currentThread().isInterrupted) {
+        val decoder = com.erl.blindcast.core.scrcpy.PcmAudioDecoder()
+        try { while (pumpRunning && !Thread.currentThread().isInterrupted) {
             if (sessions.isEmpty()) {
                 sleep(NO_SESSION_IDLE_MS)
                 continue
@@ -512,7 +532,11 @@ object StreamWsRoute {
                 continue
             }
             broadcast(KIND_AUDIO, pkt.payload)
-        }
+            if (sessions.any { it.pcmEnabled }) {
+                runCatching { decoder.decode(pkt) { broadcast(KIND_PCM_AUDIO, it) } }
+                    .onFailure { decoder.close(); Log.w(TAG, "PCM decode failed", it) }
+            } else decoder.close()
+        } } finally { decoder.close() }
     }
 
     /** 当前采集尺寸标签（"WxH"；停采为 "-1x-1"）——缓存关键帧按它判是否过期。 */
@@ -650,6 +674,7 @@ object StreamWsRoute {
 
     private const val HELLO_JSON =
         """{"type":"hello","video":{"mime":"video/avc","kind":1,"format":"annexb"},""" +
+            """"pcmAudio":{"mime":"audio/pcm","kind":4,"format":"rate+channels+pts+pcm16le"},""" +
             """"jpeg":{"mime":"image/jpeg","kind":3,"format":"jpeg"},""" +
             """"window":{"mime":"video/avc","kind":17,"format":"annexb+wid"}}"""
 

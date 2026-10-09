@@ -85,7 +85,7 @@ object DesktopController {
     }
 
     /** 逐屏夜间模式结果。 */
-    data class NightResult(val ok: Boolean, val on: Boolean, val displayId: Int, val error: String)
+    data class NightResult(val ok: Boolean, val on: Boolean?, val displayId: Int, val error: String)
 
     /**
      * 设置**桌面虚拟屏**的夜间模式（原版 `display-night-mode` 的逐屏实现，Display-Api）。
@@ -98,8 +98,12 @@ object DesktopController {
      */
     fun setNightMode(on: Boolean): NightResult = serialized {
         val st = status()
-        if (!st.running) return@serialized NightResult(false, on, -1, "桌面未运行")
-        val stop = stopFile()
+        if (!st.running) return@serialized NightResult(false, null, -1, "桌面未运行")
+        applyNightMode(stopFile(), st.displayId, on)
+    }
+
+    /** Caller holds its own display lifecycle lock until the host acknowledges. */
+    internal fun applyNightMode(stop: String, displayId: Int, on: Boolean): NightResult {
         val cmdFile = "$stop.uimode"
         val stateFile = "$stop.uimode.state"
         runCatching { Shell.cmd("rm -f $stateFile").exec() }
@@ -112,12 +116,12 @@ object DesktopController {
                 .getOrNull()?.out?.joinToString("\n").orEmpty()
             if (txt.contains("ok=")) {
                 val ok = txt.contains("ok=1")
-                Log.i(TAG, "[setNightMode] on=$on ok=$ok displayId=${st.displayId} after=${waited}ms")
-                return@serialized NightResult(ok, on, st.displayId, if (ok) "" else "setDisplayUiMode 失败")
+                Log.i(TAG, "[setNightMode] on=$on ok=$ok displayId=$displayId after=${waited}ms")
+                return NightResult(ok, if (ok) on else null, displayId, if (ok) "" else "setDisplayUiMode 失败")
             }
         }
-        Log.w(TAG, "[setNightMode] timeout on=$on displayId=${st.displayId}")
-        NightResult(false, on, st.displayId, "宿主 5s 内未回写 uimode 结果")
+        Log.w(TAG, "[setNightMode] timeout on=$on displayId=$displayId")
+        return NightResult(false, null, displayId, "宿主 5s 内未回写 uimode 结果")
     }
 
     /** 状态快照（对应 `GET /api/desktop`）。 */
@@ -366,11 +370,9 @@ object DesktopController {
     fun nightModeState(): Boolean? {
         val txt = runCatching { Shell.cmd("cat ${stopFile()}.uimode.state 2>/dev/null").exec() }
             .getOrNull()?.out?.joinToString("\n").orEmpty()
-        if (!txt.contains("on=")) return null
-        // 只有宿主确认 setDisplayUiMode 成功（ok=1）才认为夜间模式真的生效；
-        // 否则回上一次的稳定态 false，避免把「请求态」当成「生效态」误报。
-        val applied = txt.contains("ok=1")
-        return applied && txt.contains("on=1")
+        // A failed or missing acknowledgment does not establish the actual mode.
+        if (!txt.contains("on=") || !txt.contains("ok=1")) return null
+        return txt.contains("on=1")
     }
 
     /** 一句话状态（日志/控制台用）。 */

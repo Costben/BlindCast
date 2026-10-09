@@ -472,8 +472,10 @@ object VirtualDeviceBridge {
             val ok = runCatching {
                 val f = d.cls.getDeclaredField(fieldName).apply { isAccessible = true }
                 val ivd = f.get(d.instance) ?: return@runCatching false
-                ivd.javaClass.getMethod("setDisplayUiMode", Integer.TYPE, Integer.TYPE)
-                    .invoke(ivd, displayId, uiMode)
+                // Android 16 wraps IVirtualDevice in VirtualDeviceInternal. Its
+                // forwarding method is package-private, so getMethod misses it.
+                ivd.javaClass.getDeclaredMethod("setDisplayUiMode", Integer.TYPE, Integer.TYPE)
+                    .apply { isAccessible = true }.invoke(ivd, displayId, uiMode)
                 true
             }.getOrElse { t ->
                 Log.d(TAG, "[setDisplayUiMode] binder via $fieldName failed: ${unwrap(t).message}")

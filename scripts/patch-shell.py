@@ -38,6 +38,12 @@ GUARD = "window.__blindcastLocal"
 # (id, file, old, new)
 PATCHES = [
     (
+        "P12-http-pcm-player",
+        "js/shell.js",
+        'function yO(){let e=null,t=null,n=0;',
+        f'function yO(){{if({GUARD})return {GUARD}.createPcmPlayer();let e=null,t=null,n=0;',
+    ),
+    (
         "P0-release-version",
         "js/shell.js",
         'us=Number(og[og.length-3]),_l=2',

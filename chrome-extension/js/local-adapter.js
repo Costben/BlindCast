@@ -130,94 +130,8 @@
     };
   }
 
-  // ---- layout: full-bleed wallpaper desktop, taskbar auto-hides -----------
-  // Target form (user screenshot): wallpaper + floating windows, no FIXED
-  // bottom bar/dock. The original shell renders a 56px taskbar footer and
-  // offsets .stage/.desk-layer by --taskbar-height. Hiding the bar outright
-  // would also delete the app launcher (Start -> #taskbarMenu), Search, the
-  // open-window list and the clock, which all live inside it -- and the user
-  // requires app selection to work. So: zero the offset (no 56px dead strip) and
-  // slide the bar off-screen; it stays reachable by pointing at the bottom edge
-  // (or Cmd/Ctrl+K for search), so nothing is lost while no bar is ever fixed.
-  function installLocalLayout() {
-    try {
-      var css = document.createElement("style");
-      css.id = "blindcast-local-layout";
-      css.textContent =
-        ":root{--taskbar-height:0px !important}" +
-        "#taskbar{position:fixed !important;left:0 !important;right:0 !important;bottom:0 !important;" +
-          "height:56px !important;z-index:2147482000 !important;" +
-          "transform:translateY(100%) !important;transition:transform .16s ease !important;}" +
-        "#taskbar[data-bc-reveal]{transform:translateY(0) !important}" +
-        "#blindcast-tb-hotzone{position:fixed;left:0;right:0;bottom:0;height:6px;z-index:2147482000}" +
-        // D22: zeroing --taskbar-height made flyouts sit at bottom:8px while the
-        // revealed bar occupies the bottom 56px at z-index 52 (above the
-        // surface's 51 and the panels' 31), so the bar covered ~48px of the
-        // flyout. The original had no overlap because --taskbar-height was 56px.
-        // Restore the original value for the flyout subtree only (scoping the
-        // variable, not --flyout-gap, so bottom AND the 100vh-based heights go
-        // back to the original 64px / 100vh-72px together).
-        "#searchSurface,.tb-preview,.about-pop,.notif-sheet,.device-panel,.net-panel{--taskbar-height:56px}";
-      (document.head || document.documentElement).appendChild(css);
-    } catch (e) {}
-    try {
-      var timer = null;
-      function bar() { return document.getElementById("taskbar"); }
-      function popupOpen() {
-        // Any open flyout/popup must keep the bar revealed, otherwise pointing
-        // at the bottom edge would slide the bar back over the flyout. Covers
-        // the bar's own menus plus the shell flyouts (about / notifications /
-        // device / network / search). Recomputed every check so it never goes
-        // stale.
-        // "Open" is tested by whether the element actually renders: many
-        // flyouts toggle `hidden`, but #searchSurface keeps hidden=false and
-        // swaps display, and several panels sit inside a display:none ancestor
-        // (whose own computed display is still "block"). getClientRects()
-        // covers all of those -- zero rects means nothing is painted.
-        var ids = ["taskbarMenu", "deskPop", "deskMenu", "overview", "aboutPop",
-                   "notifSheet", "notifPanel", "devicePanel", "netPanel",
-                   "searchSurface", "searchOverlay"];
-        for (var i = 0; i < ids.length; i++) {
-          var el = document.getElementById(ids[i]);
-          if (!el || el.hidden) continue;
-          if (el.getAttribute("aria-hidden") === "true") continue;
-          if (el.getClientRects && el.getClientRects().length === 0) continue;
-          return true;
-        }
-        return false;
-      }
-      function set(on) {
-        var b = bar(); if (!b) return;
-        if (timer) { clearTimeout(timer); timer = null; }
-        if (on) { b.setAttribute("data-bc-reveal", "1"); return; }
-        timer = setTimeout(function () {
-          timer = null;
-          var x = bar(); if (!x) return;
-          // A flyout closing is not an event we get, so keep re-checking while
-          // one is open and collapse as soon as it is gone (otherwise the bar
-          // would stay stuck on screen after the pointer already left).
-          if (popupOpen()) { set(false); return; }
-          x.removeAttribute("data-bc-reveal");
-        }, 220);
-      }
-      var hot = document.createElement("div");
-      hot.id = "blindcast-tb-hotzone";
-      hot.setAttribute("aria-hidden", "true");
-      hot.addEventListener("pointerenter", function () { set(true); });
-      hot.addEventListener("pointerleave", function () { set(false); });
-      document.addEventListener("pointerover", function (ev) {
-        var b = bar(); if (b && b.contains(ev.target)) set(true);
-      }, true);
-      document.addEventListener("pointerout", function (ev) {
-        var b = bar();
-        if (b && b.contains(ev.target) && !b.contains(ev.relatedTarget)) set(false);
-      }, true);
-      (document.body || document.documentElement).appendChild(hot);
-    } catch (e) {}
-  }
-
+  // Keep the original Desktop/Fusion layout and its taskbar unchanged.
   installSecureShims();
-  installLocalLayout();
 
   var params = new URLSearchParams(location.search);
   var hostParam = (params.get("host") || "").trim();
@@ -344,10 +258,10 @@
   // Capabilities delivered through this adapter, matched to the backend routes
   // actually registered in BlindCastServer: clipboard -> /api/clipboard,
   // file/fs -> /api/fs/*, terminal -> /ws/terminal, notification ->
-  // /api/notifications. Not advertised: audio/device-audio (AAC not wired to a
-  // decoder), multi-touch (/ws/control has no pointer slot), phone-screen
+  // /api/notifications; device-audio -> opt-in PCM on /ws/stream.
+  // Not advertised: microphone audio, multi-touch (/ws/control has no pointer slot), phone-screen
   // (mode:"mirror" is not an independent session).
-  var CAPS = ["video", "control", "multi-session", "app-list", "file", "fs", "clipboard", "desk-widget", "terminal", "notification"];
+  var CAPS = ["video", "device-audio", "control", "multi-session", "app-list", "file", "fs", "clipboard", "desk-widget", "terminal", "notification"];
 
   // ---- backend link (shared by all sockets of a session) ------------------
   function Link() {
@@ -369,7 +283,11 @@
     var self = this, ws;
     try { ws = new WebSocket(wsUrl("ws/stream")); } catch (e) { this._reconnectStream(); return; }
     ws.binaryType = "arraybuffer";
-    ws.onopen = function () { self._streamBackoff = 500; self.emit("streamOpen"); };
+    ws.onopen = function () {
+      self._streamBackoff = 500;
+      self.setPcmEnabled(!!self._pcmEnabled);
+      self.emit("streamOpen");
+    };
     ws.onmessage = function (ev) { self._onStream(ev.data); };
     ws.onclose = function () {
       if (self.stream === ws) self.stream = null;
@@ -391,6 +309,9 @@
     var kind = u[0];
     if (kind === 0x01) { this.emit("mainFrame", 0, u.subarray(1)); return; }
     if (kind === 0x02) { this.emit("audio", u.subarray(1)); return; }
+    if (kind === 0x04 && u.length > 17) {
+      this.emit("pcm", u.subarray(1)); return;
+    }
     if (kind === 0x11) {
       if (u.length < 10) return;
       var wid = u[1];
@@ -418,6 +339,12 @@
     ws.onerror = function () {};
     this.control = ws;
     return ws;
+  };
+  Link.prototype.setPcmEnabled = function (enabled) {
+    this._pcmEnabled = enabled;
+    if (this.stream && this.stream.readyState === 1) {
+      this.stream.send(JSON.stringify({ type: "pcmAudio", enabled: enabled }));
+    }
   };
   Link.prototype._reconnectControl = function () {
     if (this.closed || this._ctlTimer) return;
@@ -453,6 +380,19 @@
     this.windows = {}; this.timer = null;
     var self = this;
     link.on("windowFrame", function (wid, f) { self._video(wid, f); });
+    link.on("pcm", function (frame) {
+      if (!link._pcmEnabled || frame.length < 18) return;
+      var view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+      var rate = view.getUint32(0), channels = view.getUint32(4);
+      if (rate < 8000 || rate > 96000 || channels < 1 || channels > 2) return;
+      var key = rate + ":" + channels;
+      if (self._audioConfig !== key) {
+        self._audioConfig = key;
+        self.socket._emitEnvelope(CH.AUDIO, 1, JSON.stringify({ sampleRate: rate, channels: channels }));
+      }
+      // Original PCM sink expects an eight-byte header followed by PCM16LE.
+      self.socket._emitEnvelope(CH.AUDIO, 2, frame.subarray(8));
+    });
     link.on("streamOpen", function () { try { link.ctl({ type: "requestIDR" }); } catch (e) {} });
     link.on("widgetState", function (st) { self.socket._emitEnvelope(CH.WIDGET, 1, JSON.stringify({ c: "widget-state", widgets: st })); });
     link.on("widgetFrame", function (buf) { self.socket._emitRaw(buf); });
@@ -468,9 +408,9 @@
     deviceInfo();   // cache desktop geometry/density for normalization + config
     this.refreshWindows();
     var self = this;
-    this.timer = setInterval(function () { self.refreshWindows(); }, 1500);
+    this.timer = setInterval(function () { self.refreshWindows(); }, 3000);
   };
-  Bridge.prototype.stop = function () { if (this.timer) clearInterval(this.timer); this.timer = null; };
+  Bridge.prototype.stop = function () { if (this.timer) clearInterval(this.timer); this.timer = null; this._winEpoch = (this._winEpoch || 0) + 1; this._winInflight = false; this._emptyStreak = 0; };
   // window-state shape the shell's iP() consumes: a NEW sessionId must be
   // announced as state:"opening" (that is what builds the `.win`); unknown
   // sessionIds carrying state:"live" are dropped (iP: Ue.get(t) == null).
@@ -485,10 +425,26 @@
   };
   Bridge.prototype.refreshWindows = function () {
     var self = this;
+    // The endpoint resolves per-window and can take longer than the poll
+    // interval; never let polls overlap or a late answer clobber a newer one.
+    if (this._winInflight || this._mutating) return;
+    this._winInflight = true;
+    var epoch = this._winEpoch || 0;
     api("api/desktop/windows").then(function (r) {
+      if (self.session.closed || epoch !== (self._winEpoch || 0)) return;
+      self._winInflight = false;
       // Only reconcile on a real answer; a failed poll must not close windows.
       if (!r || r.ok !== true || !Array.isArray(r.windows)) return;
-      var list = r.windows, seen = {};
+      var list = r.windows;
+      // An empty answer is ambiguous: a transient read glitch would otherwise
+      // tear every window down. Require two empty polls in a row; a genuine
+      // empty repeats, and a single glitch is absorbed.
+      if (!list.length) {
+        if (!self._emptyStreak) { self._emptyStreak = 1; return; }
+      } else {
+        self._emptyStreak = 0;
+      }
+      var seen = {};
       list.forEach(function (w) {
         if (w.state !== "running") return;
         seen[w.windowId] = 1;
@@ -692,10 +648,15 @@
     if (chan === CH.SESSION) return this._onChan5(type, payload);
     if (chan === CH.WIDGET) return this._onWidget(j);
     if (chan === CH.VIDEO && type === VT.GAP) { this.session.link.ctl({ type: "requestIDR", wid: this._windowId }); return; }
-    // Audio forwarding (chan2) is not wired locally: the panel's sink consumes
-    // PCM while the backend emits AAC. Swallow control/frames quietly instead
-    // of logging them as unhandled. `audio`/`device-audio` stay unadvertised.
-    if (chan === CH.AUDIO) return;
+    if (chan === CH.AUDIO) {
+      // type 3 is original device-playback intent; type 4 is microphone input,
+      // which remains unadvertised and must never enable a microphone capture.
+      if (type === 3 && j) {
+        if (this._bridge) this._bridge._audioConfig = null;
+        this.session.link.setPcmEnabled(!!j.on);
+      }
+      return;
+    }
     log("unhandled envelope", chan, type);
   };
 
@@ -770,7 +731,16 @@
           self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "display-power", on: on }));
         });
         return;
-      case "resize": case "density": case "decor-insets": return;   // geometry is client-side
+      case "resize":
+        // The first packet initializes the panel's viewport after attach; the
+        // existing source already has geometry. Rebuild only subsequent edits.
+        if (!this._geometryInitialized) { this._geometryInitialized = true; return; }
+        return this._resizeWindow(j);
+      case "relaunch":
+        var size = this.session.sourceSize(this._windowId);
+        if (size) return this._resizeWindow({ w: size.w, h: size.h, force: true });
+        return;
+      case "density": case "decor-insets": return;
       case "logout":
         try { localStorage.removeItem("blindcast-token"); } catch (e) {}
         this._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "logout", ok: true }));
@@ -797,7 +767,12 @@
       case "display-night-mode":
         // Original panel mirrors the browser theme here; the backend applies it
         // per virtual display (fail-closed) and reports failure honestly.
-        api("api/display/night-mode", { body: { on: !!j.on } });
+        api("api/display/night-mode", { body: {
+          on: !!j.on, windowId: Number(j.sessionId) || this._windowId || 0
+        } }).then(function (r) {
+          if (r && r.ok === false) self._emitEnvelope(CH.CONTROL, CT.JSON,
+            JSON.stringify({ c: "toast", text: r.error || "夜间模式设置失败" }));
+        });
         return;
       case "video-ack":
         return;   // client-side ack of a decoded frame; nothing to forward
@@ -807,6 +782,47 @@
         if (/^notif-/.test(j.c)) return this._onNotif(j);
         log("unhandled command", j.c);
     }
+  };
+
+  // Serialize/coalesce geometry changes: the host rebuilds the same window id.
+  // Preserve that session's media socket and invalidate pre-rebuild polls.
+  LocalSocket.prototype._resizeWindow = function (j) {
+    var wid = this._windowId, w = Math.round(Number(j.w)), h = Math.round(Number(j.h));
+    if (wid <= 0 || !Number.isFinite(w) || !Number.isFinite(h) || w < 160 || h < 160 || w > 4096 || h > 4096) return;
+    this._resizePending = { w: w, h: h, force: !!j.force };
+    if (this._resizeInflight) return;
+    var self = this;
+    function next() {
+      if (self.readyState !== 1 || self.session.closed) { self._resizePending = null; return; }
+      var pending = self._resizePending; self._resizePending = null;
+      if (!pending) return;
+      var size = self.session.sourceSize(wid);
+      if (!pending.force && size && size.w === pending.w && size.h === pending.h) return;
+      self._resizeInflight = true;
+      var bridge = self.session._ws && self.session._ws._bridge;
+      if (bridge) { bridge._winEpoch = (bridge._winEpoch || 0) + 1; bridge._winInflight = false; bridge._mutating = (bridge._mutating || 0) + 1; }
+      api("api/desktop/windows", { body: { action: "resize", windowId: wid, width: pending.w, height: pending.h } }).then(function (r) {
+        self._resizeInflight = false;
+        if (bridge) bridge._mutating--;
+        if (self.readyState !== 1 || self.session.closed) return;
+        if (r && r.ok && r.window) {
+          var win = r.window;
+          self.session.setSize(wid, win.width, win.height);
+          if (bridge && bridge.windows[wid]) {
+            bridge.windows[wid].width = win.width; bridge.windows[wid].height = win.height;
+            bridge._emitState(bridge.windows[wid], "live");
+          }
+          self._emitEnvelope(CH.VIDEO, VT.GAP, "");
+          linkForSync();
+        } else {
+          self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "toast", text: r && r.error || "窗口缩放失败" }));
+        }
+        if (bridge) bridge.refreshWindows();
+        next();
+      });
+    }
+    function linkForSync() { self.session.link.ctl({ type: "requestIDR", wid: wid }); }
+    next();
   };
 
   // ---- files (A13/A14): panel fs-* over chan4 <-> backend /api/fs/* --------
@@ -1289,6 +1305,57 @@
     };
   }
 
+  // AudioBufferSourceNode works on LAN HTTP as well as extension origins.
+  // Bound queued audio to 200ms; keep live sound rather than replaying backlog.
+  function createPcmPlayer() {
+    var ctx = null, config = null, next = 0, sources = new Set();
+    function resume() { if (ctx && ctx.state === "suspended") ctx.resume().catch(function () {}); }
+    function clear() {
+      sources.forEach(function (s) { try { s.stop(); } catch (e) {} });
+      sources.clear(); next = 0;
+    }
+    function destroy() {
+      clear();
+      if (ctx) { ctx.close().catch(function () {}); ctx = null; }
+      config = null;
+      document.removeEventListener("pointerdown", resume, true);
+      document.removeEventListener("keydown", resume, true);
+    }
+    return {
+      onConfig: function (c) {
+        if (!c || c.sampleRate < 8000 || c.sampleRate > 96000 || (c.channels !== 1 && c.channels !== 2)) return;
+        if (!ctx || !config || config.sampleRate !== c.sampleRate || config.channels !== c.channels) {
+          destroy();
+          var Context = window.AudioContext || window.webkitAudioContext;
+          if (!Context) return;
+          ctx = new Context({ sampleRate: c.sampleRate, latencyHint: "interactive" });
+          config = c;
+          document.addEventListener("pointerdown", resume, true);
+          document.addEventListener("keydown", resume, true);
+        }
+        resume();
+      },
+      onPcm: function (frame) {
+        if (!ctx || !config || ctx.state !== "running" || frame.length <= 8) return;
+        var view = new DataView(frame.buffer, frame.byteOffset + 8, frame.byteLength - 8);
+        var count = Math.floor(view.byteLength / (config.channels * 2));
+        if (!count) return;
+        if (next > ctx.currentTime + 0.2) clear();
+        var buffer = ctx.createBuffer(config.channels, count, config.sampleRate);
+        for (var ch = 0; ch < config.channels; ch++) {
+          var samples = buffer.getChannelData(ch);
+          for (var n = 0; n < count; n++) samples[n] = view.getInt16((n * config.channels + ch) * 2, true) / 32768;
+        }
+        var source = ctx.createBufferSource();
+        source.buffer = buffer; source.connect(ctx.destination);
+        sources.add(source); source.onended = function () { sources.delete(source); };
+        next = Math.max(next, ctx.currentTime + 0.04);
+        source.start(next); next += count / config.sampleRate;
+      },
+      destroy: destroy
+    };
+  }
+
   window.__blindcastLocal = {
     enabled: true,
     origin: ORIGIN,
@@ -1303,6 +1370,7 @@
     },
     createSession: createSession,
     createDecoder: createDecoder,
+    createPcmPlayer: createPcmPlayer,
     // The shell picks the workspace mode at module top level (patched line:
     // `var tl=Hi()?(qu()||__blindcastLocal.workspaceMode()||await Xl()):"desktop"`).
     // qu() reads localStorage["andromeld-workspace-mode"]; Xl() opens the blocking
@@ -1310,9 +1378,8 @@
     // comes, so the module (and the whole panel) would hang. Return the stored
     // choice, else a `?workspace=` override, else the local default.
     // Default is "desktop", matching the target form: a full-bleed wallpaper
-    // desktop with floating windows and no fixed bar/dock (installLocalLayout()
-    // drops the taskbar). "?workspace=fusion" and the mode menu still switch to
-    // the per-app popup workspace without changing the device session.
+    // desktop with the original taskbar. "?workspace=fusion" and the mode menu
+    // still switch to the per-app popup workspace without changing the device session.
     workspaceMode: function () {
       try {
         var requested = new URL(location.href).searchParams.get("workspace");

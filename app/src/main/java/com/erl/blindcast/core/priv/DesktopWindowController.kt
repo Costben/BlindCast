@@ -50,7 +50,7 @@ object DesktopWindowController {
     const val DEFAULT_FPS = 30
 
     /** 并发窗口上限（每窗一路硬编，超了设备扛不住）。 */
-    const val MAX_WINDOWS = 6
+    const val MAX_WINDOWS = 4
 
     /** 窗口元信息（对外 JSON 用）。 */
     data class WindowInfo(
@@ -121,6 +121,12 @@ object DesktopWindowController {
     /** 某窗口的虚拟屏尺寸（无则 null）——输入注入的归一化换算基准。 */
     fun sizeOf(windowId: Int): Pair<Int, Int>? =
         entries[windowId]?.let { it.width to it.height }
+
+    fun setNightMode(windowId: Int, on: Boolean): DesktopController.NightResult = serialized {
+        val entry = entries[windowId]?.takeIf { it.state == "running" && it.displayId > 0 }
+            ?: return@serialized DesktopController.NightResult(false, null, -1, "窗口未运行")
+        DesktopController.applyNightMode(entry.stopPath, entry.displayId, on)
+    }
 
     /**
      * 请求该窗口立刻产一个 IDR（Request-Sync-1）。

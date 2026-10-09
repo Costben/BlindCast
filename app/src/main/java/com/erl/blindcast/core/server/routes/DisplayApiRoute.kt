@@ -2,6 +2,7 @@ package com.erl.blindcast.core.server.routes
 
 import android.util.Log
 import com.erl.blindcast.core.priv.DesktopController
+import com.erl.blindcast.core.priv.DesktopWindowController
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -36,12 +37,12 @@ object DisplayApiRoute {
             val st = runCatching { DesktopController.status() }.getOrNull()
             val running = st?.running == true
             val displayId = st?.displayId ?: -1
-            val on = if (running) (runCatching { DesktopController.nightModeState() }.getOrNull() ?: false) else false
+            val on = if (running) runCatching { DesktopController.nightModeState() }.getOrNull() else null
             200 to JSONObject()
                 .put("ok", true)
                 .put("running", running)
                 .put("displayId", displayId)
-                .put("on", on)
+                .put("on", on ?: JSONObject.NULL)
                 .put("scope", "display")
                 .put("deviceOn", runBlocking(Dispatchers.IO) { readGlobalNightMode() })
                 .toString()
@@ -64,13 +65,18 @@ object DisplayApiRoute {
                         .toString()
                 }
                 "display", "" -> {
-                    val r = runCatching { DesktopController.setNightMode(want) }.getOrElse { t ->
-                        DesktopController.NightResult(false, want, -1, "${t.javaClass.simpleName}: ${t.message}")
+                    val windowId = obj.optInt("windowId", 0)
+                    if (obj.has("windowId") && windowId !in 0..255) return 400 to err("invalid windowId")
+                    val r = runCatching {
+                        if (windowId > 0) DesktopWindowController.setNightMode(windowId, want)
+                        else DesktopController.setNightMode(want)
+                    }.getOrElse { t ->
+                        DesktopController.NightResult(false, null, -1, "${t.javaClass.simpleName}: ${t.message}")
                     }
                     Log.i(TAG, "[night-mode] scope=display on=$want ok=${r.ok} did=${r.displayId} ${r.error}")
                     200 to JSONObject()
                         .put("ok", r.ok)
-                        .put("on", r.on)
+                        .put("on", r.on ?: JSONObject.NULL)
                         .put("scope", "display")
                         .put("displayId", r.displayId)
                         .put("error", r.error)

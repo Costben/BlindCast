@@ -9,7 +9,7 @@
  * Run:  node scripts/test-adapter.cjs
  */
 const fs = require("fs"), vm = require("vm");
-const code = fs.readFileSync("app/src/main/assets/web/js/local-adapter.js", "utf8");
+const code = fs.readFileSync(process.env.BC_ADAPTER_SOURCE || "app/src/main/assets/web/js/local-adapter.js", "utf8");
 
 // --- fakes ---
 class FakeWS {
@@ -25,6 +25,8 @@ FakeWS.all = [];
 let statusOk = true;                          // /api/status answer (token check)
 let windowsPayload = { ok:true, windows:[] }; // /api/desktop/windows GET answer
 let openWindowPayload = null;                 // /api/desktop/windows POST answer
+let lastWindowPost = null;
+let winGets = 0;                              // count of GET /api/desktop/windows polls
 let lastClipPost = null;
 let lastNotifPost = null;
 let lastNightPost = null;
@@ -49,7 +51,8 @@ function routeFetch(url, init){
   if (p === "/api/display/night-mode") { lastNightPost = JSON.parse(init.body||"{}"); return resp(200,{ok:true}); }
   if (p === "/api/screen") return resp(200, { ok:true, blackedOut: screenBlackedOut });
   if (p === "/api/desktop/windows") {
-    if (method === "GET") return resp(200, windowsPayload);
+    if (method === "GET") { winGets++; return resp(200, windowsPayload); }
+    lastWindowPost = JSON.parse(init.body || "{}");
     return openWindowPayload ? resp(200, openWindowPayload) : resp(200, {ok:true});
   }
   if (p === "/api/apps") return resp(200, { ok:true, apps:[{package:"com.x",label:"X"}] });
@@ -80,7 +83,7 @@ const sandbox = {
   crypto: { getRandomValues(a){ for(let i=0;i<a.length;i++) a[i]=(i*7+3)&0xff; return a; } },   // no randomUUID
   navigator: { storage: {} },   // no clipboard, no getDirectory
   document: {
-    _paste:[], addEventListener(t,fn){ if(t==="paste") this._paste.push(fn); },
+    _paste:[], addEventListener(t,fn){ if(t==="paste") this._paste.push(fn); }, removeEventListener(){},
     createElement(tag){ return { tag, style:{}, setAttribute(){}, select(){}, click(){}, value:"", remove(){} }; },
     body:{ appendChild(){}, removeChild(){} },
     execCommand(){ return true; }
@@ -134,9 +137,9 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   await tick(4);
   const welcome = wsMsgs.map(decodeJson).find(m=>m&&m.t==="welcome");
   check("resume with valid token -> welcome", !!welcome);
-  const EXPECT_CAPS = ["video","control","multi-session","app-list","file","fs","clipboard","desk-widget","terminal","notification"];
+  const EXPECT_CAPS = ["video","device-audio","control","multi-session","app-list","file","fs","clipboard","desk-widget","terminal","notification"];
   check("welcome caps = backend-honest set", welcome && JSON.stringify(welcome.caps)===JSON.stringify(EXPECT_CAPS));
-  check("no unbacked caps advertised", welcome && !["multi-touch","phone-screen","audio","device-audio","camera"].some(c=>welcome.caps.includes(c)));
+  check("no unbacked caps advertised", welcome && !["multi-touch","phone-screen","audio","camera"].some(c=>welcome.caps.includes(c)));
 
   // token rejection must deny (never a fake welcome)
   statusOk = false;
@@ -403,7 +406,93 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   wsMsgs.length=0;
   ws._onEnvelope(2, 3, new TextEncoder().encode(JSON.stringify({ on:true, sessionId:"1" })));
   await tick(1);
-  check("audio control (chan2) swallowed, no reply", wsMsgs.length===0);
+  check("device-audio intent enables PCM stream subscription", s.link._pcmEnabled===true);
+  const pcmFrame = new Uint8Array(25);
+  pcmFrame[0] = 4;
+  const pcmView = new DataView(pcmFrame.buffer);
+  pcmView.setUint32(1, 48000); pcmView.setUint32(5, 2);
+  pcmView.setBigUint64(9, 123456n);
+  pcmView.setInt16(17, 16384, true); pcmView.setInt16(19, -16384, true);
+  pcmView.setInt16(21, 32767, true); pcmView.setInt16(23, -32768, true);
+  s.link._onStream(pcmFrame.buffer);
+  const audioMsgs = wsMsgs.filter(b=>b instanceof ArrayBuffer).map(b=>new Uint8Array(b));
+  const audioConfig = audioMsgs.find(u=>u[0]===2 && u[1]===1);
+  const pcmOut = audioMsgs.find(u=>u[0]===2 && u[1]===2);
+  check("PCM config declares actual sample rate and channels", audioConfig && decodeJson(dec.decode(audioConfig.subarray(2))).sampleRate===48000);
+  check("PCM preserves PTS and signed stereo samples", pcmOut && new DataView(pcmOut.buffer, pcmOut.byteOffset+2).getBigUint64(0)===123456n && new DataView(pcmOut.buffer, pcmOut.byteOffset+10).getInt16(0,true)===16384);
+  ws._onEnvelope(2, 3, new TextEncoder().encode(JSON.stringify({ on:false, sessionId:"1" })));
+  wsMsgs.length=0; s.link._onStream(pcmFrame.buffer);
+  check("muted PCM is not forwarded to the panel", wsMsgs.length===0 && s.link._pcmEnabled===false);
+  ws._onEnvelope(2, 4, pcmFrame);
+  check("microphone data never enables capture", s.link._pcmEnabled===false);
+
+  // Verify actual sample conversion and bounded Web Audio scheduling on HTTP.
+  const audioContexts=[];
+  sandbox.AudioContext=class {
+    constructor(opts){this.sampleRate=opts.sampleRate;this.currentTime=0;this.state="running";this.buffers=[];this.sources=[];audioContexts.push(this);}
+    createBuffer(channels,count,rate){const data=Array.from({length:channels},()=>new Float32Array(count));const b={numberOfChannels:channels,duration:count/rate,getChannelData:c=>data[c]};this.buffers.push(b);return b;}
+    createBufferSource(){const s={connect(){},stopped:false,start(t){this.started=t},stop(){this.stopped=true}};this.sources.push(s);return s;}
+    resume(){this.state="running";return Promise.resolve();}
+    close(){this.state="closed";return Promise.resolve();}
+  };
+  if (typeof L.createPcmPlayer === "function") {
+    const player=L.createPcmPlayer();player.onConfig({sampleRate:48000,channels:2});
+    player.onPcm(pcmFrame.subarray(9));
+    const ctx=audioContexts[0];
+    check("HTTP PCM player preserves left/right signed samples", ctx.buffers[0].getChannelData(0)[0]===0.5 && ctx.buffers[0].getChannelData(1)[0]===-0.5);
+    const block=new Uint8Array(8+4096);
+    for(let i=0;i<25;i++)player.onPcm(block);
+    check("HTTP PCM player discards backlog above 200ms", ctx.sources.some(s=>s.stopped) && ctx.sources.at(-1).started<=ctx.currentTime+0.2);
+    ctx.state="suspended";const before=ctx.sources.length;player.onPcm(block);
+    check("suspended playback never accumulates old audio", ctx.sources.length===before);
+    player.onConfig({sampleRate:44100,channels:1});
+    check("audio format change closes previous context", ctx.state==="closed" && audioContexts.at(-1).sampleRate===44100);
+    player.destroy();check("audio player destroy releases its context", audioContexts.at(-1).state==="closed");
+  } else check("HTTP PCM player is implemented",false);
+
+  // D24: window polling hardening
+  // (a) polls must not overlap: a call while one is in flight is a no-op
+  windowsPayload = { ok:true, windows:[] };
+  bridge._winInflight = false; bridge._emptyStreak = 0;
+  winGets = 0;
+  bridge.refreshWindows(); bridge.refreshWindows();
+  check("D24 overlapping window polls coalesce to one request", winGets===1);
+  await tick(2);
+  check("D24 in-flight flag clears once the answer lands", bridge._winInflight===false);
+  // (b) a lone empty answer must not tear down known windows; two in a row do
+  bridge.windows = { 5:{ windowId:5, packageName:"x", width:1, height:1, confirmed:true } };
+  bridge._emptyStreak = 0; windowsPayload = { ok:true, windows:[] };
+  bridge.refreshWindows(); await tick(2);
+  check("D24 single empty poll keeps known windows", !!bridge.windows[5]);
+  bridge.refreshWindows(); await tick(2);
+  check("D24 two consecutive empty polls reconcile (close)", !bridge.windows[5]);
+  // (c) a non-empty answer resets the empty streak
+  bridge._emptyStreak = 0;
+  windowsPayload = { ok:true, windows:[{ windowId:6, state:"running", packageName:"y", width:2, height:2 }] };
+  bridge.refreshWindows(); await tick(2);
+  check("D24 non-empty poll resets streak", bridge._emptyStreak===0 && !!bridge.windows[6]);
+  // (d) the poll interval must be >= 3s (the endpoint resolves per-window)
+  const delays=[]; const realSI = sandbox.setInterval;
+  sandbox.setInterval = (fn, ms)=>{ delays.push(ms); return realSI(fn, ms); };
+  bridge.start();
+  sandbox.setInterval = realSI;
+  bridge.stop();
+  check("D24 window poll interval >= 3000ms", delays.includes(3000));
+
+  // Geometry commands must rebuild the attached window, not just stretch CSS.
+  openWindowPayload = { ok:true, window:{windowId:7,packageName:"com.x",width:640,height:960} };
+  lastWindowPost = null;
+  media1._onCommand({c:"resize",w:720,h:1280,dpr:1}); await tick(2);
+  check("initial viewport geometry does not rebuild the source", lastWindowPost === null);
+  media1._onCommand({c:"resize",w:640,h:960,dpr:1}); await tick(3);
+  check("resize targets attached window through API", lastWindowPost && lastWindowPost.action === "resize" && lastWindowPost.windowId === 7 && lastWindowPost.width === 640 && lastWindowPost.height === 960);
+  check("resize updates input source geometry", s.sourceSize(7).w === 640 && s.sourceSize(7).h === 960);
+  lastWindowPost = null;
+  media1._onCommand({c:"relaunch"}); await tick(3);
+  check("relaunch rebuilds only the attached window", lastWindowPost && lastWindowPost.action === "resize" && lastWindowPost.windowId === 7);
+  lastWindowPost = null;
+  media1._onCommand({c:"resize",w:0,h:960}); await tick(2);
+  check("invalid resize does not reach backend", lastWindowPost === null);
 
   // D4: ctl queues while control socket down
   const s2 = L.createSession("bootstrap");

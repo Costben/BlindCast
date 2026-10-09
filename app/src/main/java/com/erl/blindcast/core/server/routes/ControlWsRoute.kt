@@ -468,9 +468,12 @@ object ControlWsRoute {
             logInject("fail-closed", did, 0, 0, false, "window $wid not ready", detail = "wid=$wid")
             return false to "window $wid not ready"
         }
-        // ASCII 走虚拟键盘映射（原路径）；含 CJK/全角标点等多字节字符 → 剪贴板 + PASTE（Unicode 注入）。
+        // Virtual editors accept Unicode directly through their display-specific IME.
+        // Keep key mapping only for phone mirroring, which uses the user's own IME.
         val asciiOnly = text.all { c -> c.code in 32..126 }
-        val r = if (asciiOnly) {
+        val r = if (did > 0) {
+            com.erl.blindcast.core.input.FusionInputMethodService.commit(text, did)
+        } else if (asciiOnly) {
             runCatching { runBlocking { PrivilegedBridge.injectText(pkg(), text, did) } }
                 .getOrElse { false to (it.message ?: it.toString()) }
         } else {
