@@ -1,6 +1,6 @@
 {
-  "name": "AndroMeld Web",
-  "short_name": "AndroMeld",
+  "name": "BlindCast Web",
+  "short_name": "BlindCast",
   "description": "Open and control Android apps from a desktop browser.",
   "start_url": "./",
   "scope": "./",

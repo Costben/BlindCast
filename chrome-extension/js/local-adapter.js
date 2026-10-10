@@ -1,4 +1,4 @@
-/* BlindCast local transport adapter for the AndroMeld panel (v130).
+/* BlindCast local transport adapter for the BlindCast panel (v130).
  *
  * The original panel speaks its own device protocol over a WebSocket-shaped
  * socket: text handshake {t,v,client} -> welcome/attached/deny, then binary
@@ -188,7 +188,7 @@
     if (!code) return Promise.resolve(null);
     return fetch(httpUrl("api/pair"), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: String(code), name: "AndroMeld Web" })
+      body: JSON.stringify({ code: String(code), name: "BlindCast Web" })
     }).then(function (r) {
       return r.json().then(function (j) {
         if (r.ok && j && j.ok !== false) return j.token || j.clientToken || j.value || null;
@@ -620,7 +620,7 @@
     setTimeout(function () {
       self._deliver(JSON.stringify({
         t: "welcome", v: 2, web: 130,
-        // The panel is now the AndroMeld-compatible Fusion client.  Keep the
+        // The panel is now the BlindCast-compatible Fusion client.  Keep the
         // local device identity generic until the status route provides a
         // user-configured name; never expose the retired BlindCast branding.
         device: { id: "android-device", name: "Android Device" },
@@ -723,7 +723,7 @@
             }
             // The stock panel consumes these two notifications to keep the
             // focused package and away/IME chrome in sync even when the
-            // transport is a local HTTP adapter rather than AndroMeld RTC.
+            // transport is a local HTTP adapter rather than BlindCast RTC.
             self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({
               c: "focused-app", pkg: String(w.packageName || j.pkg || j.package || ""),
               userId: Number(w.userId == null ? j.userId : w.userId) || 0

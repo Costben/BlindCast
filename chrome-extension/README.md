@@ -1,4 +1,4 @@
-# AndroMeld · Chrome 插件
+# BlindCast · Chrome 插件
 
 插件把 AndroMeld 原版面板（v130）打包为 Manifest V3 扩展：桌面、独立应用窗口（Fusion）、逐窗硬件解码与触控，界面与网页端共用同一份代码。
 

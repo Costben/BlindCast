@@ -139,6 +139,15 @@ PATCHES = [
         'function yb(e){ht("andromeld-workspace-mode",e)}',
         f'function yb(e){{ht("andromeld-workspace-mode",e);{GUARD}&&{GUARD}.setWorkspaceMode&&{GUARD}.setWorkspaceMode(e)}}',
     ),
+    (
+        # 面板「关于」里那张「更多 App」卡片列表整块删掉了（Mac / IceBox / FilterBox 是
+        # 上游自己的产品），`#macDownload` 随之不存在；这条只在守卫它的读取口加一个判空，
+        # 免得将来有人再调用 `macDownloadUrl()` 时直接对 null 取属性。
+        "P13-about-mac-null",
+        "js/shell.js",
+        'macDownloadUrl:()=>ce.macDownload.getAttribute("href")||""',
+        'macDownloadUrl:()=>ce.macDownload?ce.macDownload.getAttribute("href")||"":""',
+    ),
 ]
 
 # window-app.js is the Fusion per-app window runtime. It does not build its own
