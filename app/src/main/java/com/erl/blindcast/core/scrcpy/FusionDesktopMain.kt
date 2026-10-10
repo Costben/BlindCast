@@ -2,6 +2,7 @@ package com.erl.blindcast.core.scrcpy
 
 import android.os.Process
 import android.util.Log
+import android.util.Base64
 import androidx.annotation.Keep
 import com.erl.blindcast.core.priv.VirtualDeviceAssociation
 import com.erl.blindcast.core.priv.VirtualDesktopSession
@@ -93,10 +94,17 @@ object FusionDesktopMain {
                 return
             }
             val socketName = args.getOrNull(7)?.takeIf { it.isNotBlank() } ?: PrivilegedCapture.SOCKET_NAME
-            val component = if (isWindow) args.getOrNull(8)?.takeIf { it.isNotBlank() } else null
+            val component = if (isWindow) args.getOrNull(8)?.takeIf { it.isNotBlank() }?.let { encoded ->
+                if (encoded == "-") "" else runCatching { String(Base64.decode(encoded, Base64.DEFAULT), Charsets.UTF_8) }.getOrDefault("")
+            }?.takeIf { it.isNotBlank() } else null
             val windowId = if (isWindow) args.getOrNull(9)?.toIntOrNull() ?: 0 else 0
-            if (isWindow && component == null) {
-                runCatching { Log.e(TAG, "[FusionDesktopMain] window op missing component args[8]") }
+            val intentUrl = if (isWindow) args.getOrNull(10)?.let { encoded ->
+                if (encoded == "-") "" else runCatching { String(Base64.decode(encoded, Base64.DEFAULT), Charsets.UTF_8) }.getOrDefault("")
+            }.orEmpty() else ""
+            val kind = if (isWindow) args.getOrNull(11)?.takeIf { it.isNotBlank() } ?: "app" else "app"
+            val userId = if (isWindow) args.getOrNull(12)?.toIntOrNull()?.coerceIn(0, 999) ?: 0 else 0
+            if (isWindow && component == null && intentUrl.isBlank() && kind == "app") {
+                runCatching { Log.e(TAG, "[FusionDesktopMain] window op missing launch target args[8..11]") }
                 return
             }
             val stop = File(stopPath)
@@ -158,11 +166,23 @@ object FusionDesktopMain {
 
             // 显式把目标拉到该屏（先等屏稳定）。
             runCatching { Thread.sleep(if (isWindow) 800L else 1200L) }
-            val target = if (isWindow) component!! else "$pkg/.FusionHomeActivity"
+            val target = if (isWindow) component else "$pkg/.FusionHomeActivity"
+            fun quote(v: String): String = "'" + v.replace("'", "'\\''") + "'"
+            val launchCommand = if (!isWindow) {
+                "am start -W --user $userId --display $did -f 0x18000000 -n ${quote(target ?: "")}"
+            } else if (intentUrl.isNotBlank()) {
+                "am start -W --user $userId --display $did -a android.intent.action.VIEW -d ${quote(intentUrl)}"
+            } else if (kind == "widget-picker") {
+                "am start -W --user $userId --display $did -a android.appwidget.action.APPWIDGET_PICK"
+            } else if (kind == "widget-config") {
+                "am start -W --user $userId --display $did -a android.appwidget.action.APPWIDGET_CONFIGURE"
+            } else {
+                "am start -W --user $userId --display $did -f 0x18000000 -n ${quote(target ?: "")}"
+            }
             val launch = runCatching {
                 ProcessBuilder(
                     "sh", "-c",
-                    "am start -W --display $did -f 0x18000000 -n $target",
+                    launchCommand,
                 )
                     .redirectErrorStream(true).start()
                     .inputStream.bufferedReader().use { it.readText() }.trim()

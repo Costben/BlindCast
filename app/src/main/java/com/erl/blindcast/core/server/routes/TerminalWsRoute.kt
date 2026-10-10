@@ -37,7 +37,7 @@ object TerminalWsRoute {
     private const val TAG = "BlindCast-TermWs"
 
     /** 单连接会话上限。 */
-    private const val MAX_SESSIONS = 8
+    private const val MAX_SESSIONS = 100
 
     /** 单次写入进程 stdin 的字节上限（防超大帧打爆）。 */
     private const val MAX_INPUT_BYTES = 256 * 1024
@@ -50,6 +50,7 @@ object TerminalWsRoute {
         val stdin: OutputStream,
         val cols: Int,
         val rows: Int,
+        val pty: Boolean,
     ) {
         @Volatile
         var closed = false
@@ -60,6 +61,11 @@ object TerminalWsRoute {
     private fun suPath(): String? =
         listOf("/system/bin/su", "/system/xbin/su", "/sbin/su", "/debug_ramdisk/su", "/su/bin/su")
             .firstOrNull { File(it).exists() }
+
+    private fun hasScript(): Boolean = runCatching {
+        val p = ProcessBuilder("sh", "-c", "command -v script >/dev/null 2>&1").start()
+        p.waitFor() == 0
+    }.getOrDefault(false)
 
     fun handle(conn: WsConnection) {
         val sessions = ConcurrentHashMap<Int, Session>()
@@ -77,10 +83,12 @@ object TerminalWsRoute {
 
         fun startSession(cols: Int, rows: Int): Session {
             val su = suPath()
+            val pty = hasScript()
+            val shellCommand = if (pty) "exec script -q -c 'exec sh -i' /dev/null" else "exec sh -i"
             val pb = if (su != null) {
-                ProcessBuilder(su, "-c", "exec sh -i")
+                ProcessBuilder(su, "-c", shellCommand)
             } else {
-                ProcessBuilder("sh", "-i")
+                ProcessBuilder("sh", "-c", shellCommand)
             }
             pb.redirectErrorStream(true)
             val env = pb.environment()
@@ -90,7 +98,7 @@ object TerminalWsRoute {
             env["LINES"] = rows.toString()
             env["PS1"] = "\\w # "
             val proc = pb.start()
-            return Session(sessionSeq.incrementAndGet(), proc, proc.outputStream, cols, rows)
+            return Session(sessionSeq.incrementAndGet(), proc, proc.outputStream, cols, rows, pty)
         }
 
         /** 泵某会话的 stdout → 二进制帧。 */
@@ -140,6 +148,7 @@ object TerminalWsRoute {
                 } catch (_: SocketTimeoutException) {
                     continue
                 } ?: break
+                if (frame.payload.size > MAX_INPUT_BYTES) continue
                 if (frame.isBinary) {
                     if (frame.payload.size < 4) continue
                     val id = ((frame.payload[0].toInt() and 0xFF) shl 24) or
@@ -200,23 +209,26 @@ object TerminalWsRoute {
                     "resize", "term-resize" -> {
                         val id = obj.optInt("id", -1)
                         val s = sessions[id] ?: continue
-                        // 非 PTY：记录并 ack。尝试 stty（无 tty 会失败，忽略）。
-                        runCatching {
-                            synchronized(s.writeLock) {
-                                s.stdin.write("stty cols ${obj.optInt("cols", 80)} rows ${obj.optInt("rows", 24)} 2>/dev/null\n".toByteArray())
-                                s.stdin.flush()
+                        // PTY 会直接应用 stty；旧系统没有 script 时仍会收到 resized ack，
+                        // 但 shell 会把命令当普通输入而失败，不阻断终端主链路。
+                        if (s.pty) {
+                            runCatching {
+                                synchronized(s.writeLock) {
+                                    s.stdin.write("stty cols ${obj.optInt("cols", 80)} rows ${obj.optInt("rows", 24)} 2>/dev/null\n".toByteArray())
+                                    s.stdin.flush()
+                                }
                             }
                         }
-                        sendJson(JSONObject().put("type", "resized").put("id", id))
+                        sendJson(JSONObject().put("type", "resized").put("id", id).put("pty", s.pty))
                     }
                     "close", "term-close" -> {
                         val id = obj.optInt("id", -1)
                         val s = sessions[id] ?: continue
                         closeSession(s)
                     }
+                    "ack" -> { /* output backpressure acknowledgement is advisory */ }
                     else -> sendJson(errJson("unknown:$kind", obj.opt("reqId")))
                 }
-                if (frame.payload.size > MAX_INPUT_BYTES) continue
             }
         } catch (e: Throwable) {
             Log.d(TAG, "terminal ws ended: ${e.message}")

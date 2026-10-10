@@ -55,6 +55,9 @@ import java.lang.ref.WeakReference
  */
 object TouchInjector {
 
+    private var multiDownTime: Long = 0L
+    private var multiActive = false
+
     // ------------------------------------------------------------------
     // Slice 4.1 映射预留：鼠标按钮 -> Android 按键（本 Slice 仅常量 + 注释）
     // ------------------------------------------------------------------
@@ -562,6 +565,116 @@ object TouchInjector {
         }
     }
 
+    /** Inject one event from a multi-pointer gesture. Coordinates are normalized. */
+    @WorkerThread
+    fun injectMultiTouch(
+        action: String,
+        actionIndex: Int,
+        normXs: FloatArray,
+        normYs: FloatArray,
+        displayId: Int,
+        width: Int,
+        height: Int,
+    ): Boolean {
+        synchronized(lock) {
+            if (normXs.isEmpty() || normXs.size != normYs.size || normXs.size > 10) {
+                recordFailure(IllegalArgumentException("invalid multi-touch pointer set"))
+                return false
+            }
+            val px = FloatArray(normXs.size)
+            val py = FloatArray(normYs.size)
+            for (i in normXs.indices) {
+                val p = toPixelsOrRecord(normXs[i], normYs[i], width, height) ?: return false
+                px[i] = p.first
+                py[i] = p.second
+            }
+            val (base, index) = when (action) {
+                "down", "begin" -> MotionEvent.ACTION_DOWN to 0
+                "pointer-down" -> MotionEvent.ACTION_POINTER_DOWN to actionIndex
+                "move", "change" -> MotionEvent.ACTION_MOVE to 0
+                "pointer-up" -> MotionEvent.ACTION_POINTER_UP to actionIndex
+                "up", "end" -> MotionEvent.ACTION_UP to 0
+                "cancel" -> MotionEvent.ACTION_CANCEL to 0
+                else -> {
+                    recordFailure(IllegalArgumentException("unknown multi-touch action: $action"))
+                    return false
+                }
+            }
+            if (base == MotionEvent.ACTION_DOWN) {
+                if (isTouching || multiActive) {
+                    runCatching { injectLocked(InputControlUtils.obtainTouchCancel(gestureDownTime, now(), lastX, lastY, activeGestureDisplayId)) }
+                    isTouching = false
+                    multiActive = false
+                }
+                multiDownTime = now()
+                multiActive = true
+            }
+            if (!multiActive) {
+                recordFailure(IllegalStateException("multi-touch event without begin"))
+                return false
+            }
+            if (index < 0 || index >= px.size && base != MotionEvent.ACTION_MOVE && base != MotionEvent.ACTION_UP && base != MotionEvent.ACTION_CANCEL) {
+                recordFailure(IllegalArgumentException("multi-touch action index out of bounds"))
+                return false
+            }
+            val event = try {
+                InputControlUtils.obtainMultiTouchEvent(base, index, multiDownTime, now(), px, py, displayId)
+            } catch (t: Throwable) {
+                recordFailure(t)
+                return false
+            }
+            val ok = injectLocked(event)
+            if (base == MotionEvent.ACTION_UP || base == MotionEvent.ACTION_CANCEL) {
+                multiActive = false
+                multiDownTime = 0L
+            }
+            return ok
+        }
+    }
+
+    /** Inject a key with Android meta-state (Ctrl/Alt/Shift/Meta chord). */
+    @WorkerThread
+    fun injectKeyWithMeta(keyCode: Int, metaState: Int, displayId: Int = targetDisplayId): Boolean {
+        synchronized(lock) {
+            val downTime = now()
+            val down = try {
+                android.view.KeyEvent(downTime, downTime, KeyEvent.ACTION_DOWN, keyCode, 0, metaState,
+                    -1, 0, KeyEvent.FLAG_FROM_SYSTEM, android.view.InputDevice.SOURCE_KEYBOARD).also {
+                    InputControlUtils.setDisplayIdStrict(it, displayId)
+                }
+            } catch (t: Throwable) { recordFailure(t); return false }
+            val up = try {
+                android.view.KeyEvent(downTime, now(), KeyEvent.ACTION_UP, keyCode, 0, metaState,
+                    -1, 0, KeyEvent.FLAG_FROM_SYSTEM, android.view.InputDevice.SOURCE_KEYBOARD).also {
+                    InputControlUtils.setDisplayIdStrict(it, displayId)
+                }
+            } catch (t: Throwable) { recordFailure(t); return false }
+            return injectLocked(down) && injectLocked(up)
+        }
+    }
+
+    /** Inject one key lifecycle event while preserving modifier state. */
+    @WorkerThread
+    fun injectKeyActionWithMeta(action: Int, keyCode: Int, metaState: Int, displayId: Int = targetDisplayId): Boolean {
+        if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP) {
+            recordFailure(IllegalArgumentException("TouchInjector: invalid key action $action"))
+            return false
+        }
+        synchronized(lock) {
+            val now = now()
+            val event = try {
+                android.view.KeyEvent(now, now, action, keyCode, 0, metaState,
+                    -1, 0, KeyEvent.FLAG_FROM_SYSTEM, android.view.InputDevice.SOURCE_KEYBOARD).also {
+                    InputControlUtils.setDisplayIdStrict(it, displayId)
+                }
+            } catch (t: Throwable) {
+                recordFailure(t)
+                return false
+            }
+            return injectLocked(event)
+        }
+    }
+
     /** 仅供单测：复位手势状态、计数与显示配置（不碰反射缓存）。 */
     @VisibleForTesting
     fun resetForTest() {
@@ -577,6 +690,8 @@ object TouchInjector {
             lastX = 0f
             lastY = 0f
             activeGestureDisplayId = DEFAULT_DISPLAY_ID
+            multiDownTime = 0L
+            multiActive = false
             appContextRef = null
         }
         InputManagerWrapper.resetCacheForTest()

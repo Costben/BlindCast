@@ -29,6 +29,8 @@ let lastWindowPost = null;
 let winGets = 0;                              // count of GET /api/desktop/windows polls
 let lastClipPost = null;
 let lastNotifPost = null;
+let lastFsSendPost = null;
+let lastShortcutPost = null;
 let lastNightPost = null;
 let screenBlackedOut = false;                 // /api/screen answer (device screen off?)
 function resp(status, body){
@@ -45,7 +47,7 @@ function routeFetch(url, init){
   const u = String(url), method = (init && init.method) || "GET";
   const p = u.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
   if (p === "/api/auth/status") return resp(200, { authRequired:true });
-  if (p === "/api/status") return statusOk ? resp(200,{ok:true,batteryLevel:69,charging:false}) : resp(401,{ok:false,error:"invalid_token"});
+  if (p === "/api/status") return statusOk ? resp(200,{ok:true,batteryLevel:69,charging:false,androidVersion:"16",connectionType:"wireless",storageUsedBytes:10,storageTotalBytes:100}) : resp(401,{ok:false,error:"invalid_token"});
   if (p === "/api/pair") return resp(200, { ok:true, token:"tok" });
   if (p === "/api/desktop") return resp(200, { ok:true, densityDpi:320, width:1080, height:2400 });
   if (p === "/api/display/night-mode") { lastNightPost = JSON.parse(init.body||"{}"); return resp(200,{ok:true}); }
@@ -56,6 +58,8 @@ function routeFetch(url, init){
     return openWindowPayload ? resp(200, openWindowPayload) : resp(200, {ok:true});
   }
   if (p === "/api/apps") return resp(200, { ok:true, apps:[{package:"com.x",label:"X"}] });
+  if (p === "/api/apps/shortcuts") return resp(200, { ok:true, package:"com.x", shortcuts:[{id:"s1",label:"打开最近项目",shortLabel:"打开最近项目",rank:0,enabled:true}] });
+  if (p === "/api/apps/shortcut") { lastShortcutPost = JSON.parse(init.body || "{}"); return resp(200, { ok:true, package:lastShortcutPost.package, shortcutId:lastShortcutPost.shortcutId }); }
   if (p === "/api/apps/icon") return respBuf(200, new Uint8Array([137,80,78,71]).buffer);
   if (p === "/api/clipboard") {
     if (method === "POST") { lastClipPost = JSON.parse(init.body||"{}"); return resp(200,{ok:true}); }
@@ -69,6 +73,7 @@ function routeFetch(url, init){
   if (p === "/api/notifications/icon") return respBuf(200, new Uint8Array([137,80,78,71]).buffer);
   if (p === "/api/fs/list") return resp(200, { ok:true, path:"/sdcard", entries:[{name:"a",dir:false,size:1,mtime:0,hidden:false,symlink:false}] });
   if (p === "/api/fs/upload") return /name=fail/.test(u) ? resp(500, { ok:false, error:"eacces" }) : resp(200, { ok:true });
+  if (p === "/api/fs/send-to-session") { lastFsSendPost = JSON.parse(init.body || "{}"); return resp(200, { ok:true, op:"send-to-session", path:lastFsSendPost.path, sessionId:lastFsSendPost.sessionId }); }
   if (p.indexOf("/api/fs/") === 0) return resp(200, { ok:true });
   return resp(404, { ok:false, error:"not_found" });
 }
@@ -99,7 +104,7 @@ sandbox.URL.createObjectURL = ()=> "blob:stub"; sandbox.URL.revokeObjectURL = ()
 
 vm.createContext(sandbox);
 vm.runInContext(code, sandbox);
-const L = sandbox.window.__blindcastLocal;
+  const L = sandbox.window.__blindcastLocal;
 
 const results = [];
 function check(name, cond){ results.push((cond?"PASS":"FAIL")+"  "+name); if(!cond) process.exitCode=1; }
@@ -108,6 +113,12 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
 
 (async () => {
   check("adapter exposed", !!L && L.enabled);
+  check("default workspace is Fusion", L.workspaceMode() === "fusion");
+  sandbox.localStorage.setItem("blindcast-workspace-mode", "desktop");
+  check("legacy Desktop preference does not block Fusion", L.workspaceMode() === "fusion");
+  L.setWorkspaceMode("desktop");
+  check("explicit current Desktop choice is preserved", L.workspaceMode() === "desktop");
+  L.setWorkspaceMode("fusion");
   // shims
   check("crypto.randomUUID shim", typeof sandbox.crypto.randomUUID === "function" && /^[0-9a-f-]{36}$/.test(sandbox.crypto.randomUUID()));
   check("navigator.clipboard shim", !!sandbox.navigator.clipboard && typeof sandbox.navigator.clipboard.writeText==="function");
@@ -137,9 +148,9 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   await tick(4);
   const welcome = wsMsgs.map(decodeJson).find(m=>m&&m.t==="welcome");
   check("resume with valid token -> welcome", !!welcome);
-  const EXPECT_CAPS = ["video","device-audio","control","multi-session","app-list","file","fs","clipboard","desk-widget","terminal","notification"];
+  const EXPECT_CAPS = ["video","device-audio","control","multi-session","multi-touch","app-list","file","fs","clipboard","desk-widget","terminal","notification"];
   check("welcome caps = backend-honest set", welcome && JSON.stringify(welcome.caps)===JSON.stringify(EXPECT_CAPS));
-  check("no unbacked caps advertised", welcome && !["multi-touch","phone-screen","audio","camera"].some(c=>welcome.caps.includes(c)));
+  check("no unbacked caps advertised", welcome && !["phone-screen","audio","camera"].some(c=>welcome.caps.includes(c)));
 
   // token rejection must deny (never a fake welcome)
   statusOk = false;
@@ -199,11 +210,20 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   // (the panel sends control over the SESSION socket, where the Bridge lives)
   openWindowPayload = { ok:true, window:{ windowId:9, displayId:111, packageName:"com.z", width:540, height:1200, state:"running" } };
   wsMsgs.length=0;
-  ws._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"open-window", pkg:"com.z", w:540, h:1200, userId:0 })));
+  ws._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"open-window", pkg:"com.z", component:"com.z/.Main", intentUrl:"https://example.test", w:540, h:1200, userId:10 })));
   await tick(3);
   const opened = wsMsgs.map(b=>new Uint8Array(b)).filter(u=>u[0]===4 && u[1]===1)
     .map(u=>decodeJson(dec.decode(u.subarray(2)))).find(m=>m&&m.c==="window-state"&&String(m.sessionId)==="9");
   check("open-window -> opening window-state", !!opened && opened.state==="opening" && opened.pkg==="com.z");
+  check("open-window forwards component, intent URL and user", lastWindowPost && lastWindowPost.component === "com.z/.Main" && lastWindowPost.intentUrl === "https://example.test" && lastWindowPost.user === 10);
+
+  // Real relaunch must use the backend action; resizing the same source is not
+  // equivalent because it leaves the Android activity process alive.
+  openWindowPayload = { ok:true, window:{ windowId:7, displayId:112, packageName:"com.x", width:540, height:1200, state:"running" } };
+  lastWindowPost = null;
+  media1._onCommand({ c:"relaunch" });
+  await tick(3);
+  check("relaunch uses backend relaunch action", lastWindowPost && lastWindowPost.action === "relaunch" && lastWindowPost.windowId === 7);
 
   // D9: canvas pixels -> normalized 0..1 for the target window's source size
   const ctlSends=[];
@@ -212,22 +232,22 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   media1._onInput({ k:"pointer", a:"down", x:270, y:600 });
   media1._onInput({ k:"pointer", a:"up",   x:540, y:1200 });
   const ctlJson = ctlSends.map(decodeJson);
-  const down = ctlJson.find(o=>o&&o.type==="down");
+  const down = ctlJson.find(o=>o&&o.type==="pointer"&&o.action==="down");
   check("D9 pointer down normalized to 0.5/0.5", down && down.x===0.5 && down.y===0.5 && down.wid===7);
-  const upEv = ctlJson.find(o=>o&&o.type==="up");
+  const upEv = ctlJson.find(o=>o&&o.type==="pointer"&&o.action==="up");
   check("D9 pointer up clamps at 1/1", upEv && upEv.x===1 && upEv.y===1);
-  // scroll emulation: down/move/up all normalized
+  // scroll emulation preserves both axes: down/move/up all normalized
   ctlSends.length=0;
-  media1._onInput({ k:"scroll", x:270, y:600, dy:120 });
+  media1._onInput({ k:"scroll", x:270, y:600, dx:80, dy:120 });
   const scrolls = ctlSends.map(decodeJson);
   check("D9 scroll emits normalized down/move/up",
-    scrolls.length===3 && scrolls.every(o=>o.x>=0&&o.x<=1&&o.y>=0&&o.y<=1) && scrolls[0].type==="down");
-  // key is a single Down+Up upstream; panel "up" must be swallowed
+    scrolls.length===3 && scrolls.every(o=>o.x>=0&&o.x<=1&&o.y>=0&&o.y<=1) && scrolls[0].type==="pointer" && scrolls[0].action==="down" && scrolls[1].x < scrolls[0].x);
+  // key lifecycle is preserved for long-press and modifier-aware input
   ctlSends.length=0;
   media1._onInput({ k:"key", a:"down", code:29 });
   media1._onInput({ k:"key", a:"up", code:29 });
   const keys = ctlSends.map(decodeJson).filter(o=>o&&o.type==="key");
-  check("D9 key down emits once, key up swallowed", keys.length===1 && keys[0].keycode===29);
+  check("D9 key down/up preserve lifecycle", keys.length===2 && keys[0].action==="down" && keys[1].action==="up" && keys[0].keycode===29);
 
   // D7/D8: clipboard (chan3) -> /api/clipboard, never keyboard text
   ctlSends.length=0; lastClipPost=null;
@@ -249,6 +269,21 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   const fsList = mMsgs.map(b=>new Uint8Array(b)).filter(u=>u[0]===4 && u[1]===1)
     .map(u=>decodeJson(dec.decode(u.subarray(2)))).find(o=>o&&o.c==="fs-list-result");
   check("D8 fs-list bridged to /api/fs/list", fsList && fsList.ok===true && fsList.entries && fsList.entries[0].name==="a");
+  mMsgs.length=0; lastFsSendPost=null;
+  media1._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"fs-send-to-session", reqId:"send1", path:"/sdcard/a.txt", sessionId:"7" })));
+  await tick(2);
+  const fsSend = mMsgs.map(b=>new Uint8Array(b)).filter(u=>u[0]===4&&u[1]===1).map(u=>decodeJson(dec.decode(u.subarray(2)))).find(o=>o&&o.c==="fs-op-result"&&o.op==="send-to-session");
+  check("fs-send-to-session posts path + sessionId", !!lastFsSendPost && lastFsSendPost.path==="/sdcard/a.txt" && lastFsSendPost.sessionId==="7");
+  check("fs-send-to-session returns fs-op-result success", !!fsSend && fsSend.ok===true && fsSend.sessionId==="7");
+  wsMsgs.length=0;
+  ws._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"app-menu", packageName:"com.x", userId:0 })));
+  await tick(2);
+  const menu = wsMsgs.map(b=>new Uint8Array(b)).filter(u=>u[0]===4&&u[1]===1).map(u=>decodeJson(dec.decode(u.subarray(2)))).find(m=>m&&m.c==="app-menu");
+  check("app-menu returns real shortcut entries", !!menu && menu.shortcuts && menu.shortcuts[0].id==="s1" && menu.shortcuts[0].label==="打开最近项目");
+  media1._shortcutPackage="com.x"; lastShortcutPost=null;
+  media1._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"start-shortcut", id:"s1" })));
+  await tick(2);
+  check("start-shortcut uses attached window session", !!lastShortcutPost && lastShortcutPost.package==="com.x" && lastShortcutPost.shortcutId==="s1" && lastShortcutPost.sessionId==="7");
 
   // D19: app-list entries must use the original wire field names -- displayName
   // (not label), plus userId/isSystemApp/appCategory/game (device model
@@ -300,7 +335,7 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   check("D18 upload failure -> upload-failed{id,reason}", upFail && upFail.id===8 && upFail.reason==="eacces");
   check("D18 upload failure emits NO upload-done for that id", !upMsgs.some(m=>m.c==="upload-done"&&m.id===8));
 
-  // terminal (chan4 JSON + chan5 type5) <-> /ws/terminal
+  // terminal (chan4 JSON + chan6 type1) <-> /ws/terminal
   wsMsgs.length=0;
   ws._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"term-open", reqId:"T1", cols:80, rows:24 })));
   await tick(2);
@@ -325,11 +360,13 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   wsMsgs.length=0;
   if(termWs) termWs._fire("message", { data: new Uint8Array([0,0,0,5, 104,105]).buffer });
   await tick(1);
-  const termOut = wsMsgs.map(b=>new Uint8Array(b)).find(u=>u[0]===5 && u[1]===5);
-  check("terminal output passthrough chan5 type5", !!termOut && termOut[2]===0 && termOut[5]===5);
-  ws._onChan5(5, new Uint8Array([0,0,0,5, 104,105]));
+  const termOut = wsMsgs.map(b=>new Uint8Array(b)).find(u=>u[0]===6 && u[1]===1);
+  check("terminal output passthrough chan6 type1", !!termOut && termOut[2]===0 && termOut[5]===5);
+  ws._onEnvelope(6, 1, new Uint8Array([0,0,0,5, 104,105]));
   await tick(1);
-  check("terminal input -> {type:input,id,data:base64}", !!termWs && termWs.sent.some(s=>String(s).includes('"type":"input"')&&String(s).includes("aGk=")));
+  check("terminal input -> binary [id][utf8]", !!termWs && termWs.sent.some(s=>{
+    const u = new Uint8Array(s); return u.length===6 && u[0]===0 && u[3]===5 && u[4]===104 && u[5]===105;
+  }));
 
   // notifications (chan4 JSON) <-> /api/notifications
   wsMsgs.length=0;
@@ -362,12 +399,17 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   await tick(3);
   const nCmd = wsMsgs.map(b=>new Uint8Array(b)).filter(u=>u[0]===4&&u[1]===1).map(u=>decodeJson(dec.decode(u.subarray(2)))).find(m=>m&&m.c==="notif-cmd-result");
   check("notif-cmd dismiss -> POST /api/notifications", !!nCmd && nCmd.ok===true && !!lastNotifPost && lastNotifPost.action==="dismiss" && lastNotifPost.key==="k1");
-  // D13: command 7 (action-click) is not backed -> unsupported, and no dismiss POST
+  // Unsupported snooze remains honest; action-click reaches the backend.
   wsMsgs.length=0; lastNotifPost=null;
-  ws._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"notif-cmd", reqId:"N5", command:7, key:"k1" })));
+  ws._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"notif-cmd", reqId:"N5", command:3, key:"k1" })));
   await tick(3);
   const nUnsup = wsMsgs.map(b=>new Uint8Array(b)).filter(u=>u[0]===4&&u[1]===1).map(u=>decodeJson(dec.decode(u.subarray(2)))).find(m=>m&&m.c==="notif-cmd-result");
-  check("notif-cmd unsupported command -> ok:false, no POST", !!nUnsup && nUnsup.ok===false && nUnsup.command===7 && !lastNotifPost);
+  check("notif-cmd unsupported command -> ok:false, no POST", !!nUnsup && nUnsup.ok===false && nUnsup.command===3 && !lastNotifPost);
+  wsMsgs.length=0; lastNotifPost=null;
+  ws._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"notif-cmd", reqId:"N6", command:7, key:"k1", actionIndex:0 })));
+  await tick(3);
+  const nAction = wsMsgs.map(b=>new Uint8Array(b)).filter(u=>u[0]===4&&u[1]===1).map(u=>decodeJson(dec.decode(u.subarray(2)))).find(m=>m&&m.c==="notif-cmd-result");
+  check("notif-cmd action-click -> POST action", !!nAction && nAction.ok===true && lastNotifPost && lastNotifPost.action==="action" && lastNotifPost.actionIndex===0);
   ws._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"notif-subscribe", on:false, reqId:"N4" })));
 
   // device-info / display-night-mode / video-ack / audio control
@@ -377,6 +419,9 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   const devInfo = wsMsgs.map(b=>new Uint8Array(b)).filter(u=>u[0]===4&&u[1]===1).map(u=>decodeJson(dec.decode(u.subarray(2)))).find(m=>m&&m.c==="device-info");
   check("device-info -> {c:device-info, device.battery}",
     !!devInfo && devInfo.device && devInfo.device.battery && devInfo.device.battery.level===69 && devInfo.device.battery.charging===false);
+  check("device-info includes Android/storage/connection fields",
+    !!devInfo && devInfo.device.androidVersion === "16" && devInfo.device.connection === "wireless" &&
+    devInfo.device.storage && devInfo.device.storage.used === 10 && devInfo.device.storage.total === 100);
   wsMsgs.length=0; lastNightPost=null;
   ws._onEnvelope(4, 1, new TextEncoder().encode(JSON.stringify({ c:"display-night-mode", on:true })));
   await tick(2);
@@ -489,7 +534,7 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   check("resize updates input source geometry", s.sourceSize(7).w === 640 && s.sourceSize(7).h === 960);
   lastWindowPost = null;
   media1._onCommand({c:"relaunch"}); await tick(3);
-  check("relaunch rebuilds only the attached window", lastWindowPost && lastWindowPost.action === "resize" && lastWindowPost.windowId === 7);
+  check("relaunch restarts only the attached window", lastWindowPost && lastWindowPost.action === "relaunch" && lastWindowPost.windowId === 7);
   lastWindowPost = null;
   media1._onCommand({c:"resize",w:0,h:960}); await tick(2);
   check("invalid resize does not reach backend", lastWindowPost === null);

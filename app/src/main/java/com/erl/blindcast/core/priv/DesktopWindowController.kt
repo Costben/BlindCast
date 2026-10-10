@@ -63,6 +63,9 @@ object DesktopWindowController {
         val height: Int,
         val state: String,
         val error: String,
+        val intentUrl: String = "",
+        val kind: String = "app",
+        val userId: Int = 0,
     )
 
     /** 单个窗口的运行态（内存侧；磁盘 status 文件为准）。 */
@@ -80,6 +83,9 @@ object DesktopWindowController {
         @Volatile var height: Int = DEFAULT_HEIGHT
         @Volatile var state: String = "stopped"
         @Volatile var error: String = ""
+        @Volatile var intentUrl: String = ""
+        @Volatile var kind: String = "app"
+        @Volatile var userId: Int = 0
 
         val statusPath: String get() = stopPath + ".status"
 
@@ -93,6 +99,9 @@ object DesktopWindowController {
             height = height,
             state = state,
             error = error,
+            intentUrl = intentUrl,
+            kind = kind,
+            userId = userId,
         )
     }
 
@@ -175,7 +184,10 @@ object DesktopWindowController {
         width: Int = DEFAULT_WIDTH,
         height: Int = DEFAULT_HEIGHT,
         reuseWindowId: Int = -1,
-    ): WindowInfo = withContext(Dispatchers.IO) { serialized { openLocked(packageName, component, width, height, reuseWindowId) } }
+        intentUrl: String = "",
+        kind: String = "app",
+        userId: Int = 0,
+    ): WindowInfo = withContext(Dispatchers.IO) { serialized { openLocked(packageName, component, width, height, reuseWindowId, intentUrl, kind, userId) } }
 
     private fun openLocked(
         packageName: String,
@@ -183,9 +195,16 @@ object DesktopWindowController {
         width: Int,
         height: Int,
         reuseWindowId: Int,
+        intentUrl: String,
+        kind: String,
+        userId: Int,
     ): WindowInfo {
         val pkg = packageName.trim()
-        if (pkg.isBlank()) return failure(reuseWindowId, "packageName 为空")
+        val url = intentUrl.trim()
+        val normalizedKind = kind.trim().ifBlank { "app" }
+        if (normalizedKind !in setOf("app", "widget-picker", "widget-config")) return failure(reuseWindowId, "unsupported window kind")
+        if (pkg.isNotBlank() && !Regex("^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+$").matches(pkg)) return failure(reuseWindowId, "invalid packageName")
+        if (pkg.isBlank() && url.isBlank() && normalizedKind == "app") return failure(reuseWindowId, "packageName 为空")
         if (entries.size >= MAX_WINDOWS && !entries.containsKey(reuseWindowId)) {
             return failure(reuseWindowId, "窗口数已达上限 $MAX_WINDOWS")
         }
@@ -204,6 +223,9 @@ object DesktopWindowController {
         val entry = Entry(wid, socket, stop)
         entry.packageName = pkg
         entry.component = component
+        entry.intentUrl = url
+        entry.kind = normalizedKind
+        entry.userId = userId.coerceIn(0, 999)
         entry.width = width
         entry.height = height
 
@@ -228,14 +250,16 @@ object DesktopWindowController {
 
         // 2) 拉宿主（shell 身份）。
         runCatching { Shell.cmd("rm -f $stop $stop.status").exec() }
-        val comp = component.ifBlank { resolveLauncherComponent(pkg) }
-        if (comp.isBlank()) {
+        val comp = component.ifBlank { if (url.isBlank()) resolveLauncherComponent(pkg) else "" }
+        if (comp.isBlank() && url.isBlank() && normalizedKind == "app") {
             runCatching { link.stop() }
             return failure(wid, "无法解析 $pkg 的启动组件（包名不存在或没有 launcher activity）")
         }
+        val encodedUrl = if (url.isBlank()) "-" else android.util.Base64.encodeToString(url.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+        val encodedComponent = if (comp.isBlank()) "-" else android.util.Base64.encodeToString(comp.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
         val inner = "CLASSPATH=$apk app_process /system/bin " +
             "com.erl.blindcast.core.scrcpy.FusionDesktopMain window " +
-            "$width $height ${DEFAULT_BITRATE} ${DEFAULT_FPS} $assoc $stop $socket $comp $wid"
+            "$width $height ${DEFAULT_BITRATE} ${DEFAULT_FPS} $assoc $stop $socket $encodedComponent $wid $encodedUrl $normalizedKind ${entry.userId}"
         val cmd = "su 2000 -c '$inner' >/dev/null 2>&1 &"
         runCatching { Shell.cmd(cmd).exec() }
         Log.i(TAG, "[open] wid=$wid pkg=$pkg comp=$comp ${width}x${height} socket=$socket")
@@ -338,9 +362,13 @@ object DesktopWindowController {
             serialized {
                 val pkg = entries[windowId]?.packageName.orEmpty()
                 val comp = entries[windowId]?.component.orEmpty()
-                if (pkg.isBlank()) return@serialized failure(windowId, "窗口不存在或缺少包名")
+                val old = entries[windowId]
+                if (old == null || (pkg.isBlank() && old.intentUrl.isBlank() && old.kind == "app")) return@serialized failure(windowId, "窗口不存在或缺少启动目标")
+                val url = old.intentUrl
+                val kind = old.kind
+                val user = old.userId
                 closeLocked(windowId)
-                openLocked(pkg, comp, width, height, windowId)
+                openLocked(pkg, comp, width, height, windowId, url, kind, user)
             }
         }
 

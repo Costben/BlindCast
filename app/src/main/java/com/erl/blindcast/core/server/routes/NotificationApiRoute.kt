@@ -3,6 +3,7 @@ package com.erl.blindcast.core.server.routes
 import android.util.Log
 import com.erl.blindcast.core.notification.BlindCastNotificationListener
 import com.erl.blindcast.core.notification.NotificationStore
+import com.erl.blindcast.core.priv.DesktopWindowController
 import com.topjohnwu.superuser.Shell
 import org.json.JSONObject
 
@@ -13,6 +14,7 @@ import org.json.JSONObject
  * - `GET  /api/notifications/icon?key=<key>` → `image/png`（无图标 404）
  * - `POST /api/notifications {"action":"dismiss","key":...}` → `{ok}`：
  *   也接受原版数值命令 `{"command":1,"key":...}`（1 = dismiss）；
+ *   `open`、`action`、`reply` 分别触发通知内容 PendingIntent、动作按钮和 RemoteInput；
  *   `{"action":"dismissAll"}` 清空全部。
  *
  * 数据源为 [BlindCastNotificationListener]（`NotificationListenerService`）。监听器需「通知使用权」，
@@ -46,15 +48,34 @@ object NotificationApiRoute {
                 ?: return 400 to err("invalid json body")
             val action = obj.optString("action", "").trim().lowercase()
             val key = obj.optString("key", "")
+            val displayId = obj.optString("sessionId", "").toIntOrNull()?.let { wid ->
+                DesktopWindowController.list().firstOrNull { it.windowId == wid }?.displayId
+            } ?: 0
+            val command = obj.optInt("command", -1)
             when {
                 action == "dismissall" -> {
                     val ok = BlindCastNotificationListener.cancelAll()
                     200 to JSONObject().put("ok", ok).put("action", "dismissAll").toString()
                 }
-                action == "dismiss" || obj.optInt("command", -1) == 1 -> {
+                action == "dismiss" || command == 1 -> {
                     if (key.isBlank()) return 400 to err("missing key")
                     val ok = BlindCastNotificationListener.cancel(key)
                     200 to JSONObject().put("ok", ok).put("action", "dismiss").put("key", key).toString()
+                }
+                action == "open" || command == 5 || command == 6 -> {
+                    val ok = NotificationStore.send(com.erl.blindcast.blindCastApp.applicationContext, key, displayId = displayId)
+                    200 to JSONObject().put("ok", ok).put("action", "open").put("key", key).toString()
+                }
+                action == "action" || command == 7 -> {
+                    val index = obj.optInt("actionIndex", obj.optInt("index", -1))
+                    val ok = NotificationStore.send(com.erl.blindcast.blindCastApp.applicationContext, key, index, displayId = displayId)
+                    200 to JSONObject().put("ok", ok).put("action", "action").put("key", key).put("actionIndex", index).toString()
+                }
+                action == "reply" || command == 8 -> {
+                    val index = obj.optInt("actionIndex", obj.optInt("index", -1))
+                    val text = obj.optString("text", obj.optString("reply", ""))
+                    val ok = NotificationStore.send(com.erl.blindcast.blindCastApp.applicationContext, key, index, text, displayId)
+                    200 to JSONObject().put("ok", ok).put("action", "reply").put("key", key).put("actionIndex", index).toString()
                 }
                 else -> 200 to JSONObject()
                     .put("ok", false)

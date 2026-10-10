@@ -197,6 +197,56 @@ object RootInputDaemon {
         return send(cmd)
     }
 
+    suspend fun multi(
+        packageName: String,
+        action: String,
+        actionIndex: Int,
+        xs: FloatArray,
+        ys: FloatArray,
+        displayId: Int = 0,
+        width: Int = -1,
+        height: Int = -1,
+    ): Triple<Boolean, String?, Long> {
+        if (xs.isEmpty() || xs.size != ys.size || xs.size > 10) {
+            return Triple(false, "invalid multi-touch pointer set", -1L)
+        }
+        if (action == "down" && !ensureStarted(packageName)) {
+            return Triple(false, "常驻输入daemon不可用（无su/拉起失败）", -1L)
+        }
+        val points = buildString {
+            append("multi ").append(action).append(' ').append(actionIndex).append(' ').append(xs.size)
+            for (i in xs.indices) append(' ').append(xs[i]).append(' ').append(ys[i])
+            append(' ').append(displayId).append(' ').append(width).append(' ').append(height)
+        }
+        return send(points)
+    }
+
+    suspend fun keyWithMeta(
+        packageName: String,
+        keyCode: Int,
+        metaState: Int,
+        displayId: Int = 0,
+    ): Triple<Boolean, String?, Long> {
+        if (!ensureStarted(packageName)) {
+            return Triple(false, "常驻输入daemon不可用（无su/拉起失败）", -1L)
+        }
+        return send("key-meta $keyCode $metaState $displayId")
+    }
+
+    suspend fun keyAction(
+        packageName: String,
+        action: Int,
+        keyCode: Int,
+        metaState: Int,
+        displayId: Int = 0,
+    ): Triple<Boolean, String?, Long> {
+        if (!ensureStarted(packageName)) {
+            return Triple(false, "常驻输入daemon不可用（无su/拉起失败）", -1L)
+        }
+        val phase = if (action == android.view.KeyEvent.ACTION_UP) "up" else "down"
+        return send("key-action $phase $keyCode $metaState $displayId")
+    }
+
     suspend fun drag(
         packageName: String,
         x0: Float,

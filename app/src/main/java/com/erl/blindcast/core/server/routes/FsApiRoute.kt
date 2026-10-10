@@ -1,7 +1,13 @@
 package com.erl.blindcast.core.server.routes
 
+import android.content.ClipData
+import android.content.Intent
 import android.util.Log
+import androidx.core.content.FileProvider
+import com.erl.blindcast.BuildConfig
 import com.erl.blindcast.blindCastApp
+import com.erl.blindcast.core.priv.DesktopWindowController
+import com.topjohnwu.superuser.Shell
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -133,8 +139,60 @@ object FsApiRoute {
             "/api/fs/rename" -> if (method != "POST") 405 to err("method not allowed") else rename(body)
             "/api/fs/delete" -> if (method != "POST") 405 to err("method not allowed") else delete(body)
             "/api/fs/move" -> if (method != "POST") 405 to err("method not allowed") else move(body)
+            "/api/fs/send-to-session" -> if (method != "POST") 405 to err("method not allowed") else sendToSession(body)
             else -> 404 to err("not found")
         }
+
+    private fun sendToSession(body: ByteArray): Pair<Int, String> {
+        val obj = json(body) ?: return 400 to err("invalid json body")
+        val rawPath = obj.optString("path", "")
+        val sessionRaw = obj.optString("sessionId", "")
+        val windowId = sessionRaw.toIntOrNull() ?: return 200 to opErr("send-to-session", rawPath, "no-session")
+        if (windowId <= 0) return 200 to opErr("send-to-session", rawPath, "no-session")
+        val source = resolve(rawPath, mustExist = true) ?: return 200 to opErr("send-to-session", rawPath, "enoent")
+        if (!source.isFile) return 200 to opErr("send-to-session", rawPath, "enotdir")
+        if (!source.canRead()) return 200 to opErr("send-to-session", rawPath, "eacces")
+        val info = DesktopWindowController.list().firstOrNull { it.windowId == windowId && it.state == "running" }
+            ?: return 200 to opErr("send-to-session", rawPath, "no-session")
+        if (info.displayId <= 0 || info.packageName.isBlank()) return 200 to opErr("send-to-session", rawPath, "no-session")
+        val context = blindCastApp.applicationContext
+        val shareDir = File(context.cacheDir, "fusion-send").apply { mkdirs() }
+        runCatching { shareDir.listFiles()?.filter { System.currentTimeMillis() - it.lastModified() > 60 * 60 * 1000L }?.forEach { it.delete() } }
+        val safeName = source.name.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "shared.bin" }
+        val staged = File(shareDir, "${System.nanoTime()}-$safeName")
+        val copied = runCatching { source.inputStream().use { input -> staged.outputStream().use { output -> input.copyTo(output) } }; true }.getOrDefault(false)
+        if (!copied) { runCatching { staged.delete() }; return 200 to opErr("send-to-session", rawPath, "eio") }
+        val uri = runCatching { FileProvider.getUriForFile(context, "${BuildConfig.APPLICATION_ID}.fileprovider", staged) }.getOrNull() ?: run {
+            runCatching { staged.delete() }; return 200 to opErr("send-to-session", rawPath, "eio")
+        }
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = guessMime(source.name).substringBefore(';').trim()
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newRawUri(source.name, uri)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            setPackage(info.packageName)
+        }
+        val startedDirect = runCatching {
+            context.grantUriPermission(info.packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val options = android.app.ActivityOptions.makeBasic().apply { setLaunchDisplayId(info.displayId) }
+            context.startActivity(intent, options.toBundle()); true
+        }.getOrElse { Log.w(TAG, "[send-to-session] start ${info.packageName} did=${info.displayId} failed", it); false }
+        val started = startedDirect || runCatching {
+            val resolved = context.packageManager.resolveActivity(intent, 0)?.activityInfo ?: return@runCatching false
+            val component = "${resolved.packageName}/${resolved.name}"
+            val cmd = "am start --user 0 --display ${info.displayId} -a android.intent.action.SEND " +
+                "-t ${shellQuote(intent.type ?: "application/octet-stream")} -n ${shellQuote(component)} " +
+                "--eu android.intent.extra.STREAM ${shellQuote(uri.toString())} --grant-read-uri-permission"
+            val result = Shell.cmd(cmd).exec(); val output = (result.out + result.err).joinToString("\n")
+            Log.i(TAG, "[send-to-session] privileged start did=${info.displayId} component=$component ok=${result.isSuccess}")
+            result.isSuccess && !output.contains("Error: Activity not started")
+        }.getOrElse { Log.w(TAG, "[send-to-session] privileged start failed", it); false }
+        if (!started) { runCatching { staged.delete() }; return 200 to opErr("send-to-session", rawPath, "eio") }
+        return 200 to JSONObject().put("ok", true).put("op", "send-to-session")
+            .put("path", canonicalOrNull(source) ?: source.absolutePath).put("sessionId", sessionRaw).put("error", "").toString()
+    }
+
+    private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
     private fun rootsJson(): String {
         val arr = JSONArray()
@@ -161,6 +219,7 @@ object FsApiRoute {
                     .put("name", f.name)
                     .put("path", canon)
                     .put("dir", f.isDirectory)
+                    .put("isDir", f.isDirectory)
                     .put("size", if (f.isFile) f.length() else 0L)
                     .put("mtime", f.lastModified())
                     .put("hidden", f.isHidden)
@@ -173,6 +232,7 @@ object FsApiRoute {
             .put("path", canonicalOrNull(dir) ?: dir.absolutePath)
             .put("entries", arr)
             .put("error", "")
+            .put("err", "")
             .toString()
     }
 
@@ -184,12 +244,20 @@ object FsApiRoute {
             .put("op", "stat")
             .put("path", canonicalOrNull(f) ?: f.absolutePath)
             .put("dir", f.isDirectory)
+            .put("isDir", f.isDirectory)
             .put("size", if (f.isFile) f.length() else 0L)
             .put("mtime", f.lastModified())
             .put("hidden", f.isHidden)
             .put("readable", f.canRead())
             .put("writable", f.canWrite())
+            .put("entry", JSONObject()
+                .put("name", f.name)
+                .put("isDir", f.isDirectory)
+                .put("size", if (f.isFile) f.length() else 0L)
+                .put("mtime", f.lastModified())
+                .put("mime", guessMime(f.name)))
             .put("error", "")
+            .put("err", "")
             .toString()
     }
 
@@ -426,6 +494,7 @@ object FsApiRoute {
         .put("op", op)
         .put("path", path)
         .put("error", if (ok) "" else error)
+        .put("err", if (ok) "" else error)
         .toString()
 
     private fun opErr(op: String, path: String?, error: String): String = JSONObject()
@@ -433,6 +502,7 @@ object FsApiRoute {
         .put("op", op)
         .put("path", path ?: "")
         .put("error", error)
+        .put("err", error)
         .toString()
 
     private fun json(body: ByteArray): JSONObject? =

@@ -68,12 +68,12 @@ need(rc.returncode == 0, "patch-shell not applied: " + (rc.stderr or rc.stdout).
 # The set mirrors the routes the backend actually registers (BlindCastServer):
 #   video/control/app-list/multi-session/desk-widget + clipboard (/api/clipboard)
 #   + file/fs (/api/fs/*) + terminal (/ws/terminal) + notification
-#   (/api/notifications) + device-audio (opt-in PCM /ws/stream). Microphone audio,
-#   multi-touch (/ws/control has no pointer slot) and phone-screen
-#   (mode:"mirror" is not an independent session) must NOT be advertised.
+#   (/api/notifications) + device-audio (opt-in PCM /ws/stream) + multi-touch
+#   (pointer slots are routed through the privileged input daemon). Microphone audio
+#   and phone-screen (mode:"mirror" is not an independent session) remain absent.
 SUPPORTED_CAPS = {"video", "device-audio", "control", "multi-session", "app-list", "file", "fs",
-                  "clipboard", "desk-widget", "terminal", "notification"}
-UNSUPPORTED_CAPS = {"multi-touch", "phone-screen", "audio", "camera"}
+                  "clipboard", "desk-widget", "terminal", "notification", "multi-touch"}
+UNSUPPORTED_CAPS = {"phone-screen", "audio", "camera"}
 ad = (WEB / "js/local-adapter.js").read_text(encoding="utf-8")
 m = re.search(r"var CAPS\s*=\s*\[([^\]]*)\]", ad)
 need(bool(m), "adapter CAPS not found")

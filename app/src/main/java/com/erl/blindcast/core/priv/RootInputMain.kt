@@ -275,6 +275,27 @@ object RootInputMain {
                 val ok = TouchInjector.injectTouchUp(x, y, displayId, width, height)
                 if (ok) true to null else false to (TouchInjector.lastError?.message ?: "up rejected")
             }
+            "multi" -> {
+                // multi <action> <actionIndex> <count> <x0> <y0> ... <displayId> <width> <height>
+                if (parts.size < 7) return false to "multi need action index count points displayId width height"
+                val action = parts[1]
+                val actionIndex = parts[2].toIntOrNull() ?: return false to "multi bad action index"
+                val count = parts[3].toIntOrNull() ?: return false to "multi bad count"
+                if (count !in 1..10 || parts.size < 4 + count * 2 + 3) return false to "multi bad point list"
+                val xs = FloatArray(count)
+                val ys = FloatArray(count)
+                for (i in 0 until count) {
+                    xs[i] = parts[4 + i * 2].toFloatOrNull() ?: return false to "multi bad x"
+                    ys[i] = parts[5 + i * 2].toFloatOrNull() ?: return false to "multi bad y"
+                    if (!xs[i].isFinite() || !ys[i].isFinite()) return false to "multi bad coord"
+                }
+                val tail = 4 + count * 2
+                val displayId = parts.getOrNull(tail)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
+                val width = parts.getOrNull(tail + 1)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val height = parts.getOrNull(tail + 2)?.toIntOrNull() ?: TouchInjector.UNSET_DISPLAY_SIZE
+                val ok = TouchInjector.injectMultiTouch(action, actionIndex, xs, ys, displayId, width, height)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "multi rejected")
+            }
             "drag" -> {
                 if (parts.size < 5) return false to "drag need x0 y0 x1 y1 [displayId] [width] [height]"
                 val f = parts.subList(1, 5).map { it.toFloatOrNull() }
@@ -291,6 +312,27 @@ object RootInputMain {
                 val displayId = parts.getOrNull(2)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
                 val ok = TouchInjector.injectKey(code, displayId)
                 if (ok) true to null else false to (TouchInjector.lastError?.message ?: "key rejected")
+            }
+            "key-meta" -> {
+                if (parts.size < 3) return false to "key-meta need code meta [displayId]"
+                val code = parts[1].toIntOrNull() ?: return false to "key-meta bad code"
+                val meta = parts[2].toIntOrNull() ?: return false to "key-meta bad meta"
+                val displayId = parts.getOrNull(3)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
+                val ok = TouchInjector.injectKeyWithMeta(code, meta, displayId)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "key-meta rejected")
+            }
+            "key-action" -> {
+                if (parts.size < 4) return false to "key-action need down|up code meta [displayId]"
+                val action = when (parts[1].lowercase()) {
+                    "down" -> android.view.KeyEvent.ACTION_DOWN
+                    "up" -> android.view.KeyEvent.ACTION_UP
+                    else -> return false to "key-action bad action"
+                }
+                val code = parts[2].toIntOrNull() ?: return false to "key-action bad code"
+                val meta = parts[3].toIntOrNull() ?: return false to "key-action bad meta"
+                val displayId = parts.getOrNull(4)?.toIntOrNull() ?: TouchInjector.DEFAULT_DISPLAY_ID
+                val ok = TouchInjector.injectKeyActionWithMeta(action, code, meta, displayId)
+                if (ok) true to null else false to (TouchInjector.lastError?.message ?: "key-action rejected")
             }
             "text" -> {
                 // `text <b64> [displayId]`（`-`/缺参=空串；b64 字母表无空格故单 token 安全）。

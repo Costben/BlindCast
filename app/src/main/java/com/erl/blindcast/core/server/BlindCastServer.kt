@@ -13,8 +13,10 @@ import com.erl.blindcast.core.server.routes.DeviceOpsApiRoute
 import com.erl.blindcast.core.server.routes.DisplayApiRoute
 import com.erl.blindcast.core.server.routes.FsApiRoute
 import com.erl.blindcast.core.server.routes.NotificationApiRoute
+import com.erl.blindcast.core.server.routes.NotificationWsRoute
 import com.erl.blindcast.core.server.routes.PairRoute
 import com.erl.blindcast.core.server.routes.StreamWsRoute
+import com.erl.blindcast.core.server.routes.ShortcutApiRoute
 import com.erl.blindcast.core.server.routes.TerminalWsRoute
 import com.erl.blindcast.core.server.routes.WebStaticRoutes
 import com.erl.blindcast.core.server.routes.WidgetWsRoute
@@ -327,7 +329,7 @@ object BlindCastServer {
             return serveStatic(req, output)
         }
         return when {
-            path == "/ws/stream" || path == "/ws/control" || path == "/ws/widgets" || path == "/ws/terminal" ->
+            path == "/ws/stream" || path == "/ws/control" || path == "/ws/widgets" || path == "/ws/terminal" || path == "/ws/notifications" ->
                 serveWebSocket(req, input, output, socket)
             path == "/api/auth/status" ->
                 serveJson(output, req.method, AuthRoute.handleStatus())
@@ -396,6 +398,16 @@ object BlindCastServer {
                 } else {
                     serveBinary(req, output, AssetApiRoute.handleAppIcon(req.method, req.rawQuery))
                 }
+            }
+            path == "/api/apps/shortcuts" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else serveJson(output, req.method, ShortcutApiRoute.handleList(req.method, req.rawQuery))
+            }
+            path == "/api/apps/shortcut" -> {
+                if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
+                    serveJson(output, req.method, 401 to """{"ok":false,"error":"unauthorized"}""")
+                } else serveJson(output, req.method, ShortcutApiRoute.handleStart(req.method, req.body))
             }
             path == "/api/desktop/wallpaper" -> {
                 if (!TokenAuthenticator.isAuthorized(req.rawQuery, req.headers)) {
@@ -622,6 +634,7 @@ object BlindCastServer {
             "/ws/stream" -> StreamWsRoute.handle(conn)
             "/ws/widgets" -> WidgetWsRoute.handle(conn)
             "/ws/terminal" -> TerminalWsRoute.handle(conn)
+            "/ws/notifications" -> NotificationWsRoute.handle(conn)
             else -> ControlWsRoute.handle(conn)
         }
         return true

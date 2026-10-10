@@ -70,6 +70,12 @@ object ControlWsRoute {
     )
     private val pendingGestures = ConcurrentHashMap<WsConnection, PendingTouch>()
 
+    private data class MultiTouchState(
+        val wid: Int,
+        val points: MutableMap<Int, Pair<Float, Float>> = linkedMapOf(),
+    )
+    private val multiGestures = ConcurrentHashMap<WsConnection, MultiTouchState>()
+
     /** 当前控制在线数（供 `/api/status` 与 6.1 主页绑定）。 */
     val sessionCount: Int get() = sessions.size
 
@@ -101,6 +107,7 @@ object ControlWsRoute {
             if (pending != null && pending.realtime) {
                 runCatching { cancelPriv() }
             }
+            multiGestures.remove(conn)
             runCatching { JpegTranscoder.clear(conn) }
             runCatching { TouchInjector.cancelTouch() }
             runCatching { conn.close() }
@@ -125,6 +132,8 @@ object ControlWsRoute {
         }
         when (json.optString("type", "")) {
             "down", "move", "up" -> handleTouch(conn, json)
+            "pointer" -> handlePointer(conn, json)
+            "pinch" -> handlePinch(conn, json)
             "key" -> {
                 if (!ScrcpyGate.isTouchEnabled) {
                     reply(conn, false, "key", "touch disabled")
@@ -135,7 +144,19 @@ object ControlWsRoute {
                     if (keyCode == Int.MIN_VALUE) {
                         reply(conn, false, "key", "missing keycode")
                     } else {
-                        val (ok, err) = injectKeyPriv(keyCode, json.optInt("wid", 0))
+                        val meta = json.optInt("meta", 0)
+                        val action = json.optString("action", "press").lowercase()
+                        val wid = json.optInt("wid", 0)
+                        val (ok, err) = when (action) {
+                            "down", "up" -> injectKeyActionPriv(
+                                keyCode,
+                                if (action == "down") android.view.KeyEvent.ACTION_DOWN else android.view.KeyEvent.ACTION_UP,
+                                meta,
+                                wid,
+                            )
+                            else -> if (meta != 0) injectKeyMetaPriv(keyCode, meta, wid)
+                            else injectKeyPriv(keyCode, wid)
+                        }
                         reply(conn, ok, "key", err)
                     }
                 }
@@ -182,6 +203,57 @@ object ControlWsRoute {
             }
             else -> reply(conn, false, null, "unknown type")
         }
+    }
+
+    private fun handlePointer(conn: WsConnection, json: JSONObject) {
+        if (!ScrcpyGate.isTouchEnabled) { reply(conn, false, "pointer", "touch disabled"); return }
+        val slot = json.optInt("slot", 0).coerceIn(0, 9)
+        val action = json.optString("action", json.optString("type", "move"))
+        val x = json.optDouble("x", Double.NaN).toFloat()
+        val y = json.optDouble("y", Double.NaN).toFloat()
+        val wid = json.optInt("wid", 0)
+        if (!x.isFinite() || !y.isFinite()) { reply(conn, false, action, "missing x|y"); return }
+        var state = multiGestures[conn]
+        if (action == "down" && slot == 0) {
+            state = MultiTouchState(wid).also { multiGestures[conn] = it }
+        }
+        if (state == null || state.wid != wid) { reply(conn, false, action, "pointer without active gesture"); return }
+        if (action == "down" || action == "pointer-down" || action == "move") state!!.points[slot] = x to y
+        val points = state!!.points.toSortedMap()
+        val xs = points.values.map { it.first }.toFloatArray()
+        val ys = points.values.map { it.second }.toFloatArray()
+        val index = points.keys.indexOf(slot).coerceAtLeast(0)
+        val normalizedAction = when {
+            action == "down" && slot == 0 -> "down"
+            action == "down" || action == "pointer-down" -> "pointer-down"
+            action == "up" && points.size > 1 -> "pointer-up"
+            action == "up" -> "up"
+            action == "cancel" -> "cancel"
+            else -> "move"
+        }
+        val (ok, err) = runBlocking {
+            val target = targetDisplay(wid)
+            if (target.first < 0) false to "window $wid not ready"
+            else PrivilegedBridge.injectMulti(pkg(), normalizedAction, index, xs, ys, target.first, target.second, target.third)
+        }
+        if (action == "up" || action == "cancel") {
+            state!!.points.remove(slot)
+            if (state.points.isEmpty()) multiGestures.remove(conn)
+        }
+        reply(conn, ok, action, err)
+    }
+
+    private fun handlePinch(conn: WsConnection, json: JSONObject) {
+        val focus = json.optJSONObject("focus") ?: JSONObject().put("x", json.optDouble("x", 0.5)).put("y", json.optDouble("y", 0.5))
+        val fx = focus.optDouble("x", 0.5).toFloat()
+        val fy = focus.optDouble("y", 0.5).toFloat()
+        val scale = json.optDouble("scale", 1.0).toFloat().coerceIn(0.2f, 8f)
+        val a = json.optString("action", json.optString("a", "change"))
+        val spread = (0.06f * scale).coerceIn(0.01f, 0.45f)
+        fun p(slot: Int, x: Float, y: Float) = JSONObject().put("type", "pointer").put("action", if (a == "begin") "down" else if (a == "end" || a == "cancel") "up" else "move").put("slot", slot).put("x", x.coerceIn(0f, 1f)).put("y", y.coerceIn(0f, 1f)).put("wid", json.optInt("wid", 0))
+        if (a == "begin") handlePointer(conn, p(0, fx - spread, fy))
+        handlePointer(conn, p(1, fx + spread, fy))
+        if (a == "end" || a == "cancel") handlePointer(conn, p(0, fx - spread, fy))
     }
 
     private fun handleTouch(conn: WsConnection, json: JSONObject) {
@@ -459,6 +531,28 @@ object ControlWsRoute {
             .getOrElse { false to (it.message ?: it.toString()) }
         logInject("key", did, 0, 0, r.first, r.second, detail = "wid=$wid keycode=$keyCode")
         return r
+    }
+
+    private fun injectKeyMetaPriv(keyCode: Int, metaState: Int, wid: Int = 0): Pair<Boolean, String?> {
+        val (did, _, _) = targetDisplay(wid)
+        lastInjectDisplayId = did
+        if (did < 0) return false to "window $wid not ready"
+        return runCatching { runBlocking { PrivilegedBridge.injectKeyWithMeta(pkg(), keyCode, metaState, did) } }
+            .getOrElse { false to (it.message ?: it.toString()) }
+    }
+
+    private fun injectKeyActionPriv(
+        keyCode: Int,
+        action: Int,
+        metaState: Int,
+        wid: Int = 0,
+    ): Pair<Boolean, String?> {
+        val (did, _, _) = targetDisplay(wid)
+        lastInjectDisplayId = did
+        if (did < 0) return false to "window $wid not ready"
+        return runCatching {
+            runBlocking { PrivilegedBridge.injectKeyAction(pkg(), action, keyCode, metaState, did) }
+        }.getOrElse { false to (it.message ?: it.toString()) }
     }
 
     private fun injectTextPriv(text: String, wid: Int = 0): Pair<Boolean, String?> {

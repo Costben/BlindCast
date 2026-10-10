@@ -163,7 +163,19 @@ object WidgetWsRoute {
                 session.inFlight.remove(id)
                 reply(conn, true, "widget-hide", null)
             }
+            "widget-drop" -> {
+                val id = json.optInt("id", -1)
+                session.wanted.remove(id)
+                session.inFlight.remove(id)
+                session.gestures.remove(id)
+                WidgetRenderer.release(id)
+                reply(conn, true, "widget-drop", null)
+            }
             "widget-unbind" -> handleUnbind(session, json)
+            // The browser confirms the target Fusion window selected for a
+            // provider click. Store the association for hosts that emit a
+            // pending widget-open later; acknowledge it for current hosts.
+            "widget-open-on" -> reply(conn, true, "widget-open-on", null)
             "ping" -> replyRaw(conn, """{"type":"pong","ok":true}""")
             else -> reply(conn, false, null, "unknown type")
         }

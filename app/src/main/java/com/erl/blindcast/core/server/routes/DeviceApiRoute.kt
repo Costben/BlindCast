@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.display.DisplayManager
 import android.os.BatteryManager
+import android.os.Build
+import android.os.StatFs
 import android.util.Log
 import android.view.Display
 import com.erl.blindcast.BuildConfig
@@ -109,6 +111,7 @@ object DeviceApiRoute {
     fun handleStatus(): Pair<Int, String> {
         val ctx = appContextOverride ?: runCatching { blindCastApp.applicationContext }.getOrNull()
         val battery = readBattery(ctx)
+        val storage = storageSnapshot()
         val json = JSONObject()
             .put("blackedOut", currentBlackedOut())
             .put("batteryLevel", battery.level)
@@ -121,8 +124,22 @@ object DeviceApiRoute {
             .put("streamClients", StreamWsRoute.sessionCount)
             .put("controlClients", ControlWsRoute.sessionCount)
             .put("widgetClients", WidgetWsRoute.sessionCount)
+            .put("androidVersion", Build.VERSION.RELEASE ?: "")
+            .put("apiLevel", Build.VERSION.SDK_INT)
+            .put("connection", "wireless")
+            .put("connectionType", "wireless")
+            .put("storageUsedBytes", storage.first)
+            .put("storageTotalBytes", storage.second)
         return 200 to json.toString()
     }
+
+    private fun storageSnapshot(): Pair<Long, Long> = runCatching {
+        val stat = StatFs("/storage/emulated/0")
+        val block = stat.blockSizeLong
+        val total = stat.blockCountLong * block
+        val free = stat.availableBlocksLong * block
+        (total - free).coerceAtLeast(0L) to total.coerceAtLeast(0L)
+    }.getOrDefault(0L to 0L)
 
     /**
      * 串流远控（需鉴权，由 [BlindCastServer] 先验 Token；侧栏/控制台手动开关投屏用）。
@@ -581,6 +598,7 @@ object DeviceApiRoute {
      * - `POST {action:"close", windowId}` → 真关：宿主释放自己的虚拟屏/设备/编码器，
      *   屏上应用任务一并销毁，**物理主屏与整屏桌面不受影响**；
      * - `POST {action:"resize", windowId, width, height}` → 同 id 重建（源几何随窗口变）；
+     * - `POST {action:"relaunch", windowId}` → 关闭并以原组件和尺寸重新启动；
      * - `POST {action:"closeAll"}` → 全关。
      *
      * 每个窗口的帧走 `/ws/stream` 的 `0x11 + windowId` 通道；输入走 `/ws/control` 的 `wid`。
@@ -594,13 +612,16 @@ object DeviceApiRoute {
                 "list" -> 200 to windowsJson()
                 "open" -> {
                     val pkgName = obj.optString("package", "").trim()
-                    if (pkgName.isBlank()) {
-                        400 to err("missing package")
+                    val intentUrl = obj.optString("intentUrl", "").trim()
+                    val kind = obj.optString("kind", "app").trim().ifBlank { "app" }
+                    val user = obj.optInt("user", obj.optInt("userId", 0))
+                    if (pkgName.isBlank() && intentUrl.isBlank() && kind == "app") {
+                        400 to err("missing package or intentUrl")
                     } else {
                         val w = obj.optInt("width", DesktopWindowController.DEFAULT_WIDTH)
                         val h = obj.optInt("height", DesktopWindowController.DEFAULT_HEIGHT)
                         val comp = obj.optString("component", "")
-                        val info = runBlocking { DesktopWindowController.open(pkgName, comp, w, h) }
+                        val info = runBlocking { DesktopWindowController.open(pkgName, comp, w, h, intentUrl = intentUrl, kind = kind, userId = user) }
                         Log.i(
                             "BlindCast",
                             "[WinApi] open pkg=$pkgName ${w}x${h} wid=${info.windowId} did=${info.displayId} " +
@@ -640,11 +661,41 @@ object DeviceApiRoute {
                             .toString()
                     }
                 }
+                "relaunch" -> {
+                    val wid = obj.optInt("windowId", -1)
+                    if (wid <= 0) {
+                        400 to err("missing windowId")
+                    } else {
+                        val current = DesktopWindowController.list().firstOrNull { it.windowId == wid }
+                        if (current == null) {
+                            200 to JSONObject().put("ok", false).put("error", "window not found").toString()
+                        } else {
+                            val info = runBlocking {
+                                DesktopWindowController.close(wid)
+                                DesktopWindowController.open(
+                                    current.packageName,
+                                    current.component,
+                                    current.width,
+                                    current.height,
+                                    wid,
+                                    current.intentUrl,
+                                    current.kind,
+                                    current.userId,
+                                )
+                            }
+                            200 to JSONObject()
+                                .put("ok", info.state == "running")
+                                .put("window", windowJson(info))
+                                .put("error", info.error)
+                                .toString()
+                        }
+                    }
+                }
                 "closeAll" -> {
                     val n = runBlocking { DesktopWindowController.closeAll() }
                     200 to JSONObject().put("ok", true).put("closed", n).put("error", "").toString()
                 }
-                else -> 400 to err("unknown action: $action (list|open|close|resize|closeAll)")
+                else -> 400 to err("unknown action: $action (list|open|close|resize|relaunch|closeAll)")
             }
         }
         else -> 405 to err("method not allowed")
@@ -671,6 +722,9 @@ object DeviceApiRoute {
         .put("width", w.width)
         .put("height", w.height)
         .put("state", w.state)
+        .put("intentUrl", w.intentUrl)
+        .put("kind", w.kind)
+        .put("userId", w.userId)
         .put("error", w.error)
 
     /**

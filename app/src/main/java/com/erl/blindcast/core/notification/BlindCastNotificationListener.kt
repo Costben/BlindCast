@@ -4,6 +4,7 @@ import android.app.Notification
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.service.notification.NotificationListenerService
+import android.service.notification.NotificationListenerService.RankingMap
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import java.io.ByteArrayOutputStream
@@ -42,7 +43,16 @@ class BlindCastNotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
         sbn ?: return
-        NotificationStore.remove(sbn.key)
+        NotificationStore.remove(sbn.key, 0)
+    }
+
+    override fun onNotificationRemoved(
+        sbn: StatusBarNotification?,
+        rankingMap: RankingMap?,
+        reason: Int,
+    ) {
+        sbn ?: return
+        NotificationStore.remove(sbn.key, reason)
     }
 
     private fun ingest(sbn: StatusBarNotification) {
@@ -51,6 +61,7 @@ class BlindCastNotificationListener : NotificationListenerService() {
         val title = ex?.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
         val text = (ex?.getCharSequence(Notification.EXTRA_BIG_TEXT)
             ?: ex?.getCharSequence(Notification.EXTRA_TEXT))?.toString().orEmpty()
+        val subText = ex?.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString().orEmpty()
         val item = NotificationStore.Item(
             key = sbn.key,
             pkg = sbn.packageName,
@@ -59,8 +70,28 @@ class BlindCastNotificationListener : NotificationListenerService() {
             time = sbn.postTime,
             ongoing = (n.flags and Notification.FLAG_ONGOING_EVENT) != 0,
             group = sbn.groupKey.orEmpty(),
+            actions = emptyList(),
+            subText = subText,
+            userId = sbn.userId,
+            clearable = sbn.isClearable,
+            systemHidden = sbn.isOngoing && (n.flags and Notification.FLAG_FOREGROUND_SERVICE) != 0,
+            importance = if (android.os.Build.VERSION.SDK_INT >= 24) n.channelId?.let { n.priority } ?: n.priority else n.priority,
+            contentIntentTargetKind = if (n.contentIntent != null) "activity" else "unknown",
+            postTime = sbn.postTime,
+            updateTime = System.currentTimeMillis(),
         )
-        NotificationStore.put(item, iconPng(n))
+        val actions = n.actions?.mapNotNull { action ->
+            action.actionIntent?.let { pending ->
+                NotificationStore.Action(
+                    action.title?.toString().orEmpty(),
+                    pending,
+                    action.remoteInputs ?: emptyArray(),
+                    action.semanticAction?.toString().orEmpty(),
+                    action.icon?.toString().orEmpty(),
+                )
+            }
+        } ?: emptyList()
+        NotificationStore.put(item, iconPng(n), n.contentIntent, actions)
     }
 
     private fun iconPng(n: Notification): ByteArray? = runCatching {

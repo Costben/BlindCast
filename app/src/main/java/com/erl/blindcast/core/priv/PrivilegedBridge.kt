@@ -613,6 +613,44 @@ object PrivilegedBridge {
             }
         }
 
+    /** Multi-pointer event through the persistent root input daemon. */
+    suspend fun injectMulti(
+        packageName: String,
+        action: String,
+        actionIndex: Int,
+        xs: FloatArray,
+        ys: FloatArray,
+        displayId: Int,
+        width: Int,
+        height: Int,
+    ): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
+        val (ok, err, _) = RootInputDaemon.multi(packageName, action, actionIndex, xs, ys, displayId, width, height)
+        ok to err
+    }
+
+    /** Modifier-aware key event through the persistent root input daemon. */
+    suspend fun injectKeyWithMeta(
+        packageName: String,
+        keyCode: Int,
+        metaState: Int,
+        displayId: Int,
+    ): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
+        val (ok, err, _) = RootInputDaemon.keyWithMeta(packageName, keyCode, metaState, displayId)
+        ok to err
+    }
+
+    /** Modifier-aware single key lifecycle event (down or up). */
+    suspend fun injectKeyAction(
+        packageName: String,
+        action: Int,
+        keyCode: Int,
+        metaState: Int,
+        displayId: Int,
+    ): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
+        val (ok, err, _) = RootInputDaemon.keyAction(packageName, action, keyCode, metaState, displayId)
+        ok to err
+    }
+
     /** 特权文本注入（虚拟键盘映射；无状态）。@return 同 [injectTap]。 */
     suspend fun injectText(packageName: String, text: String, displayId: Int = 0): Pair<Boolean, String?> {
         val b64 = try {

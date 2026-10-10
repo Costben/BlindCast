@@ -251,7 +251,8 @@
   }
 
   // channel ids (PROTOCOL-original §3)
-  var CH = { KEEPALIVE: 0, VIDEO: 1, AUDIO: 2, CLIPBOARD: 3, CONTROL: 4, SESSION: 5, WINDOW_MEDIA: 6, CAMERA: 7, WIDGET: 8 };
+  // Channel 5 is upload/file data; the original terminal uses channel 6/type 1.
+  var CH = { KEEPALIVE: 0, VIDEO: 1, AUDIO: 2, CLIPBOARD: 3, CONTROL: 4, SESSION: 5, TERMINAL: 6, WINDOW_MEDIA: 6, CAMERA: 7, WIDGET: 8 };
   var VT = { CONFIG: 1, FRAME: 2, GAP: 3 };
   var CT = { JSON: 1, CLIP_IN: 1, CLIP_OUT: 2 };
 
@@ -259,9 +260,8 @@
   // actually registered in BlindCastServer: clipboard -> /api/clipboard,
   // file/fs -> /api/fs/*, terminal -> /ws/terminal, notification ->
   // /api/notifications; device-audio -> opt-in PCM on /ws/stream.
-  // Not advertised: microphone audio, multi-touch (/ws/control has no pointer slot), phone-screen
-  // (mode:"mirror" is not an independent session).
-  var CAPS = ["video", "device-audio", "control", "multi-session", "app-list", "file", "fs", "clipboard", "desk-widget", "terminal", "notification"];
+  // Not advertised: microphone audio, phone-screen (mode:"mirror" is not an independent session).
+  var CAPS = ["video", "device-audio", "control", "multi-session", "multi-touch", "app-list", "file", "fs", "clipboard", "desk-widget", "terminal", "notification"];
 
   // ---- backend link (shared by all sockets of a session) ------------------
   function Link() {
@@ -471,6 +471,15 @@
           packageName: prev.packageName, state: "closed"
         }));
       });
+      // The original transport continuously publishes the focused package and
+      // task chrome.  The local endpoint returns windows in top-task order;
+      // use that stable ordering as the focused task and keep the away state
+      // explicit so stale IME/task chrome is cleared after a close.
+      var focused = list.filter(function (w) { return w.state === "running"; })[0];
+      self.socket._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({
+        c: "focused-app", pkg: focused ? String(focused.packageName || "") : "", userId: focused ? Number(focused.userId) || 0 : 0
+      }));
+      self.socket._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "task-state", away: !focused }));
     });
   };
 
@@ -611,7 +620,10 @@
     setTimeout(function () {
       self._deliver(JSON.stringify({
         t: "welcome", v: 2, web: 130,
-        device: { id: "blindcast", name: "BlindCast Device" },
+        // The panel is now the AndroMeld-compatible Fusion client.  Keep the
+        // local device identity generic until the status route provides a
+        // user-configured name; never expose the retired BlindCast branding.
+        device: { id: "android-device", name: "Android Device" },
         token: TOKEN || "local", signalKey: null, wakeId: null, turnUrl: "",
         caps: CAPS.slice()
       }));
@@ -646,6 +658,7 @@
       return;
     }
     if (chan === CH.SESSION) return this._onChan5(type, payload);
+    if (chan === CH.TERMINAL && type === 1) return this._forwardTerminalBytes(payload);
     if (chan === CH.WIDGET) return this._onWidget(j);
     if (chan === CH.VIDEO && type === VT.GAP) { this.session.link.ctl({ type: "requestIDR", wid: this._windowId }); return; }
     if (chan === CH.AUDIO) {
@@ -690,6 +703,10 @@
       case "open-window":
         api("api/desktop/windows", { body: {
           action: "open", package: j.pkg || j.package || j.packageName,
+          component: j.component || "",
+          intentUrl: j.intentUrl || "",
+          kind: j.kind || "app",
+          user: Number.isFinite(Number(j.userId)) ? Number(j.userId) : 0,
           width: Number(j.w) || undefined, height: Number(j.h) || undefined
         } }).then(function (r) {
           var b = self._bridge;
@@ -704,6 +721,14 @@
               b._emitState(b.windows[w.windowId], "opening");
               b.refreshWindows();
             }
+            // The stock panel consumes these two notifications to keep the
+            // focused package and away/IME chrome in sync even when the
+            // transport is a local HTTP adapter rather than AndroMeld RTC.
+            self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({
+              c: "focused-app", pkg: String(w.packageName || j.pkg || j.package || ""),
+              userId: Number(w.userId == null ? j.userId : w.userId) || 0
+            }));
+            self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "task-state", away: false }));
             return;
           }
           self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({
@@ -737,30 +762,69 @@
         if (!this._geometryInitialized) { this._geometryInitialized = true; return; }
         return this._resizeWindow(j);
       case "relaunch":
-        var size = this.session.sourceSize(this._windowId);
-        if (size) return this._resizeWindow({ w: size.w, h: size.h, force: true });
+        api("api/desktop/windows", { body: {
+          action: "relaunch", windowId: this._windowId
+        } }).then(function (r) {
+          if (r && r.ok && r.window) {
+            var w = r.window;
+            self.session.setSize(w.windowId, w.width, w.height);
+            if (self._bridge && self._bridge.windows[w.windowId]) {
+              self._bridge.windows[w.windowId].width = w.width;
+              self._bridge.windows[w.windowId].height = w.height;
+              self._bridge._emitState(self._bridge.windows[w.windowId], "live");
+              self._bridge.refreshWindows();
+            }
+            self.session.link.ctl({ type: "requestIDR", wid: w.windowId });
+          } else {
+            self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({
+              c: "toast", text: (r && r.error) || "应用重启失败"
+            }));
+          }
+        });
         return;
-      case "density": case "decor-insets": return;
+      case "density": case "decor-insets":
+        // The panel reports the browser chrome inset using the original `lu`
+        // message. Echo it back so the shell applies the same top offset while
+        // the Android display remains unaware of browser-only decoration.
+        this._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "decor-insets", top: Math.max(0, Math.trunc(Number(j.top) || 0)) }));
+        return;
       case "logout":
         try { localStorage.removeItem("blindcast-token"); } catch (e) {}
         this._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "logout", ok: true }));
         return;
       case "widget-sync": case "widget-size": case "widget-ack":
-      case "widget-input": case "widget-hide": case "widget-unbind":
+      case "widget-input": case "widget-hide": case "widget-unbind": case "widget-drop": case "widget-open-on":
         return this._onWidget(j);
       case "app-menu":
-        this._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({
-          c: "app-menu", packageName: j.packageName, userId: j.userId || 0, shortcuts: []
-        }));
+        this._shortcutPackage = j.packageName || "";
+        api("api/apps/shortcuts?package=" + encodeURIComponent(j.packageName || "") + "&user=" + encodeURIComponent(j.userId || 0)).then(function (r) {
+          self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "app-menu", packageName: j.packageName, userId: j.userId || 0, shortcuts: (r && r.ok !== false && Array.isArray(r.shortcuts)) ? r.shortcuts : [] }));
+        });
+        return;
+      case "start-shortcut":
+        var current = this._bridge && this._bridge.windows[this._windowId];
+        api("api/apps/shortcut", { body: {
+          package: (current && current.packageName) || j.packageName || this._shortcutPackage || "",
+          shortcutId: j.id || j.shortcutId || "", user: current ? (Number(current.userId) || 0) : 0,
+          sessionId: String(this._windowId)
+        } }).then(function (r) {
+          if (!r || r.ok === false) self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "toast", text: (r && r.error) || "快捷方式启动失败" }));
+        });
         return;
       case "device-info":
-        // Only battery is real from the device; storage/android are omitted so
-        // the panel shows "–" instead of an invented value.
         api("api/status").then(function (r) {
           r = r || {};
           self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({
             c: "device-info",
-            device: { battery: { level: Number(r.batteryLevel), charging: !!r.charging } }
+            device: {
+              battery: { level: Number(r.batteryLevel), charging: !!r.charging },
+              androidVersion: String(r.androidVersion || ""),
+              connection: String(r.connectionType || r.connection || ""),
+              storage: {
+                used: Number(r.storageUsedBytes) || 0,
+                total: Number(r.storageTotalBytes) || 0
+              }
+            }
           }));
         });
         return;
@@ -829,8 +893,8 @@
   LocalSocket.prototype._onFs = function (j) {
     var self = this;
     function reply(obj) { self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify(obj)); }
-    function failed(op, r) { reply({ c: "fs-op-result", reqId: j.reqId, op: op, ok: false, error: (r && r.error) || "eio" }); }
-    function err(c, r) { return (r && r.error) || "eio"; }
+    function failed(op, r) { reply({ c: "fs-op-result", reqId: j.reqId, op: op, ok: false, err: (r && (r.err || r.error)) || "eio" }); }
+    function err(c, r) { return (r && (r.err || r.error)) || "eio"; }
     switch (j.c) {
       case "fs-roots":
         api("api/fs/roots").then(function (r) {
@@ -840,44 +904,71 @@
         return;
       case "fs-list":
         api("api/fs/list?path=" + encodeURIComponent(j.path || "/")).then(function (r) {
-          if (!r || r.ok === false) return reply({ c: "fs-list-result", reqId: j.reqId, ok: false, path: j.path, entries: [], error: err("list", r) });
-          reply({ c: "fs-list-result", reqId: j.reqId, ok: true, path: r.path || j.path, entries: r.entries || [], error: "" });
+          if (!r || r.ok === false) return reply({ c: "fs-list-result", reqId: j.reqId, ok: false, path: j.path, entries: [], err: err("list", r) });
+          var entries = (r.entries || []).map(function (e) {
+            return { name: e.name, path: e.path, isDir: !!(e.isDir != null ? e.isDir : e.dir),
+              size: Number(e.size) || 0, mtime: Number(e.mtime) || 0, mime: e.mime || "" };
+          });
+          reply({ c: "fs-list-result", reqId: j.reqId, ok: true, path: r.path || j.path, entries: entries, err: "" });
         });
         return;
       case "fs-stat":
         api("api/fs/stat?path=" + encodeURIComponent(j.path || "/")).then(function (r) {
-          if (!r || r.ok === false) return reply({ c: "fs-stat-result", reqId: j.reqId, ok: false, path: j.path, error: err("stat", r) });
-          reply({ c: "fs-stat-result", reqId: j.reqId, ok: true, path: r.path, dir: !!r.dir, size: r.size || 0, mtime: r.mtime || 0, hidden: !!r.hidden, readable: !!r.readable, writable: !!r.writable, error: "" });
+          if (!r || r.ok === false) return reply({ c: "fs-stat-result", reqId: j.reqId, ok: false, path: j.path, err: err("stat", r) });
+          var statName = String(r.path || j.path || "").split("/").filter(Boolean).pop() || "";
+          reply({ c: "fs-stat-result", reqId: j.reqId, ok: true, path: r.path,
+            entry: { name: statName, isDir: !!(r.isDir != null ? r.isDir : r.dir), size: Number(r.size) || 0,
+              mtime: Number(r.mtime) || 0, mime: r.mime || "" }, err: "" });
         });
         return;
       case "fs-mkdir":
         api("api/fs/mkdir", { body: { path: j.path, name: j.name } }).then(function (r) {
           if (!r || r.ok === false) return failed("mkdir", r);
-          reply({ c: "fs-op-result", reqId: j.reqId, op: "mkdir", ok: true, error: "" });
+          reply({ c: "fs-op-result", reqId: j.reqId, op: "mkdir", ok: true, err: "" });
         });
         return;
       case "fs-rename":
         api("api/fs/rename", { body: { path: j.path, newName: j.newName } }).then(function (r) {
           if (!r || r.ok === false) return failed("rename", r);
-          reply({ c: "fs-op-result", reqId: j.reqId, op: "rename", ok: true, error: "" });
+          reply({ c: "fs-op-result", reqId: j.reqId, op: "rename", ok: true, err: "" });
         });
         return;
       case "fs-delete":
         api("api/fs/delete", { body: { paths: j.paths || [] } }).then(function (r) {
           if (!r || r.ok === false) return failed("delete", r);
-          reply({ c: "fs-op-result", reqId: j.reqId, op: "delete", ok: true, deleted: r.deleted || 0, error: "" });
+          reply({ c: "fs-op-result", reqId: j.reqId, op: "delete", ok: true, deleted: r.deleted || 0, err: "" });
         });
         return;
       case "fs-move":
         api("api/fs/move", { body: { paths: j.paths || [], destDir: j.destDir } }).then(function (r) {
           if (!r || r.ok === false) return failed("move", r);
-          reply({ c: "fs-op-result", reqId: j.reqId, op: "move", ok: true, moved: r.moved || 0, error: "" });
+          reply({ c: "fs-op-result", reqId: j.reqId, op: "move", ok: true, moved: r.moved || 0, err: "" });
         });
         return;
       case "fs-download":
-        // Backend streams the file with Content-Disposition; save it in the browser.
-        fetch(httpUrl("api/fs/download?path=" + encodeURIComponent(j.path || "")))
-          .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.blob(); })
+        // Backend streams the file with Content-Disposition. Keep an abort
+        // handle per request and report byte progress to newer panel builds;
+        // older builds simply ignore the additional control envelope.
+        this._downloads = this._downloads || {};
+        var downloadId = String(j.reqId == null ? (j.id == null ? Date.now() : j.id) : j.reqId);
+        var dctrl = typeof AbortController === "function" ? new AbortController() : null;
+        this._downloads[downloadId] = dctrl;
+        var emitDownloadProgress = function (received, total) {
+          self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "fs-progress", reqId: j.reqId, id: downloadId, op: "download", received: received, total: total }));
+        };
+        fetch(httpUrl("api/fs/download?path=" + encodeURIComponent(j.path || "")), { signal: dctrl && dctrl.signal })
+          .then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            var total = Number(r.headers.get("content-length")) || 0;
+            if (!r.body || typeof r.body.getReader !== "function") return r.blob();
+            var reader = r.body.getReader(), chunks = [], received = 0;
+            function pump() { return reader.read().then(function (part) {
+              if (part.done) return new Blob(chunks);
+              chunks.push(part.value); received += part.value.byteLength; emitDownloadProgress(received, total);
+              return pump();
+            }); }
+            return pump();
+          })
           .then(function (blob) {
             var name = (j.path || "download").split("/").pop() || "download";
             var a = document.createElement("a");
@@ -886,18 +977,31 @@
             document.body.appendChild(a);
             a.click();
             setTimeout(function () { try { URL.revokeObjectURL(a.href); a.remove(); } catch (e) {} }, 0);
-            reply({ c: "fs-op-result", reqId: j.reqId, op: "download", ok: true, name: name, error: "" });
+            reply({ c: "fs-op-result", reqId: j.reqId, op: "download", ok: true, name: name, err: "" });
           })
-          .catch(function (e) { reply({ c: "fs-op-result", reqId: j.reqId, op: "download", ok: false, error: String((e && e.message) || e) }); });
+          .catch(function (e) { reply({ c: "fs-op-result", reqId: j.reqId, op: "download", ok: false, err: dctrl && dctrl.signal.aborted ? "canceled" : String((e && e.message) || e) }); })
+          .then(function () { delete self._downloads[downloadId]; });
+        return;
+      case "fs-cancel": case "fs-download-cancel":
+        this._downloads = this._downloads || {};
+        var cancelId = String(j.id == null ? (j.reqId == null ? "" : j.reqId) : j.id);
+        if (this._downloads[cancelId] && this._downloads[cancelId].abort) this._downloads[cancelId].abort();
+        if (j.reqId != null) reply({ c: "fs-op-result", reqId: j.reqId, op: "download", ok: false, err: "canceled" });
+        return;
+      case "fs-send-to-session":
+        api("api/fs/send-to-session", { body: { path: j.path || "", sessionId: String(j.sessionId == null ? "" : j.sessionId) } }).then(function (r) {
+          if (!r || r.ok === false) return failed("send-to-session", r);
+          reply({ c: "fs-op-result", reqId: j.reqId, op: "send-to-session", ok: true, path: r.path || j.path, sessionId: r.sessionId || j.sessionId, err: "" });
+        });
         return;
       default:
-        reply({ c: "fs-op-result", reqId: j.reqId, op: j.c, ok: false, error: "enotsup" });
+        reply({ c: "fs-op-result", reqId: j.reqId, op: j.c, ok: false, err: "enotsup" });
     }
   };
 
-  // ---- terminal (term-*, chan4 JSON + chan5/type5 data) <-> /ws/terminal ----
+  // ---- terminal (term-*, chan4 JSON + chan6/type1 data) <-> /ws/terminal ----
   // Panel: term-open{reqId,cols,rows} -> term-opened{id,reqId}; term-resize;
-  // term-close; term-exit{id,code}. Data both ways is chan5 type5 [4B id][bytes].
+  // term-close; term-exit{id,code}. Data both ways is chan6 type1 [4B id][bytes].
   LocalSocket.prototype._termWs = function () {
     if (this._termSocket && (this._termSocket.readyState === 0 || this._termSocket.readyState === 1)) return this._termSocket;
     var self = this, ws;
@@ -914,6 +1018,12 @@
     var i = this._termPending.indexOf(rid);
     if (i >= 0) this._termPending.splice(i, 1);
     return rid;
+  };
+  LocalSocket.prototype._forwardTerminalBytes = function (payload) {
+    var ws = this._termWs();
+    if (!ws) return;
+    var send = function () { if (ws.readyState === 1) { try { ws.send(payload); } catch (e) {} } };
+    if (ws.readyState === 1) send(); else ws.addEventListener("open", send, { once: true });
   };
   LocalSocket.prototype._onTermMsg = function (data) {
     if (typeof data === "string") {
@@ -936,13 +1046,20 @@
       return;
     }
     var u = new Uint8Array(data); if (u.length < 4) return;
-    this._emitEnvelope(CH.SESSION, 5, u);   // [4B id][bytes] straight through
+    this._emitEnvelope(CH.TERMINAL, 1, u);   // [4B id][bytes] straight through
+    var ack = this._termSocket;
+    if (ack && ack.readyState === 1) {
+      var tid = ((u[0] << 24) | (u[1] << 16) | (u[2] << 8) | u[3]) >>> 0;
+      try { ack.send(JSON.stringify({ type: "ack", id: tid, received: u.length - 4 })); } catch (e) {}
+    }
   };
   LocalSocket.prototype._onTerm = function (j) {
     var self = this;
     if (j.c === "term-input") {
-      var sock = this._termSocket;
-      if (sock && sock.readyState === 1) { try { sock.send(JSON.stringify({ type: "input", id: j.id, data: j.data })); } catch (e) {} }
+      var raw = typeof j.data === "string" ? lx.encode(j.data) : new Uint8Array(j.data || 0);
+      var frame = new Uint8Array(4 + raw.length), id = Number(j.id) >>> 0;
+      frame[0] = id >>> 24; frame[1] = id >>> 16; frame[2] = id >>> 8; frame[3] = id;
+      frame.set(raw, 4); this._forwardTerminalBytes(frame);
       return;
     }
     var ws = this._termWs();
@@ -965,16 +1082,32 @@
     if (j.c === "notif-subscribe") {
       this._notifOn = j.on === true;
       if (this._notifTimer) { clearInterval(this._notifTimer); this._notifTimer = null; }
+      if (this._notifSocket) { try { this._notifSocket.close(); } catch (e) {} this._notifSocket = null; }
       if (!this._notifOn) {
         this._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "notif-state", reqId: j.reqId, on: false }));
         return;
+      }
+      function openPush() {
+        var sock;
+        try { sock = new WebSocket(wsUrl("ws/notifications")); } catch (e) { return false; }
+        self._notifSocket = sock;
+        sock.onmessage = function (ev) {
+          var msg = null; try { msg = JSON.parse(ev.data); } catch (e) {}
+          if (msg && (msg.type === "notif-snapshot" || msg.active)) self._notifEmit(msg);
+        };
+        sock.onopen = function () {
+          self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "notif-state", reqId: j.reqId, on: true }));
+        };
+        sock.onclose = function () { if (self._notifSocket === sock) self._notifSocket = null; };
+        sock.onerror = function () {};
+        return true;
       }
       api("api/notifications").then(function (r) {
         var ok = !!(r && r.ok !== false);
         self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "notif-state", reqId: j.reqId, on: ok, err: ok ? undefined : "unavailable" }));
         if (!ok) return;
         self._notifEmit(r);
-        self._notifTimer = setInterval(function () {
+        if (!openPush()) self._notifTimer = setInterval(function () {
           api("api/notifications").then(function (rr) { if (rr && rr.ok !== false) self._notifEmit(rr); });
         }, 3000);
       });
@@ -994,7 +1127,7 @@
     }
     if (j.c === "notif-cmd") {
       // Panel command codes (shell.js): 1=refresh 2=dismiss 3=snooze
-      // 5/6=open 7=action-click 8=reply. The bridge only backs refresh+dismiss.
+      // 5/6=open 7=action-click 8=reply.
       var key = j.key, cmd = Number(j.command);
       function reply(ok, err) {
         self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "notif-cmd-result", reqId: j.reqId, ok: !!ok, err: err, command: j.command, key: key }));
@@ -1013,6 +1146,14 @@
         });
         return;
       }
+      if (cmd === 5 || cmd === 6 || cmd === 7 || cmd === 8) {
+        var action = (cmd === 5 || cmd === 6) ? "open" : (cmd === 7 ? "action" : "reply");
+        var payload = { action: action, key: key, sessionId: j.sessionId || this._windowId || "" };
+        if (cmd === 7 || cmd === 8) payload.actionIndex = Number(j.actionIndex == null ? (j.index == null ? -1 : j.index) : j.actionIndex);
+        if (cmd === 8) payload.text = String(j.text == null ? (j.reply == null ? "" : j.reply) : j.text);
+        api("api/notifications", { body: payload }).then(function (r) { reply(!!(r && r.ok !== false), r && r.ok === false ? (r.error || "unavailable") : undefined); });
+        return;
+      }
       reply(false, "unsupported");
       return;
     }
@@ -1025,7 +1166,7 @@
       n = n || {};
       return {
         key: String(n.key || n.package || ("n" + Math.random().toString(16).slice(2))),
-        packageName: String(n.package || n.packageName || ""), userId: 0,
+        packageName: String(n.package || n.packageName || ""), userId: Number(n.userId) || 0,
         title: String(n.title == null ? "" : n.title),
         text: String(n.text == null ? "" : n.text),
         subText: String(n.subText == null ? "" : n.subText),
@@ -1034,8 +1175,13 @@
         removedAt: Number(n.removedAt) || 0,
         removalReason: Number(n.removalReason) || 0,
         importance: n.importance == null ? null : Number(n.importance),
-        ongoing: !!n.ongoing, clearable: true, systemHidden: false,
-        contentIntentTargetKind: "unknown", actions: []
+        ongoing: !!n.ongoing, clearable: n.clearable !== false, systemHidden: !!n.systemHidden,
+        contentIntentTargetKind: n.contentIntentTargetKind || "unknown",
+        actions: Array.isArray(n.actions) ? n.actions.map(function (a, i) {
+          return { index: Number(a.index == null ? i : a.index), title: String(a.title || a.label || ""),
+            semanticAction: String(a.semanticAction || ""), hasRemoteInput: !!a.hasRemoteInput,
+            intentTargetKind: String(a.intentTargetKind || "unknown"), iconId: String(a.iconId || "") };
+        }) : []
       };
     }
     // Panel ingestSnapshot() feeds each section straight into wf(), which
@@ -1052,9 +1198,51 @@
   // / end(3){id} / cancel(4){id} -> POST /api/fs/upload?path=&name=
   LocalSocket.prototype._onChan5 = function (type, payload) {
     this._uploads = this._uploads || {};
+    this._downloads = this._downloads || {};
+    // Device -> browser file receiver (original protocol): begin=6,
+    // chunk=7, end=8, cancel=9; the browser acknowledges each chunk with
+    // type 10. This is separate from the browser -> device upload quartet
+    // (1..4) handled below.
+    if (type === 6) {
+      var begin = jsonPayload(payload);
+      if (begin && begin.id != null && Number(begin.size) >= 0) {
+        this._downloads[begin.id] = { id: begin.id, name: begin.name || "download.bin", mime: begin.mime || "application/octet-stream", size: Number(begin.size), received: 0, chunks: [] };
+        this._emitEnvelope(CH.SESSION, 10, lx.encode(JSON.stringify({ id: begin.id, received: 0 })));
+      }
+      return;
+    }
+    if (type === 7) {
+      if (payload.length < 4) return;
+      var did = ((payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
+      var down = this._downloads[did];
+      if (!down) return;
+      var part = payload.subarray(4);
+      down.received += part.length;
+      if (down.received > down.size) { delete this._downloads[did]; return; }
+      down.chunks.push(part.slice());
+      this._emitEnvelope(CH.SESSION, 10, lx.encode(JSON.stringify({ id: did, received: down.received })));
+      this._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "fs-progress", id: did, op: "download", received: down.received, total: down.size }));
+      return;
+    }
+    if (type === 8) {
+      var end = jsonPayload(payload), finished = end && this._downloads[end.id];
+      if (!finished) return;
+      delete this._downloads[end.id];
+      if (finished.received !== finished.size) return;
+      var blob = new Blob(finished.chunks, { type: finished.mime });
+      var link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = finished.name;
+      document.body.appendChild(link); link.click();
+      setTimeout(function () { try { URL.revokeObjectURL(link.href); link.remove(); } catch (e) {} }, 60000);
+      this._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "fs-op-result", op: "download", id: end.id, ok: true, name: finished.name, err: "" }));
+      return;
+    }
+    if (type === 9) {
+      var abort = jsonPayload(payload); if (abort) delete this._downloads[abort.id];
+      return;
+    }
     if (type === 1) {
       var b = jsonPayload(payload);
-      if (b && b.id != null) this._uploads[b.id] = { id: b.id, name: b.name || "upload.bin", destPath: b.destPath || null, chunks: [] };
+      if (b && b.id != null) this._uploads[b.id] = { id: b.id, name: b.name || "upload.bin", destPath: b.destPath || null, chunks: [], controller: typeof AbortController === "function" ? new AbortController() : null };
       return;
     }
     if (type === 2) {
@@ -1085,23 +1273,18 @@
           self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "toast", text: "上传失败：" + cur.name }));
         }
       }
-      fetch(httpUrl("api/fs/upload?path=" + encodeURIComponent(dir) + "&name=" + encodeURIComponent(cur.name)), { method: "POST", body: blob })
+      fetch(httpUrl("api/fs/upload?path=" + encodeURIComponent(dir) + "&name=" + encodeURIComponent(cur.name)), { method: "POST", body: blob, signal: cur.controller && cur.controller.signal })
         .then(function (r) { return r.json().catch(function () { return { ok: r.ok }; }); })
         .then(function (res) { done(res && res.ok !== false, (res && res.error) || ""); })
         .catch(function (err) { done(false, String((err && err.message) || err)); });
       return;
     }
     if (type === 4) {
-      var c = jsonPayload(payload); if (c) delete this._uploads[c.id];
+      var c = jsonPayload(payload); if (c) { var upCancel = this._uploads[c.id]; if (upCancel && upCancel.controller) upCancel.controller.abort(); delete this._uploads[c.id]; }
       return;
     }
-    if (type === 5) {
-      // terminal input from the panel: [4B big-endian term id][bytes]
-      if (payload.length < 4) return;
-      var tid = ((payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
-      this._onTerm({ c: "term-input", id: tid, data: bytesToBase64(payload.subarray(4)) });
-      return;
-    }
+    // type 5 remains reserved for the upload receiver; terminal bytes use
+    // CH.TERMINAL/type 1 and are handled before this upload switch.
   };
 
   LocalSocket.prototype._sendIcons = function (items) {
@@ -1133,24 +1316,31 @@
     function ny(v) { return d ? clamp01((Number(v) || 0) / d.h) : clamp01(Number(v) || 0); }
     if (!d) log("input before source size known for wid", wid);
     if (j.k === "pointer" || j.k === "touch") {
-      var t = { down: "down", move: "move", up: "up", cancel: "up" }[j.a] || "move";
-      link.ctl({ type: t, x: nx(j.x), y: ny(j.y), wid: wid });
+      var t = { down: "down", move: "move", up: "up", cancel: "cancel" }[j.a] || "move";
+      link.ctl({ type: "pointer", action: t, slot: Number(j.slot) || 0, x: nx(j.x), y: ny(j.y), wid: wid });
+      return;
+    }
+    if (j.k === "pinch") {
+      var focus = j.focus || { x: Number(j.x) || 0, y: Number(j.y) || 0 };
+      var fw = d ? d.w : 1, fh = d ? d.h : 1;
+      link.ctl({ type: "pinch", action: j.a || "change", focus: { x: clamp01(Number(focus.x) / fw), y: clamp01(Number(focus.y) / fh) }, scale: Number(j.scale) || 1, rotation: Number(j.rotation) || 0, wid: wid });
       return;
     }
     if (j.k === "key") {
-      // The panel emits separate down/up frames; the backend key op is one Down+Up.
-      if (j.a === "up") return;
-      link.ctl({ type: "key", keycode: j.code, wid: wid });
+      // Preserve the original key lifecycle.  A missing action keeps the
+      // legacy atomic press behavior used by older panel builds.
+      link.ctl({ type: "key", action: j.a || "press", keycode: j.code, meta: Number(j.meta) || 0, wid: wid });
       return;
     }
     if (j.k === "text") { link.ctl({ type: "text", text: j.text, wid: wid }); return; }
     if (j.k === "scroll") {
-      // No scroll opcode in the backend (and it takes 0..1); emulate with a
-      // normalized touch drag, which is how a touch screen scrolls.
-      var y0 = Number(j.y) || 0, y1 = y0 - (Number(j.dy) || 0);
-      link.ctl({ type: "down", x: nx(j.x), y: ny(y0), wid: wid });
-      link.ctl({ type: "move", x: nx(j.x), y: ny(y1), wid: wid });
-      link.ctl({ type: "up", x: nx(j.x), y: ny(y1), wid: wid });
+      // Keep both axes.  The original wheel path uses dx/dy; collapsing dx
+      // into a vertical drag made horizontal lists impossible to operate.
+      var x0 = Number(j.x) || 0, y0 = Number(j.y) || 0;
+      var x1 = x0 - (Number(j.dx) || 0), y1 = y0 - (Number(j.dy) || 0);
+      link.ctl({ type: "pointer", action: "down", slot: 0, x: nx(x0), y: ny(y0), wid: wid });
+      link.ctl({ type: "pointer", action: "move", slot: 0, x: nx(x1), y: ny(y1), wid: wid });
+      link.ctl({ type: "pointer", action: "up", slot: 0, x: nx(x1), y: ny(y1), wid: wid });
       return;
     }
     log("unhandled input", j.k);
@@ -1168,6 +1358,9 @@
           var m = null; try { m = JSON.parse(ev.data); } catch (e) {}
           if (m && m.type === "widget-state") {
             self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "widget-state", widgets: m.widgets || [] }));
+          }
+          if (m && m.type === "widget-open") {
+            self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({ c: "widget-open", token: m.token, pkg: m.pkg, userId: m.userId || 0 }));
           }
           return;
         }
@@ -1377,23 +1570,29 @@
     // workspace-mode dialog and awaits a click -- in local mode that click never
     // comes, so the module (and the whole panel) would hang. Return the stored
     // choice, else a `?workspace=` override, else the local default.
-    // Default is "desktop", matching the target form: a full-bleed wallpaper
-    // desktop with the original taskbar. "?workspace=fusion" and the mode menu
-    // still switch to the per-app popup workspace without changing the device session.
+    // Fusion is the product's primary entry.  Keep an explicit desktop query
+    // and stored choice as opt-in compatibility paths for existing users.
     workspaceMode: function () {
       try {
         var requested = new URL(location.href).searchParams.get("workspace");
         if (requested === "desktop" || requested === "fusion") return requested;
         var m = localStorage.getItem("blindcast-workspace-mode");
-        if (m === "desktop" || m === "fusion") return m;
-        // Preserve an explicit legacy Fusion choice made through the original menu.
-        if (localStorage.getItem("andromeld-workspace-mode") === "fusion") return "fusion";
+        var explicit = localStorage.getItem("blindcast-workspace-explicit");
+        // Older builds stored Desktop by default.  Treat that stale value as
+        // unset; only a choice made through the current mode picker may opt
+        // back into Desktop.  This repairs existing Chrome profiles while
+        // preserving the original mode switch for future choices.
+        if (explicit === "desktop" && m === "desktop") return "desktop";
+        if (explicit === "fusion" || m === "fusion" || localStorage.getItem("andromeld-workspace-mode") === "fusion") return "fusion";
       } catch (e) {}
-      return "desktop";
+      return "fusion";
     },
     setWorkspaceMode: function (mode) {
       if (mode !== "desktop" && mode !== "fusion") return;
-      try { localStorage.setItem("blindcast-workspace-mode", mode); } catch (e) {}
+      try {
+        localStorage.setItem("blindcast-workspace-mode", mode);
+        localStorage.setItem("blindcast-workspace-explicit", mode);
+      } catch (e) {}
     },
     api: api,
     log: log
