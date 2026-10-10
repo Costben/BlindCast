@@ -178,6 +178,16 @@ PATCHES = [
         'var wO=new URL("window/",document.baseURI).href;',
         'var wO=new URL("window/index.html",document.baseURI).href;',
     ),
+    (
+        # 搜索部件初始化时给 surface / content 写 aria-hidden="true"，这是 #searchContent
+        # 上最后一份写入。初始化本身撞不上焦点，但它与告警指向的属性是同一个，而同一行已经
+        # 设了 inert（inert 子树同样不进辅助技术树、也不可聚焦），面板里更没有一处代码读这个
+        # 属性（getAttribute 0 处、CSS 选择器 0 处），删掉后这个属性不再被人写。
+        "P17-search-init-aria-hidden",
+        "js/shell.js",
+        't.inert=!0,t.setAttribute?.("aria-hidden","true"),e.dataset.open="false",n.inert=!0,n.setAttribute?.("aria-hidden","true"),i.setAttribute("aria-expanded","false");',
+        't.inert=!0,e.dataset.open="false",n.inert=!0,i.setAttribute("aria-expanded","false");',
+    ),
 ]
 
 # window-app.js is the Fusion per-app window runtime. It does not build its own
