@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name" translatable="false">BlindCast</string>
+    <string name="app_name" translatable="false">Blind Desk</string>
     <string name="home_sample_notification" translatable="false">这是一条示例通知</string>
     <string name="home_app_version" translatable="false">App 版本</string>
     <string name="home_example_link_title" translatable="false">这是一条示例链接</string>
@@ -49,7 +49,7 @@
     <string name="blindcast_home_hw_subtitle" translatable="false">电量 / 温度 / 内存 / WiFi，Slice 6.1 实时刷新</string>
     <!-- BlindCast Slice 6.1: Home 全要素绑定文案 -->
     <string name="blindcast_service_channel" translatable="false">串流服务</string>
-    <string name="blindcast_service_running" translatable="false">BlindCast 串流服务运行中</string>
+    <string name="blindcast_service_running" translatable="false">Blind Desk 串流服务运行中</string>
     <string name="blindcast_home_running_title" translatable="false">挂机服务运行中</string>
     <string name="blindcast_home_stopped_title" translatable="false">服务已停止</string>
     <string name="blindcast_home_stopped_subtitle" translatable="false">点击下方开关启动挂机服务</string>

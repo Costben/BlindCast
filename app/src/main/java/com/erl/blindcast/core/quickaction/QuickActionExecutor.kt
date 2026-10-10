@@ -61,11 +61,11 @@ object QuickActionExecutor {
         val running = BlindCastForegroundService.status.value.isRunning
         return if (running) {
             BlindCastForegroundService.stop(context)
-            Toast.makeText(context, "BlindCast HTTP 服务已停止", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Blind Desk HTTP 服务已停止", Toast.LENGTH_SHORT).show()
             false
         } else {
             BlindCastForegroundService.startHttp(context)
-            Toast.makeText(context, "BlindCast HTTP 服务已启动", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Blind Desk HTTP 服务已启动", Toast.LENGTH_SHORT).show()
             true
         }
     }
@@ -75,6 +75,6 @@ object QuickActionExecutor {
      */
     fun startHttp(context: Context) {
         BlindCastForegroundService.startHttp(context)
-        Toast.makeText(context, "BlindCast HTTP 服务已启动", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "Blind Desk HTTP 服务已启动", Toast.LENGTH_SHORT).show()
     }
 }

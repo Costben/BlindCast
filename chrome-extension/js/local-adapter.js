@@ -1,9 +1,9 @@
-/* BlindCast local transport adapter for the BlindCast panel (v130).
+/* Blind Desk local transport adapter for the Blind Desk panel (v130).
  *
  * The original panel speaks its own device protocol over a WebSocket-shaped
  * socket: text handshake {t,v,client} -> welcome/attached/deny, then binary
  * envelopes [chan:1][type:1][payload] (see outputs/reference/PROTOCOL-original.md).
- * This module implements that socket on top of the BlindCast backend
+ * This module implements that socket on top of the Blind Desk backend
  * (outputs/plans/backend-contract-20261009.md §3 REST / §4 WS) so the original
  * bundle runs unmodified against a local device.
  *
@@ -188,7 +188,7 @@
     if (!code) return Promise.resolve(null);
     return fetch(httpUrl("api/pair"), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: String(code), name: "BlindCast Web" })
+      body: JSON.stringify({ code: String(code), name: "Blind Desk Web" })
     }).then(function (r) {
       return r.json().then(function (j) {
         if (r.ok && j && j.ok !== false) return j.token || j.clientToken || j.value || null;
@@ -257,7 +257,7 @@
   var CT = { JSON: 1, CLIP_IN: 1, CLIP_OUT: 2 };
 
   // Capabilities delivered through this adapter, matched to the backend routes
-  // actually registered in BlindCastServer: clipboard -> /api/clipboard,
+  // actually registered in Blind DeskServer: clipboard -> /api/clipboard,
   // file/fs -> /api/fs/*, terminal -> /ws/terminal, notification ->
   // /api/notifications; device-audio -> opt-in PCM on /ws/stream.
   // Not advertised: microphone audio, phone-screen (mode:"mirror" is not an independent session).
@@ -620,9 +620,9 @@
     setTimeout(function () {
       self._deliver(JSON.stringify({
         t: "welcome", v: 2, web: 130,
-        // The panel is now the BlindCast-compatible Fusion client.  Keep the
+        // The panel is now the Blind Desk-compatible Fusion client.  Keep the
         // local device identity generic until the status route provides a
-        // user-configured name; never expose the retired BlindCast branding.
+        // user-configured name; never expose the retired Blind Desk branding.
         device: { id: "android-device", name: "Android Device" },
         token: TOKEN || "local", signalKey: null, wakeId: null, turnUrl: "",
         caps: CAPS.slice()
@@ -723,7 +723,7 @@
             }
             // The stock panel consumes these two notifications to keep the
             // focused package and away/IME chrome in sync even when the
-            // transport is a local HTTP adapter rather than BlindCast RTC.
+            // transport is a local HTTP adapter rather than Blind Desk RTC.
             self._emitEnvelope(CH.CONTROL, CT.JSON, JSON.stringify({
               c: "focused-app", pkg: String(w.packageName || j.pkg || j.package || ""),
               userId: Number(w.userId == null ? j.userId : w.userId) || 0

@@ -101,7 +101,7 @@ androidComponents {
 
 base {
     archivesName.set(
-        "BlindCast_${managerVersionName}_${managerVersionCode}"
+        "BlindDesk_${managerVersionName}_${managerVersionCode}"
     )
 }
 

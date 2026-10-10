@@ -27,13 +27,13 @@ object HaDiscoveryPayload {
     const val STATE_BASE = "blindcast"
 
     /** 设备展示名。 */
-    const val DEVICE_NAME = "BlindCast"
+    const val DEVICE_NAME = "Blind Desk"
 
     /** 设备 manufacturer（HA 设备块）。 */
-    const val MANUFACTURER = "BlindCast"
+    const val MANUFACTURER = "Blind Desk"
 
     /** 设备 model（HA 设备块）。 */
-    const val MODEL = "BlindCast Screen Station"
+    const val MODEL = "Blind Desk Screen Station"
 
     /** 固件版本（HA 设备块 sw_version；发版时随 versionName 手动同步）。 */
     const val SW_VERSION = "1.0.0"
@@ -127,7 +127,7 @@ object HaDiscoveryPayload {
     fun buildSwitchConfig(ctx: Context): String {
         val device = buildDeviceBlock(ctx)
         return "{" +
-            "\"name\":\"BlindCast Screen\"," +
+            "\"name\":\"Blind Desk Screen\"," +
             "\"object_id\":\"${esc(ctx.nodeId)}_screen\"," +
             "\"unique_id\":\"${esc(ctx.nodeId)}_screen\"," +
             "\"command_topic\":\"${esc(screenCommandTopic(ctx.nodeId))}\"," +
@@ -147,7 +147,7 @@ object HaDiscoveryPayload {
     fun buildBatteryConfig(ctx: Context): String {
         val device = buildDeviceBlock(ctx)
         return "{" +
-            "\"name\":\"BlindCast Battery\"," +
+            "\"name\":\"Blind Desk Battery\"," +
             "\"object_id\":\"${esc(ctx.nodeId)}_battery\"," +
             "\"unique_id\":\"${esc(ctx.nodeId)}_battery\"," +
             "\"device_class\":\"battery\"," +
@@ -165,7 +165,7 @@ object HaDiscoveryPayload {
     fun buildTemperatureConfig(ctx: Context): String {
         val device = buildDeviceBlock(ctx)
         return "{" +
-            "\"name\":\"BlindCast Temperature\"," +
+            "\"name\":\"Blind Desk Temperature\"," +
             "\"object_id\":\"${esc(ctx.nodeId)}_temperature\"," +
             "\"unique_id\":\"${esc(ctx.nodeId)}_temperature\"," +
             "\"device_class\":\"temperature\"," +

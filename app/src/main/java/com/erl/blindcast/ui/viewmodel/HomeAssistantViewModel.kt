@@ -243,11 +243,11 @@ class HomeAssistantViewModel(
             }
             val tokenSuffix = if (token.isBlank()) "" else "?token=$token"
             return buildString {
-                appendLine("# BlindCast REST 备选（免 MQTT）：粘贴进 Home Assistant configuration.yaml 后重启 HA")
+                appendLine("# Blind Desk REST 备选（免 MQTT）：粘贴进 Home Assistant configuration.yaml 后重启 HA")
                 appendLine("# 把 192.168.x.x 换成手机局域网 IP（主页局域网卡片可见），端口 $port")
                 appendLine("switch:")
                 appendLine("  - platform: rest")
-                appendLine("    name: BlindCast Screen")
+                appendLine("    name: Blind Desk Screen")
                 appendLine("    resource: http://192.168.x.x:$port/api/screen$tokenSuffix")
                 appendLine("    body_on: '{\"action\":\"off\"}'")
                 appendLine("    body_off: '{\"action\":\"on\"}'")
@@ -257,7 +257,7 @@ class HomeAssistantViewModel(
                 appendLine(tokenLine)
                 appendLine("sensor:")
                 appendLine("  - platform: rest")
-                appendLine("    name: BlindCast Status")
+                appendLine("    name: Blind Desk Status")
                 appendLine("    resource: http://192.168.x.x:$port/api/status$tokenSuffix")
                 appendLine("    value_template: \"{{ value_json.batteryLevel }}%\"")
                 appendLine("    json_attributes:")

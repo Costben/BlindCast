@@ -991,7 +991,7 @@ object PowerController {
         }
         Log.d(TAG, "[PowerController] ${tid()} tryRootSegment on=$on available=$rootAvailable")
         if (!rootAvailable) {
-            return false to "Root段不可用（无su/未授权，去KernelSU管理器点允许BlindCast）"
+            return false to "Root段不可用（无su/未授权，去KernelSU管理器点允许 Blind Desk）"
         }
         val apkPath = try {
             resolveApkPath(packageName)

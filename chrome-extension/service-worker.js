@@ -7,7 +7,7 @@
  * （chrome-extension:// 即安全上下文），并保留 ?token=。
  *
  * 判定刻意收窄：只探内网/回环地址，且只有 /api/auth/status 的应答像
- * BlindCast 设备时才接管；已知设备（popup 历史 + 接管过的）直接跳过探测。
+ * Blind Desk 设备时才接管；已知设备（popup 历史 + 接管过的）直接跳过探测。
  */
 
 var PROBE_PATH = "/api/auth/status";

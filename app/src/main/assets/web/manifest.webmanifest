@@ -1,6 +1,6 @@
 {
-  "name": "BlindCast Web",
-  "short_name": "BlindCast",
+  "name": "Blind Desk Web",
+  "short_name": "Blind Desk",
   "description": "Open and control Android apps from a desktop browser.",
   "start_url": "./",
   "scope": "./",

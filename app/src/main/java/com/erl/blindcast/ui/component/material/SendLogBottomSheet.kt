@@ -116,7 +116,7 @@ fun SendLogBottomSheet(
                             haptic.performHapticFeedback(HapticFeedbackType.VirtualKey)
                             val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH_mm")
                             val current = LocalDateTime.now().format(formatter)
-                            exportBugreportLauncher.launch("BlindCast_bugreport_${current}.txt.gz")
+                            exportBugreportLauncher.launch("BlindDesk_bugreport_${current}.txt.gz")
                         }) {
                         Icon(
                             Icons.Filled.Save,

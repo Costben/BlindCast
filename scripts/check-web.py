@@ -100,8 +100,8 @@ for gone in ["app.js", "sidepanel.html", "sidepanel.js", "background.js"]:
     need(not (EXT / gone).exists(), f"old BlindCast console file still present: {gone}")
 mf = json.loads((EXT / "manifest.json").read_text(encoding="utf-8"))
 need(mf.get("manifest_version") == 3, "manifest is not MV3")
-# 面板与扩展都改用本产品名（BlindCast），上游品牌不得再出现在清单里。
-need(mf.get("name") == "BlindCast", "manifest name is not the product name")
+# 面板与扩展都改用本产品名（Blind Desk），上游品牌不得再出现在清单里。
+need(mf.get("name") == "Blind Desk", "manifest name is not the product name")
 need("AndroMeld" not in json.dumps(mf), "manifest still carries the upstream brand")
 need(mf.get("action", {}).get("default_popup") == "popup.html", "manifest popup is not popup.html")
 ch = (EXT / "console.html").read_text(encoding="utf-8")

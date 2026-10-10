@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="app/src/main/res/raw/logo.svg" width="120" height="120" alt="BlindCast Logo" />
+<img src="app/src/main/res/raw/logo.svg" width="120" height="120" alt="Blind Desk Logo" />
 
-# BlindCast · 隐播
+# Blind Desk · 隐播
 
 **安卓硬件级物理熄屏挂机工作站 · 局域网低延迟硬解串流 · scrcpy 级键鼠反向触控 · Chrome 原生侧栏中控台**
 
@@ -31,7 +31,7 @@
 1. **屏幕长亮发热严重、耗电飞快、烧屏且容易误触**；
 2. **按物理电源键熄屏会导致系统挂起（Doze 深度休眠）、渲染管线暂停、网络断连甚至游戏直接掉线**。
 
-**BlindCast (隐播)** 通过 Android 底层反射技术，实现**屏幕电源物理切断（背光/OLED彻底断电且触控停报）**，同时内部 CPU/GPU 渲染管线保持 **100% 满血运行**。同时手机本地直接暴露局域网服务，用户可以在任何电脑、平板或手机浏览器上，通过 **低延迟硬件解码与 scrcpy 级键鼠映射** 实时监控并反向操控多台挂机设备。
+**Blind Desk (隐播)** 通过 Android 底层反射技术，实现**屏幕电源物理切断（背光/OLED彻底断电且触控停报）**，同时内部 CPU/GPU 渲染管线保持 **100% 满血运行**。同时手机本地直接暴露局域网服务，用户可以在任何电脑、平板或手机浏览器上，通过 **低延迟硬件解码与 scrcpy 级键鼠映射** 实时监控并反向操控多台挂机设备。
 
 ---
 
@@ -109,10 +109,10 @@
 ## 🚀 快速上手
 
 ### 1. 手机端准备
-1. 下载并安装最新版的 `BlindCast.apk`；
+1. 下载并安装最新版的 `Blind Desk.apk`；
 2. 授予提权权限：
-   - **Root 模式（推荐）**：支持 KernelSU、APatch、Magisk，在授权管理器中允许 BlindCast 即可；
-   - **Shizuku 模式**：启动 Shizuku 服务并授权 BlindCast；
+   - **Root 模式（推荐）**：支持 KernelSU、APatch、Magisk，在授权管理器中允许 Blind Desk 即可；
+   - **Shizuku 模式**：启动 Shizuku 服务并授权 Blind Desk；
 3. 打开 App 首页即自动保证服务在线（**HTTP 端口常开，没有服务开关**）：可远程息屏/点亮、查看状态；
 4. 想看画面时打开 Web 控制台（或点扩展/二维码链接）——**录屏采集会自动唤醒**，最后一个观看者离开 30 秒后自动停，平时不录屏不耗电；
 5. 点击**「⚡ 立即息屏挂机」**即可直接验证物理熄屏。
@@ -121,7 +121,7 @@
 1. 打开 Chrome 浏览器，在地址栏输入 `chrome://extensions`；
 2. 开启右上角的 **「开发者模式」**；
 3. 点击左上角 **「加载已解压的扩展程序」**，选择本项目源码中的 `chrome-extension` 目录；
-4. 点击 Chrome 右上角扩展拼图图标，将 **BlindCast Console** 固定在工具栏；
+4. 点击 Chrome 右上角扩展拼图图标，将 **Blind Desk Console** 固定在工具栏；
 5. 点击图标，即可在浏览器右侧展开原生侧边栏集群中控！
 
 ---
@@ -142,13 +142,13 @@ export JAVA_HOME=/path/to/your/jdk-17
 ./gradlew :app:assembleDebug
 
 # 产物路径
-# app/build/outputs/apk/debug/BlindCast_0.1.0_100-debug.apk
+# app/build/outputs/apk/debug/Blind Desk_0.1.0_100-debug.apk
 ```
 
 ### 安装到测试机
 ```bash
-adb push app/build/outputs/apk/debug/BlindCast_0.1.0_100-debug.apk /data/local/tmp/BlindCast.apk
-adb shell pm install -r /data/local/tmp/BlindCast.apk
+adb push app/build/outputs/apk/debug/Blind Desk_0.1.0_100-debug.apk /data/local/tmp/Blind Desk.apk
+adb shell pm install -r /data/local/tmp/Blind Desk.apk
 ```
 
 ---

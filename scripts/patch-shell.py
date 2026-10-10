@@ -180,6 +180,17 @@ WINDOW_PATCHES = [
         'function Vh(e,t,n=()=>{}){let i=e.getContext("2d"),',
         f'function Vh(e,t,n=()=>{{}}){{if({GUARD}){{let _d={GUARD}.createDecoder(e,t,n);if(_d)return _d}}let i=e.getContext("2d"),',
     ),
+    (
+        # 窗口标题栏（38px）盖在画布上：原版让设备端在虚拟屏顶部预留同样高度的内缩
+        # （`decor-insets` → 原版 `FusionDecorInset` 线程「reserved top=…px on display …」），
+        # 本适配层只把这条消息回显给面板，设备端没有预留，于是应用顶部被标题栏吃掉。
+        # 这里改由面板自己让位：上报给设备的窗口高度减去标题栏，设备分辨率与画布区域
+        # 重新同比例，`Jp(s)` 就是回显给设备的那同一个值，两边不会再漂。
+        "P14-canvas-below-bar",
+        "js/window-app.js",
+        'function w($){if(t.kind!=="device")return;let{pkg:_,userId:S}=c.session,',
+        'function w($){if(t.kind!=="device")return;let _bt=Jp(s);_bt>0&&($={w:$.w,h:Math.max(160,Math.round($.h-_bt))});let{pkg:_,userId:S}=c.session,',
+    ),
 ]
 
 

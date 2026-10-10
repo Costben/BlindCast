@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "BlindCast",
-  "version": "0.2.1",
-  "description": "BlindCast 桌面：在同一浏览器里以独立窗口并行显示多个 Android 应用，逐窗硬件解码与触控。",
+  "name": "Blind Desk",
+  "version": "0.2.2",
+  "description": "Blind Desk 桌面：在同一浏览器里以独立窗口并行显示多个 Android 应用，逐窗硬件解码与触控。",
   "minimum_chrome_version": "94",
   "action": {
-    "default_title": "BlindCast",
+    "default_title": "Blind Desk",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",

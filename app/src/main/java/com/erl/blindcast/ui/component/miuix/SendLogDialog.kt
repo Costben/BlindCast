@@ -93,7 +93,7 @@ fun SendLogDialog(
                 onClick = {
                     val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH_mm")
                     val current = LocalDateTime.now().format(formatter)
-                    exportBugreportLauncher.launch("BlindCast_bugreport_${current}.txt.gz")
+                    exportBugreportLauncher.launch("BlindDesk_bugreport_${current}.txt.gz")
                     onDismissRequest()
                 },
                 insideMargin = PaddingValues(horizontal = 24.dp, vertical = 12.dp)

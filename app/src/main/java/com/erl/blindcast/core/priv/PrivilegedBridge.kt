@@ -27,7 +27,7 @@ import rikka.shizuku.ShizukuProvider
  *    调用完解绑 + 销毁特权进程（`destroy()` → `System.exit(0)`，防特权进程泄漏）。
  * 2. **未授权（报错引导）**：Shizuku 未运行 / 未授权时，[withPrivileged] 直接抛
  *    [IllegalStateException]（文案见 [REQUIRE_SHIZUKU_MESSAGE]，引导用户去 Shizuku
- *    管理器启动服务并授权 BlindCast），绝不静默吞错；
+ *    管理器启动服务并授权 Blind Desk），绝不静默吞错；
  *    [PowerController][com.erl.blindcast.core.blackout.PowerController] 的 routed
  *    入口负责把该异常记入 `lastError` 并返回 false，供 UI 弹 Toast。
  * 3. **Root 直跑（后续 Slice，注释预留）**：设备有 su / KernelSU 时，可不经 Shizuku、
@@ -69,7 +69,7 @@ object PrivilegedBridge {
      * Home 侧直接展示）。
      */
     const val REQUIRE_SHIZUKU_MESSAGE =
-        "需要 Shizuku 授权（去 Shizuku 管理器启动服务并授权 BlindCast）"
+        "需要 Shizuku 授权（去 Shizuku 管理器启动服务并授权 Blind Desk）"
 
     /** Shizuku 未运行引导文案（daemon 没起来时与未授权区分提示）。 */
     const val SHIZUKU_NOT_RUNNING_MESSAGE =
@@ -514,7 +514,7 @@ object PrivilegedBridge {
         }
         Log.d(TAG, "[PrivilegedBridge] ${tid()} tryRootInput sub=$subOp available=$available")
         if (!available) {
-            return@withContext false to "Root段不可用（无su/未授权，去KernelSU管理器点允许BlindCast）"
+            return@withContext false to "Root段不可用（无su/未授权，去KernelSU管理器点允许 Blind Desk）"
         }
         val apkPath: String? = try {
             PowerController.resolveApkPath(packageName)
