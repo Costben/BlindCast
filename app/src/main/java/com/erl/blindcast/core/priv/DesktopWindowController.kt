@@ -340,19 +340,18 @@ object DesktopWindowController {
             if (m.isEmpty() || m["state"] == "stopped") break
         }
         // 宿主没自己退就强杀它（只杀这一条 window 宿主，不动别的窗口与整屏桌面）。
-        val alive = runCatching {
-            Shell.cmd("pgrep -f 'FusionDesktopMain window .* $windowId\$' | wc -l").exec()
-        }.getOrNull()?.out?.firstOrNull()?.trim()?.toIntOrNull() ?: 0
-        if (alive > 0) {
-            Log.w(TAG, "[close] wid=$windowId host still alive after ${waited}ms, killing")
-            runCatching { Shell.cmd("pkill -f 'FusionDesktopMain window .* $windowId\$'; true").exec() }
+        // 按 socket 名定位；按 argv 末位定位会命中 userId，永远杀不中。
+        val pids = hostPids(windowId)
+        if (pids.isNotEmpty()) {
+            Log.w(TAG, "[close] wid=$windowId host still alive after ${waited}ms, killing ${pids.size} proc(s)")
+            runCatching { Shell.cmd("kill -9 ${pids.joinToString(" ")}; true").exec() }
             Thread.sleep(600L)
         }
         runCatching { entry.link?.stop() }
         runCatching { Shell.cmd("rm -f ${entry.stopPath} ${entry.statusPath} ${entry.stopPath}.sync").exec() }
         entries.remove(windowId)
         StreamWsRoute.forgetWindow(windowId)
-        Log.i(TAG, "[close] wid=$windowId done after=${waited}ms killed=${alive > 0}")
+        Log.i(TAG, "[close] wid=$windowId done after=${waited}ms killed=${pids.isNotEmpty()}")
         return true
     }
 
@@ -406,12 +405,17 @@ object DesktopWindowController {
         val live = runCatching {
             Shell.cmd("ls -1 $RUN_DIR/${FILE_PREFIX}*.stop.status 2>/dev/null").exec()
         }.getOrNull()?.out?.map { it.trim() }?.filter { it.startsWith("/") } ?: emptyList()
-        // 一次读出所有存活窗口宿主的 windowId（argv 末位）。逐窗 pgrep 是 O(N) 次 shell spawn，
+        // 一次读出所有存活窗口宿主的 windowId。逐窗 pgrep 是 O(N) 次 shell spawn，
         // 在 1.5s 轮询下会堆积成十几秒延迟；这里把对账的进程存活判定降为常数次 shell。
+        // **按 socket 名取号，不按 argv 末位**：启动参数末尾是 userId，windowId 在中间，
+        // 按末位取号会恒得 0（被 1..255 过滤掉）→ 存活集合为空 → 一开窗就被当陈旧清掉。
         val alive = runCatching {
-            Shell.cmd("for p in \$(pgrep -f 'FusionDesktopMain window'); do tr '\\0' ' ' < /proc/\$p/cmdline; echo; done").exec()
+            Shell.cmd(
+                "for p in \$(pgrep -f 'FusionDesktopMain window'); do tr '\\0' '\\n' < /proc/\$p/cmdline; done" +
+                    " | sed -n 's/^${SOCKET_PREFIX}\\([0-9][0-9]*\\)\$/\\1/p'",
+            ).exec()
         }.getOrNull()?.out?.mapNotNull { line ->
-            line.trim().split(' ').lastOrNull()?.trim()?.toIntOrNull()
+            line.trim().toIntOrNull()
         }?.filter { it in 1..255 }?.toSet() ?: emptySet()
         val liveIds = mutableSetOf<Int>()
         for (path in live) {
@@ -468,14 +472,30 @@ object DesktopWindowController {
         return null
     }
 
-    /** 某 windowId 的宿主进程是否存活（只认 `FusionDesktopMain window … <wid>`，不认 desktop 宿主）。 */
-    private fun hostAlive(wid: Int): Boolean = runCatching {
-        Shell.cmd("pgrep -f 'FusionDesktopMain window .* $wid\$' | wc -l").exec()
-    }.getOrNull()?.out?.firstOrNull()?.trim()?.toIntOrNull()?.let { it > 0 } ?: false
+    /**
+     * 某 windowId 的宿主进程 PID。认 argv 里的**独立** socket 名 `blindcast_win_<wid>`。
+     *
+     * 两条硬约束：
+     * 1. **不能按 argv 末位取号**——启动参数末尾是 userId，windowId 在中间；
+     * 2. **不能用 `pgrep -f` 的整串匹配**——pattern 会出现在执行它的 shell/su 自己的
+     *    命令行里，pgrep 只排除自身不排除祖先，于是恒有 3 条自命中，存活判定永远为真，
+     *    后续 `pkill -f` 还会杀掉自己的 wrapper。故逐 PID 读 `/proc/<pid>/cmdline`，
+     *    按 NUL 切成独立 argv 后用 `grep -qx` 整行精确比对。
+     */
+    private fun hostPids(wid: Int): List<Int> = runCatching {
+        Shell.cmd(
+            "for p in \$(pgrep -f 'FusionDesktopMain window'); do " +
+                "tr '\\0' '\\n' < /proc/\$p/cmdline 2>/dev/null | grep -qx '${SOCKET_PREFIX}$wid'" +
+                " && echo \$p; done",
+        ).exec()
+    }.getOrNull()?.out?.mapNotNull { it.trim().toIntOrNull() }?.distinct() ?: emptyList()
+
+    /** 某 windowId 的宿主进程是否存活（只认逐窗宿主，不认整屏 desktop 宿主）。 */
+    private fun hostAlive(wid: Int): Boolean = hostPids(wid).isNotEmpty()
 
     /**
      * 杀干净某 windowId 的**孤儿**宿主：touch 它自己的 stop 文件让它自退，
-     * 3s 没退就 pkill 这一条，最后清掉它的运行文件。只作用于这一个 id，
+     * 3s 没退就只杀这一条窗宿主进程，最后清掉它的运行文件。只作用于这一个 id，
      * 绝不波及别的窗口或整屏桌面。
      */
     private fun reapOrphanHost(wid: Int) {
@@ -493,9 +513,10 @@ object DesktopWindowController {
             Thread.sleep(200L)
             waited += 200
         }
-        if (hostAlive(wid)) {
-            Log.w(TAG, "[reap] wid=$wid orphan host alive after ${waited}ms, killing")
-            runCatching { Shell.cmd("pkill -f 'FusionDesktopMain window .* $wid\$'; true").exec() }
+        val pids = hostPids(wid)
+        if (pids.isNotEmpty()) {
+            Log.w(TAG, "[reap] wid=$wid orphan host alive after ${waited}ms, killing ${pids.size} proc(s)")
+            runCatching { Shell.cmd("kill -9 ${pids.joinToString(" ")}; true").exec() }
             Thread.sleep(400L)
         }
         runCatching { Shell.cmd("rm -f $stop $status $sync").exec() }

@@ -180,7 +180,23 @@ object DesktopController {
     }
 
     /**
-     * 宿主存活判定（`pgrep -f "FusionDesktopMain desktop"`，1s 缓存）。
+     * 整屏桌面宿主的 PID。认 argv 里**独立**的 `desktop` 词（宿主 argv 是
+     * `… FusionDesktopMain desktop <w> <h> <bitrate> <fps> <assoc> <stop> <socket>`）。
+     *
+     * **不能用 `pgrep -f 'FusionDesktopMain desktop'` 的整串匹配**：pattern 会出现在
+     * 执行它的 shell/su 自己的命令行里，pgrep 只排除自身不排除祖先，于是恒有 3 条自命中
+     * —— 桌面明明没跑也判成活着，`pkill` 那条还会杀掉自己的 wrapper。
+     */
+    private fun desktopHostPids(): List<Int> = runCatching {
+        Shell.cmd(
+            "for p in \$(pgrep -f 'FusionDesktopMain'); do " +
+                "tr '\\0' '\\n' < /proc/\$p/cmdline 2>/dev/null | grep -qx 'desktop'" +
+                " && echo \$p; done",
+        ).exec()
+    }.getOrNull()?.out?.mapNotNull { it.trim().toIntOrNull() }?.distinct() ?: emptyList()
+
+    /**
+     * 宿主存活判定（[desktopHostPids]，1s 缓存）。
      *
      * 只认**整屏桌面**宿主：逐窗口宿主是 `FusionDesktopMain window …`，两者必须分开判，
      * 否则窗口在跑会把已死的桌面会话判成活着。
@@ -189,10 +205,7 @@ object DesktopController {
         val now = System.currentTimeMillis()
         val cached = cachedAliveAt
         if (cached > 0 && now - cached < 1_000L) return cachedAlive
-        val n = runCatching {
-            Shell.cmd("pgrep -f 'FusionDesktopMain desktop' | wc -l").exec()
-        }.getOrNull()?.out?.firstOrNull()?.trim()?.toIntOrNull() ?: 0
-        cachedAlive = n > 0
+        cachedAlive = desktopHostPids().isNotEmpty()
         cachedAliveAt = now
         return cachedAlive
     }
@@ -292,20 +305,16 @@ object DesktopController {
         // 只杀**整屏桌面**宿主：逐窗口宿主是 `FusionDesktopMain window …`，
         // 它们有自己的 stop 文件与生命周期（DesktopWindowController），
         // 这里一刀切会连用户正开着的窗口一起拆掉。
-        val left = runCatching {
-            Shell.cmd("pgrep -f 'FusionDesktopMain desktop' | wc -l").exec()
-        }.getOrNull()?.out?.firstOrNull()?.trim()?.toIntOrNull() ?: 0
-        if (left > 0) {
-            Log.w(TAG, "[on] stale desktop hosts left=$left, terminating")
-            runCatching {
-                Shell.cmd("pkill -f 'FusionDesktopMain desktop'; true").exec()
-            }
+        val pids = desktopHostPids()
+        if (pids.isNotEmpty()) {
+            Log.w(TAG, "[on] stale desktop hosts left=${pids.size}, terminating")
+            runCatching { Shell.cmd("kill -9 ${pids.joinToString(" ")}; true").exec() }
             Thread.sleep(800L)
         }
         runCatching { Shell.cmd("rm -f $pattern; true").exec() }
         runCatching { Shell.cmd("rm -f $RUN_DIR/${PREFIX}*.stop.sync; true").exec() }
         runCatching { Shell.cmd("rm -f $RUN_DIR/${PREFIX}*.stop.uimode $RUN_DIR/${PREFIX}*.stop.uimode.state; true").exec() }
-        Log.i(TAG, "[on] stale host sweep done (left=$left, killed=${left > 0})")
+        Log.i(TAG, "[on] stale host sweep done (left=${pids.size}, killed=${pids.isNotEmpty()})")
     }
 
     /**

@@ -1357,8 +1357,16 @@ class BlindCastForegroundService : Service() {
      */
     private fun killStaleCaptureDaemons() {
         try {
+            // 不用 `pkill -f '…RootCaptureMain'`：pattern 会出现在执行它的 shell/su 自己的
+            // 命令行里，pgrep/pkill 只排除自身不排除祖先 → 连自己的 wrapper 一起杀，
+            // libsu 拿到的是被信号打断的退出码。改成逐 PID 读 /proc/<pid>/cmdline，
+            // 按 NUL 切成独立 argv 后整行精确比对，命中即杀。
             val res = com.topjohnwu.superuser.Shell
-                .cmd("pkill -f 'com.erl.blindcast.core.scrcpy.RootCaptureMain'")
+                .cmd(
+                    "for p in \$(pgrep -f 'com.erl.blindcast.core.scrcpy.RootCaptureMain'); do " +
+                        "tr '\\0' '\\n' < /proc/\$p/cmdline 2>/dev/null" +
+                        " | grep -qx 'com.erl.blindcast.core.scrcpy.RootCaptureMain' && kill -9 \$p; done; true",
+                )
                 .exec()
             Log.i(TAG, "[CaptureRoute] killStaleCaptureDaemons done code=${runCatching { res.code }.getOrDefault(-1)}")
         } catch (t: Throwable) {
