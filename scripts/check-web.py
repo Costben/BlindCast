@@ -49,6 +49,13 @@ win = (WEB / "window/index.html").read_text(encoding="utf-8")
 need(re.search(r'<script src="\.\./js/local-adapter\.js(?:\?[^\"]+)?">', win) is not None,
      "window/index.html missing local-adapter.js")
 
+# 2b. the search flyout must not be aria-hidden in markup --------------------
+# Chrome blocks aria-hidden on an ancestor of the focused element and reports it
+# as an extension error. The closed flyout is already display:none and inert, so
+# a declarative aria-hidden only ever re-arms that report on every page load.
+need(not re.search(r'id="search(?:Content|Surface)"[^>]*aria-hidden', idx),
+     "index.html marks a search container aria-hidden in markup")
+
 # 3. no MV3-CSP violations ---------------------------------------------------
 for rel in ["index.html", "window/index.html"]:
     t = (WEB / rel).read_text(encoding="utf-8")
