@@ -165,6 +165,19 @@ PATCHES = [
         't.classList?.remove?.("is-closing"),e.classList?.remove?.("is-closing"),t.inert=!0,t.setAttribute?.("aria-hidden","true"),t.hidden=!0',
         't.classList?.remove?.("is-closing"),e.classList?.remove?.("is-closing"),t.inert=!0,t.hidden=!0',
     ),
+    (
+        # 每个应用窗口都是 `window.open(wO + "#" + uuid)` 开出来的。原版把 wO 拼成
+        # `new URL("window/", document.baseURI)`，即以目录形式结尾：设备自带的 HTTP
+        # 服务会把目录请求解析成 window/index.html（实测 200），但在扩展页
+        # （chrome-extension://）里资源加载器不允许目录列表，请求目录直接
+        # ERR_FILE_NOT_FOUND，于是控制台里每个应用窗口都停在「无法访问您的文件」，
+        # 表现就是融合模式的应用一直打不开。改成显式文件名：解析出的基准目录不变，
+        # 页面内的相对路径（../css/、js/）引用结果完全一致，两种来源都能命中。
+        "P16-window-page-path",
+        "js/shell.js",
+        'var wO=new URL("window/",document.baseURI).href;',
+        'var wO=new URL("window/index.html",document.baseURI).href;',
+    ),
 ]
 
 # window-app.js is the Fusion per-app window runtime. It does not build its own
