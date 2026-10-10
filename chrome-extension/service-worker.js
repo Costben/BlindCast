@@ -43,6 +43,18 @@ function consoleUrl(host, token) {
   return url;
 }
 
+/* 接管前确认扩展入口文件确实在。曾出现过跳转过去停在 ERR_FILE_NOT_FOUND 的死页
+ * （扩展目录里那一刻没有 console.html），用户原网页反而被顶掉了。这里只在**明确
+ * 404** 时放弃接管：探测本身抛错 / 拿到别的状态都按「在」处理，免得探针失效反而
+ * 把接管整条链路关掉。 */
+var consoleReady = null;
+function consolePageAvailable() {
+  if (consoleReady !== null) return Promise.resolve(consoleReady);
+  return fetch(chrome.runtime.getURL("console.html"), { method: "HEAD", cache: "no-store" })
+    .then(function (r) { consoleReady = !(r && r.status === 404); return consoleReady; },
+      function () { return true; });
+}
+
 /* 设备应答：新版本带 product 标记；旧版本只有 authRequired 一个键。 */
 function isDeviceStatus(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return false;
@@ -113,8 +125,11 @@ function handle(details) {
     if (!device) return;
     redirected[tabId] = Date.now();
     remember(host);
-    return chrome.tabs.update(tabId, {
-      url: consoleUrl(host, url.searchParams.get("token") || "")
+    return consolePageAvailable().then(function (ready) {
+      if (!ready) return;
+      return chrome.tabs.update(tabId, {
+        url: consoleUrl(host, url.searchParams.get("token") || "")
+      });
     });
   }).catch(function () {});
 }

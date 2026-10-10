@@ -1549,6 +1549,133 @@
     };
   }
 
+  // ---- 设备侧虚拟桌面（VDM）会话入口 --------------------------------------
+  // 面板的「桌面」形态在设备侧对应一个整屏虚拟桌面会话（`/api/desktop`）。它不跨
+  // App 进程重启保留，面板里又没有别的入口能把它拉起来 —— 用户只会一直停在
+  // 「桌面未运行」，在桌面上点什么都开不出来。这里补上这个入口：右下角常驻小控件
+  // 可手动开关；控制台停在桌面形态时再自动拉起一次。
+  // 只动 `/api/desktop`：逐窗链路（`/api/desktop/windows`）自建虚拟屏，不需要这个
+  // 会话，一律不碰，避免窗口被会话起停牵连。
+  var desktopRunning = false;
+  var desktopBusy = false;
+  var desktopPill = null;
+
+  /** 逐窗页面（/window/index.html）也加载本适配器，但那里不该出现桌面控件。 */
+  function isConsolePage() {
+    try { return location.pathname.indexOf("/window/") < 0; } catch (e) { return false; }
+  }
+
+  function desktopRender() {
+    if (!isConsolePage()) return;
+    try {
+      var d = (typeof document === "undefined") ? null : document;
+      if (!d || typeof d.getElementById !== "function" || typeof d.createElement !== "function" || !d.body) return;
+      if (!desktopPill) {
+        if (typeof d.body.appendChild !== "function") return;
+        desktopPill = d.createElement("button");
+        desktopPill.id = "blindcastDesktopPill";
+        desktopPill.type = "button";
+        if (desktopPill.setAttribute) {
+          desktopPill.setAttribute("style", [
+            "position:fixed", "right:12px", "bottom:12px", "z-index:2147483000",
+            "display:inline-flex", "align-items:center", "gap:6px",
+            "padding:6px 10px", "border-radius:999px",
+            "border:1px solid rgba(255,255,255,.18)", "background:rgba(18,18,20,.72)",
+            "color:#e8e8ea", "cursor:pointer", "opacity:.72",
+            "font:12px/1.2 system-ui,-apple-system,'PingFang SC',sans-serif"
+          ].join(";"));
+        }
+        if (typeof desktopPill.addEventListener === "function") {
+          desktopPill.addEventListener("click", function () { desktopToggle(); });
+        }
+        d.body.appendChild(desktopPill);
+      }
+      var led = desktopBusy ? "#e0b24a" : (desktopRunning ? "#3ecf6a" : "#8b8b93");
+      var text = desktopBusy ? "桌面：切换中…"
+        : (desktopRunning ? "桌面：运行中 · 点此关闭" : "桌面：未运行 · 点此启动");
+      if (desktopPill.innerHTML !== undefined) desktopPill.innerHTML = "";
+      if (typeof desktopPill.appendChild === "function") {
+        var dot = d.createElement("span");
+        if (dot.setAttribute) {
+          dot.setAttribute("style", "width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:" + led);
+        }
+        var label = d.createElement("span");
+        label.textContent = text;
+        desktopPill.appendChild(dot);
+        desktopPill.appendChild(label);
+      } else {
+        desktopPill.textContent = text;
+      }
+      if (desktopPill.setAttribute) {
+        desktopPill.setAttribute("title", "设备侧虚拟桌面：一块独立于物理屏的手机屏会话");
+      }
+    } catch (e) { log("desktop pill failed", String((e && e.message) || e)); }
+  }
+
+  function desktopRefresh() {
+    return api("api/desktop").then(function (r) {
+      desktopRunning = !!(r && r.ok !== false && r.running);
+      desktopRender();
+      return desktopRunning;
+    }, function () { desktopRender(); return desktopRunning; });
+  }
+
+  function desktopSet(on) {
+    if (desktopBusy) return Promise.resolve(desktopRunning);
+    desktopBusy = true; desktopRender();
+    var action = on ? "on" : "off";
+    return api("api/desktop", { body: { action: action } }).then(function (r) {
+      desktopBusy = false;
+      if (r && r.ok === false) log("desktop " + action + " failed:", r.error);
+      desktopRunning = !!(r && r.ok !== false && r.running);
+      desktopRender();
+      return desktopRunning;
+    }, function (e) {
+      desktopBusy = false; desktopRender();
+      log("desktop " + action + " threw", String((e && e.message) || e));
+      return desktopRunning;
+    });
+  }
+
+  /** 先读真状态再翻面：宿主可能已自行退出，凭本地缓存翻面会翻反。 */
+  function desktopToggle() {
+    if (desktopBusy) return Promise.resolve(desktopRunning);
+    return desktopRefresh().then(function (running) { return desktopSet(!running); });
+  }
+
+  /** 桌面形态下确保会话在跑（已在跑则只读一次状态）。 */
+  function desktopEnsure() {
+    if (desktopBusy) return Promise.resolve(desktopRunning);
+    return desktopRefresh().then(function (running) {
+      return running ? true : desktopSet(true);
+    });
+  }
+
+  /** 控制台停在桌面形态才自动拉起；融合（hub）形态不动设备状态。 */
+  function desktopAutostart() {
+    var mode = "";
+    try { mode = new URL(location.href).searchParams.get("workspace") || ""; } catch (e) {}
+    if (mode !== "desktop") {
+      try {
+        var explicit = localStorage.getItem("blindcast-workspace-explicit");
+        var stored = localStorage.getItem("blindcast-workspace-mode");
+        if (explicit === "desktop" && stored === "desktop") mode = "desktop";
+      } catch (e) {}
+    }
+    if (mode !== "desktop") return Promise.resolve(false);
+    return desktopEnsure();
+  }
+
+  try {
+    desktopRender();
+    desktopRefresh().then(function () { desktopAutostart(); });
+    if (typeof document !== "undefined" && document.addEventListener) {
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) desktopRefresh();
+      });
+    }
+  } catch (e) { log("desktop bootstrap failed", String((e && e.message) || e)); }
+
   window.__blindcastLocal = {
     enabled: true,
     origin: ORIGIN,
@@ -1595,7 +1722,15 @@
       } catch (e) {}
     },
     api: api,
-    log: log
+    log: log,
+    // 设备侧虚拟桌面会话（见上方 desktop* 说明）。测试与 shell 都可以直接调用。
+    desktop: {
+      status: desktopRefresh,
+      ensure: desktopEnsure,
+      toggle: desktopToggle,
+      on: function () { return desktopSet(true); },
+      off: function () { return desktopSet(false); }
+    }
   };
   log("adapter ready", ORIGIN, TOKEN ? "(token)" : "(no token)");
 })();

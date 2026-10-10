@@ -47,7 +47,16 @@ function makeEnv(options) {
     },
   };
 
+  const CONSOLE_HEAD = "chrome-extension://" + EXT_ID + "/console.html";
   const fetchMock = (url, init) => {
+    // 扩展入口存在性探测：不算设备探针，不进 fetchCalls（否则既有断言的口径会变）。
+    if (url === CONSOLE_HEAD) {
+      return Promise.resolve(
+        opts.consoleMissing
+          ? { ok: false, status: 404, json: () => Promise.resolve({}) }
+          : { ok: true, status: 200, json: () => Promise.resolve({}) }
+      );
+    }
     fetchCalls.push(url);
     const entry = responses[url];
     if (!entry) return Promise.reject(new Error("ENOTFOUND " + url));
@@ -228,6 +237,17 @@ const CONSOLE = "chrome-extension://" + EXT_ID + "/console.html";
       "T11 hanging probe does not hijack",
       env.updates.length === 0 && Date.now() - started < 5000,
       "elapsed=" + (Date.now() - started) + "ms"
+    );
+  }
+
+  // T12: 扩展入口文件缺失（曾经的死页事故）时不接管，原页面留给用户
+  {
+    const env = makeEnv({ consoleMissing: true, responses: { [DEVICE_STATUS]: { body: { authRequired: true } } } });
+    await env.navigate({ frameId: 0, tabId: 1, url: DEVICE_URL });
+    check(
+      "T12 missing console page leaves the device page alone",
+      env.updates.length === 0 && env.fetchCalls.length === 1,
+      "updates=" + env.updates.length + " probes=" + env.fetchCalls.length
     );
   }
 

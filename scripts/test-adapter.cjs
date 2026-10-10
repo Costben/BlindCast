@@ -43,13 +43,21 @@ function respBuf(status, buf){
     json: ()=>Promise.reject(new Error("not json")), arrayBuffer: ()=>Promise.resolve(buf),
     text: ()=>Promise.resolve("") };
 }
+let lastDesktopPost = null;                   // /api/desktop POST body
+let desktopRunning = false;                   // /api/desktop answer (VDM session)
 function routeFetch(url, init){
   const u = String(url), method = (init && init.method) || "GET";
   const p = u.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
   if (p === "/api/auth/status") return resp(200, { authRequired:true });
   if (p === "/api/status") return statusOk ? resp(200,{ok:true,batteryLevel:69,charging:false,androidVersion:"16",connectionType:"wireless",storageUsedBytes:10,storageTotalBytes:100}) : resp(401,{ok:false,error:"invalid_token"});
   if (p === "/api/pair") return resp(200, { ok:true, token:"tok" });
-  if (p === "/api/desktop") return resp(200, { ok:true, densityDpi:320, width:1080, height:2400 });
+  if (p === "/api/desktop") {
+    if (method === "POST") {
+      lastDesktopPost = JSON.parse(init.body || "{}");
+      desktopRunning = lastDesktopPost.action === "on";
+    }
+    return resp(200, { ok:true, running:desktopRunning, displayId:desktopRunning?7:-1, densityDpi:320, width:1080, height:2400 });
+  }
   if (p === "/api/display/night-mode") { lastNightPost = JSON.parse(init.body||"{}"); return resp(200,{ok:true}); }
   if (p === "/api/screen") return resp(200, { ok:true, blackedOut: screenBlackedOut });
   if (p === "/api/desktop/windows") {
@@ -544,6 +552,20 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   const before = s2.link._ctlQueue.length;
   s2.link.ctl({ type:"requestIDR" });
   check("D4 ctl queued when socket connecting", s2.link._ctlQueue.length===before+1);
+
+  // Desktop (VDM) session control: the packaged panel had no entry to start the
+  // device-side desktop, so users sat on 「桌面未运行」. The adapter now owns it;
+  // assert the wire contract (GET status / POST action) and that ensure() is
+  // read-only while the session already runs.
+  await tick(3);
+  desktopRunning = false; lastDesktopPost = null;
+  check("desktop status read does not mutate the device", (await L.desktop.status()) === false && lastDesktopPost === null);
+  check("desktop on posts action=on", (await L.desktop.on()) === true && !!lastDesktopPost && lastDesktopPost.action === "on");
+  check("desktop ensure is a no-op while already running", (await L.desktop.ensure()) === true && lastDesktopPost.action === "on");
+  lastDesktopPost = null;
+  check("desktop toggle flips a running session off", (await L.desktop.toggle()) === false && !!lastDesktopPost && lastDesktopPost.action === "off");
+  lastDesktopPost = null;
+  check("desktop ensure starts a stopped session", (await L.desktop.ensure()) === true && !!lastDesktopPost && lastDesktopPost.action === "on");
 
   console.log(results.join("\n"));
   console.log(process.exitCode ? "\nSOME TESTS FAILED" : "\nALL ADAPTER TESTS PASS");
