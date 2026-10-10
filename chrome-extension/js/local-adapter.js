@@ -130,8 +130,47 @@
     };
   }
 
+  // ---- Fusion window placement --------------------------------------------
+  // The shell opens every Fusion window with `popup=1,width=…,height=…` and no
+  // position, so the browser drops each one on its own default spot (the
+  // opener's top-left corner) and they all pile up in the same place.  Place
+  // them in a cascade anchored to the window the click came from instead: each
+  // new window steps down-right, stays fully inside the visible screen, and
+  // never lands exactly on top of the previous one.
+  var WIN_CASCADE_STEP = 28;      // px between two windows of the same batch
+  var WIN_INSET = 24;             // px between the anchor window and the first
+  function installWindowPlacement() {
+    var nativeOpen = window.open;
+    if (typeof nativeOpen !== "function") return;
+    var step = 0;
+    function placed(url, name, features) {
+      // Only the shell's popups are positioned; link opens (window.open() with
+      // no features) keep the browser's own behaviour.
+      if (typeof features !== "string" || features.indexOf("popup") < 0 ||
+          /(^|,)\s*(left|top|screenX|screenY)=/i.test(features)) {
+        return nativeOpen.call(window, url, name, features);
+      }
+      var screen = window.screen || {};
+      var availW = Number(screen.availWidth) || 0, availH = Number(screen.availHeight) || 0;
+      var availL = Number(screen.availLeft) || 0, availT = Number(screen.availTop) || 0;
+      var wm = /(^|,)\s*width=(\d+)/i.exec(features), hm = /(^|,)\s*height=(\d+)/i.exec(features);
+      var w = wm ? Number(wm[2]) : 0, h = hm ? Number(hm[2]) : 0;
+      var offset = (step++ % 6) * WIN_CASCADE_STEP;
+      var left = (Number(window.screenX) || 0) + WIN_INSET + offset;
+      var top = (Number(window.screenY) || 0) + WIN_INSET + offset;
+      if (availW > 0 && w > 0) left = Math.min(left, availL + availW - w);
+      if (availH > 0 && h > 0) top = Math.min(top, availT + availH - h);
+      left = Math.max(left, availL);
+      top = Math.max(top, availT);
+      return nativeOpen.call(window, url, name,
+        features + ",left=" + Math.round(left) + ",top=" + Math.round(top));
+    }
+    window.open = placed;
+  }
+
   // Keep the original Desktop/Fusion layout and its taskbar unchanged.
   installSecureShims();
+  installWindowPlacement();
 
   var params = new URLSearchParams(location.search);
   var hostParam = (params.get("host") || "").trim();
@@ -414,10 +453,20 @@
   // window-state shape the shell's iP() consumes: a NEW sessionId must be
   // announced as state:"opening" (that is what builds the `.win`); unknown
   // sessionIds carrying state:"live" are dropped (iP: Ue.get(t) == null).
+  //
+  // No `kind` here.  The shell opens the window (`is()` -> hub.prepareOpen) and
+  // later matches it against this message with ONE comparator (`J1`), which
+  // compares kinds whenever either side carries one.  An app open carries no
+  // kind, so announcing kind:"app" makes every match fail: the window the shell
+  // already opened is never adopted, it stays unbound and black for good, and
+  // the shell opens a second, real window beside it.  The original device sends
+  // {c,sessionId,state,pkg} only, and the shell derives the app kind itself
+  // (`wm`: e.kind === phone ? phone : hm(sessionId) || "app").
   Bridge.prototype._stateMsg = function (w, state) {
     return {
       c: "window-state", sessionId: String(w.windowId), pkg: w.packageName, packageName: w.packageName,
-      userId: Number(w.userId) || 0, kind: "app", w: w.width, h: w.height, dpr: 1, state: state
+      intentUrl: String(w.intentUrl || ""),
+      userId: Number(w.userId) || 0, w: w.width, h: w.height, dpr: 1, state: state
     };
   };
   Bridge.prototype._emitState = function (w, state) {

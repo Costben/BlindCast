@@ -86,11 +86,15 @@ function routeFetch(url, init){
   return resp(404, { ok:false, error:"not_found" });
 }
 
+const openCalls = [];   // window.open(features) seen by the placement shim
 const sandbox = {
   console, setTimeout, clearTimeout, setInterval, clearInterval, Promise, JSON, Math, Number, String, Object, Array, Error, Date,
   Uint8Array, DataView, BigInt, TextEncoder, TextDecoder, URLSearchParams, URL, Symbol, btoa, DOMException,
   File: class { constructor(parts,name){this.parts=parts;this.name=name;} },
   Blob: class { constructor(parts){this.parts=parts;} },
+  open(url, name, features){ openCalls.push([url, name, features]); return { stub:true }; },
+  screen: { availWidth:1440, availHeight:900, availLeft:0, availTop:0 },
+  screenX: 100, screenY: 200,
   location: { search:"?host=192.168.31.216:8888", origin:"http://192.168.31.216:8888", href:"http://192.168.31.216:8888/" },
   localStorage: { _d:{}, getItem(k){return this._d[k]||null;}, setItem(k,v){this._d[k]=v;}, removeItem(k){delete this._d[k];} },
   crypto: { getRandomValues(a){ for(let i=0;i<a.length;i++) a[i]=(i*7+3)&0xff; return a; } },   // no randomUUID
@@ -129,6 +133,19 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   L.setWorkspaceMode("fusion");
   // shims
   check("crypto.randomUUID shim", typeof sandbox.crypto.randomUUID === "function" && /^[0-9a-f-]{36}$/.test(sandbox.crypto.randomUUID()));
+  // Fusion windows: the shell asks for `popup=1,width,height` and no position,
+  // so without help every window lands on the same browser-chosen spot.
+  openCalls.length = 0;
+  sandbox.window.open("http://h/window/index.html#x", "_blank", "popup=1,width=405,height=720");
+  const fusionFeatures = openCalls.length === 1 ? String(openCalls[0][2]) : "";
+  check("fusion popup gets an explicit position",
+    /,left=\d+/.test(fusionFeatures) && /,top=\d+/.test(fusionFeatures) && fusionFeatures.indexOf("width=405") >= 0);
+  openCalls.length = 0;
+  sandbox.window.open("http://h/window/index.html#x", "_blank", "popup=1,left=10,top=20,width=405,height=720");
+  check("an explicit position is left alone", openCalls.length === 1 && !/,left=-?\d+.*,left=/.test(String(openCalls[0][2])));
+  openCalls.length = 0;
+  sandbox.window.open("https://example.test/", "_blank");
+  check("plain link opens keep the browser's own placement", openCalls.length === 1 && openCalls[0][2] === undefined);
   check("navigator.clipboard shim", !!sandbox.navigator.clipboard && typeof sandbox.navigator.clipboard.writeText==="function");
   await sandbox.navigator.clipboard.writeText("hello");
   check("clipboard writeText resolves + readText", (await sandbox.navigator.clipboard.readText())==="hello");
@@ -209,6 +226,10 @@ const decodeJson = (d)=>{ try{ return JSON.parse(d); }catch{ return null; } };
   bridge.refreshWindows(); await tick(2);
   const w2open = ctrlStates.find(m=>String(m.sessionId)==="2" && m.state==="opening");
   check("new window announced as opening", !!w2open && w2open.pkg==="p" && w2open.w===10 && w2open.h===20);
+  // The shell opens the window first and matches it against this message with
+  // one comparator that compares kinds whenever either side has one; an app
+  // open carries no kind, so sending one here orphans the opened window.
+  check("app window-state announces no kind", !!w2open && !("kind" in w2open));
   check("D3 success closes stale window 1", ctrlStates.some(m=>String(m.sessionId)==="1" && m.state==="closed"));
   bridge.refreshWindows(); await tick(2);
   check("window promoted to live on next poll", ctrlStates.some(m=>String(m.sessionId)==="2" && m.state==="live"));
