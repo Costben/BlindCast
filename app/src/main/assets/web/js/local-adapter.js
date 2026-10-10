@@ -1559,10 +1559,22 @@
   var desktopRunning = false;
   var desktopBusy = false;
   var desktopPill = null;
+  var desktopMountRetry = false;
 
   /** 逐窗页面（/window/index.html）也加载本适配器，但那里不该出现桌面控件。 */
   function isConsolePage() {
     try { return location.pathname.indexOf("/window/") < 0; } catch (e) { return false; }
+  }
+
+  /** 桌面钮挂到任务栏品牌徽标右侧。之前用 fixed 浮在右下角，正好压住托盘里的通知气泡。 */
+  function desktopMount() {
+    if (!desktopPill) return false;
+    if (desktopPill.parentNode) return true;
+    var host = null;
+    try { host = document.querySelector(".tb-left"); } catch (e) { host = null; }
+    if (!host || typeof host.appendChild !== "function") return false;
+    host.appendChild(desktopPill);
+    return true;
   }
 
   function desktopRender() {
@@ -1571,34 +1583,32 @@
       var d = (typeof document === "undefined") ? null : document;
       if (!d || typeof d.getElementById !== "function" || typeof d.createElement !== "function" || !d.body) return;
       if (!desktopPill) {
-        if (typeof d.body.appendChild !== "function") return;
         desktopPill = d.createElement("button");
         desktopPill.id = "blindcastDesktopPill";
+        desktopPill.className = "tb-desktop";
         desktopPill.type = "button";
-        if (desktopPill.setAttribute) {
-          desktopPill.setAttribute("style", [
-            "position:fixed", "right:12px", "bottom:12px", "z-index:2147483000",
-            "display:inline-flex", "align-items:center", "gap:6px",
-            "padding:6px 10px", "border-radius:999px",
-            "border:1px solid rgba(255,255,255,.18)", "background:rgba(18,18,20,.72)",
-            "color:#e8e8ea", "cursor:pointer", "opacity:.72",
-            "font:12px/1.2 system-ui,-apple-system,'PingFang SC',sans-serif"
-          ].join(";"));
-        }
         if (typeof desktopPill.addEventListener === "function") {
           desktopPill.addEventListener("click", function () { desktopToggle(); });
         }
-        d.body.appendChild(desktopPill);
       }
-      var led = desktopBusy ? "#e0b24a" : (desktopRunning ? "#3ecf6a" : "#8b8b93");
+      if (!desktopMount()) {
+        // 任务栏还没解析出来。浮回右下角会重新压住通知气泡，所以先不显示，稍后再挂一次；
+        // 后续每次状态刷新也会走到这里。
+        if (!desktopMountRetry) {
+          desktopMountRetry = true;
+          setTimeout(function () { desktopMountRetry = false; desktopRender(); }, 200);
+        }
+        return;
+      }
       var text = desktopBusy ? "桌面：切换中…"
         : (desktopRunning ? "桌面：运行中 · 点此关闭" : "桌面：未运行 · 点此启动");
+      if (desktopPill.setAttribute) {
+        desktopPill.setAttribute("data-state", desktopBusy ? "busy" : (desktopRunning ? "running" : "idle"));
+      }
       if (desktopPill.innerHTML !== undefined) desktopPill.innerHTML = "";
       if (typeof desktopPill.appendChild === "function") {
         var dot = d.createElement("span");
-        if (dot.setAttribute) {
-          dot.setAttribute("style", "width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:" + led);
-        }
+        dot.className = "tb-desktop-dot";
         var label = d.createElement("span");
         label.textContent = text;
         desktopPill.appendChild(dot);
