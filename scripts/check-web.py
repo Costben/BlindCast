@@ -105,6 +105,18 @@ need(mf.get("action", {}).get("default_popup") == "popup.html", "manifest popup 
 ch = (EXT / "console.html").read_text(encoding="utf-8")
 need(re.search(r'src="js/local-adapter\.js(?:\?[^\"]+)?"', ch) is not None,
      "extension console.html missing local-adapter.js")
+# The background worker claims device-page navigations so a pasted http:// URL
+# still lands on the secure-context extension page (WebCodecs) instead of the
+# slow software-decoding LAN page.
+need("webNavigation" in (mf.get("permissions") or []),
+     "manifest missing webNavigation permission")
+sw = mf.get("background", {}).get("service_worker")
+need(sw == "service-worker.js", "manifest service worker is not service-worker.js")
+if sw:
+    need((EXT / sw).exists(), f"manifest service worker missing: {sw}")
+    sw_src = (EXT / sw).read_text(encoding="utf-8")
+    need("eval(" not in sw_src, f"{sw} uses eval(")
+    need("new Function" not in sw_src, f"{sw} uses new Function")
 
 # 7. extension in sync with the web panel ------------------------------------
 rc = subprocess.run([sys.executable, str(ROOT / "scripts/sync-chrome-console.py"), "--check"],

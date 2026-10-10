@@ -20,6 +20,9 @@ object AuthRoute {
     fun handleStatus(): Pair<Int, String> {
         val json = JSONObject()
             .put("authRequired", TokenAuthenticator.isAuthRequired())
+            // 稳定标识：浏览器扩展据此判断「这是不是本设备的服务」再接管网页导航，
+            // 避免把内网里其它服务的 /api/auth/status 误认成设备。
+            .put("product", "blindcast")
             .toString()
         return 200 to json
     }

@@ -10,6 +10,7 @@ var scanBtn = document.getElementById("scanBtn");
 var scanBar = document.getElementById("scanBar");
 var scanMsg = document.getElementById("scanMsg");
 var foundList = document.getElementById("foundList");
+var autoRouteInput = document.getElementById("autoRoute");
 
 var SCAN_CONCURRENCY = 30;
 var SCAN_TIMEOUT_MS = 800;
@@ -69,6 +70,19 @@ function loadHistory() {
   storeGet(["host", "hosts"], function (v) {
     if (v && v.host && !ipInput.value) ipInput.value = v.host;
     renderHistory(Array.isArray(v && v.hosts) ? v.hosts : []);
+  });
+}
+
+/* ---------------- 设备网页接管（后台 service-worker.js 消费） -------------- */
+function loadAutoRoute() {
+  storeGet(["autoRoute"], function (v) {
+    autoRouteInput.checked = v && v.autoRoute === false ? false : true;
+  });
+}
+
+function bindAutoRoute() {
+  autoRouteInput.addEventListener("change", function () {
+    storeSet({ autoRoute: !!autoRouteInput.checked });
   });
 }
 
@@ -228,5 +242,7 @@ document.getElementById("go").addEventListener("click", openConsole);
 ipInput.addEventListener("keydown", function (e) { if (e.key === "Enter") openConsole(); });
 scanBtn.addEventListener("click", scan);
 prefixInput.addEventListener("keydown", function (e) { if (e.key === "Enter") scan(); });
+bindAutoRoute();
 
 loadHistory();
+loadAutoRoute();

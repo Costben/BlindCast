@@ -31,6 +31,8 @@ ul.list li button:hover{border-color:rgba(119,201,195,.45)}
 .empty{font-size:12px;color:rgba(232,234,240,.4);line-height:1.8;margin:8px 0 0}
 .prog{height:6px;border-radius:3px;background:rgba(255,255,255,.08);margin-top:10px;overflow:hidden}
 .prog i{display:block;height:100%;width:0;background:#77c9c3;border-radius:3px;transition:width .15s}
+label.chk{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:#e8eaf0;cursor:pointer}
+label.chk input{width:auto;margin:0;flex:none}
 </style>
 </head>
 <body>
@@ -58,6 +60,12 @@ ul.list li button:hover{border-color:rgba(119,201,195,.45)}
     <div class="prog"><i id="scanBar"></i></div>
     <ul class="list" id="foundList"></ul>
     <p class="empty" id="scanMsg"></p>
+  </div>
+
+  <div class="sec">
+    <h2>打开方式</h2>
+    <p class="tip">开启后，把 <code>http://设备:8888</code> 粘进地址栏也会改用插件面板打开。插件页是安全上下文，走硬件解码，不会退到低速软解。</p>
+    <label class="chk"><input type="checkbox" id="autoRoute"> 自动用插件打开设备网页</label>
   </div>
 </div>
 <script src="popup.js"></script>
