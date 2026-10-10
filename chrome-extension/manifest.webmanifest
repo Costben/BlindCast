@@ -1,0 +1,14 @@
+{
+  "name": "Blind Desk Web",
+  "short_name": "Blind Desk",
+  "description": "Open and control Android apps from a desktop browser.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F5F5F7",
+  "theme_color": "#007AFF",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

@@ -4,13 +4,19 @@ extension (chrome-extension/), byte-for-byte.
 
 The extension entry keeps the `console.html?host=...` contract, so the panel is
 mirrored to the extension ROOT (not a subdirectory): the shell resolves the
-Fusion window route with `new URL("window/", document.baseURI)`, which only
-lands on the mirrored `window/` directory when the entry sits at the root.
+Fusion window route with `new URL("window/index.html", document.baseURI)`, which
+only lands on the mirrored `window/index.html` when the entry sits at the root.
 
 Only two renames/skips are unavoidable:
   * index.html  -> console.html   (extension entry keeps the ?host= contract)
-  * manifest.webmanifest / sw.js  are dropped: an MV3 extension page is already
-    a secure context and service-worker caching would shadow the adapted shell.
+  * sw.js is dropped: an MV3 extension page is already a secure context and
+    service-worker caching would shadow the adapted shell. The shell still asks
+    for `./sw.js`, but that call sits behind `window.__blindcastLocal`, which
+    local-adapter.js sets before the shell module runs, so it never fires here.
+
+`manifest.webmanifest` is mirrored like everything else even though an extension
+page never installs as a PWA: both mirrored pages link `/manifest.webmanifest`,
+and a dropped file would leave that link 404ing on every panel load.
 
 Everything else (css/, js/, img/, window/, icons, h264-player.js) is mirrored
 1:1 so the extension and the LAN web entry run the same code.
@@ -29,7 +35,7 @@ WEB = ROOT / "app/src/main/assets/web"
 EXT = ROOT / "chrome-extension"
 
 # Files that must not be copied verbatim (name or policy reasons).
-SKIP = {"manifest.webmanifest", "sw.js"}
+SKIP = {"sw.js"}
 # Only the extension entry (root index.html) is renamed. window/index.html is a
 # separate entry and must keep its name or the Fusion window route breaks.
 RENAME = {Path("index.html"): Path("console.html")}
