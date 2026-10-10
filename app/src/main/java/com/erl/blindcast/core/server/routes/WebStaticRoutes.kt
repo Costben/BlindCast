@@ -12,8 +12,10 @@ import java.util.concurrent.ConcurrentHashMap
  *   `css/panel.css`、`js/shell.js`、`icons/`、`img/`、`manifest.webmanifest`
  *   等全部走这里），缺失 404；
  * - 仅允许 GET / HEAD，其余 405；
- * - 正确 MIME（按扩展名）+ ETag/304 + 分级 Cache-Control：
- *   `index.html` 用 `no-cache`（重连即拿到新入口），其余静态资源 `max-age=3600`。
+ * - 正确 MIME（按扩展名）+ ETag/304 + 全部资源 `no-cache`：
+ *   面板资源随 APK 一起更新，而它们的 URL 在两次构建之间不变，任何 `max-age`
+ *   都会让新装的应用继续跑上一版的脚本（一次 304 换掉这类"改了却没生效"），
+ *   所以统一走 ETag 重校验，未变即 304。
  *
  * ## 安全
  * - **路径防穿越**：只接受 `[A-Za-z0-9._~/-]`，显式拒绝 `..`、反斜杠、`%`（未解码的
@@ -49,8 +51,11 @@ object WebStaticRoutes {
     /** URL 路径总长上限（防病态输入）。 */
     private const val MAX_PATH_CHARS = 1024
 
-    /** 静态资源缓存时长（秒）。入口 HTML 走 no-cache，不进这里。 */
-    private const val STATIC_MAX_AGE_SECONDS = 3600L
+    /**
+     * 静态资源 Cache-Control。统一 `no-cache`（= 每次使用前重校验，命中 ETag 即 304），
+     * 不用 `max-age`：资源 URL 不随构建变化，缓存新鲜期会让新装的应用继续跑旧脚本。
+     */
+    private const val STATIC_CACHE_CONTROL = "no-cache"
 
     /** 路由结果：HTTP 状态码 + 响应头 + 响应体（HEAD 由 server 压掉 body 只发头）。 */
     data class StaticResult(
@@ -102,7 +107,7 @@ object WebStaticRoutes {
         // 入口：`/` 与 `/index.html` 都落 assets/web/index.html（缺则占位页）。
         if (path == "/" || path == "/index.html") {
             val body = loadAsset(appContext, WEB_INDEX_ASSET_PATH) ?: PLACEHOLDER_HTML.toByteArray(Charsets.UTF_8)
-            return assetResult(appContext, WEB_INDEX_ASSET_PATH, body, noCache = true)
+            return assetResult(appContext, WEB_INDEX_ASSET_PATH, body)
         }
         val assetPath = resolveAssetPath(path)
             ?: return StaticResult(404, "text/plain; charset=utf-8", "not found".toByteArray())
@@ -121,7 +126,7 @@ object WebStaticRoutes {
             resolvedPath = indexPath
             body = indexBody
         }
-        return assetResult(appContext, resolvedPath, body, noCache = false)
+        return assetResult(appContext, resolvedPath, body)
     }
 
     /**
@@ -151,16 +156,15 @@ object WebStaticRoutes {
         return "$WEB_ASSET_ROOT/$rel"
     }
 
-    /** 组装响应头：Content-Type + ETag + Cache-Control（入口 no-cache，其余 max-age）。 */
-    private fun assetResult(appContext: Context?, assetPath: String, body: ByteArray, noCache: Boolean): StaticResult {
+    /** 组装响应头：Content-Type + ETag + Cache-Control（见 [STATIC_CACHE_CONTROL]）。 */
+    private fun assetResult(appContext: Context?, assetPath: String, body: ByteArray): StaticResult {
         val contentType = mimeOf(assetPath)
         val etag = etagCache[assetPath] ?: weakEtag(body).also { etagCache[assetPath] = it }
-        val cache = if (noCache) "no-cache" else "public, max-age=$STATIC_MAX_AGE_SECONDS"
         return StaticResult(
             status = 200,
             contentType = contentType,
             body = body,
-            headers = mapOf("ETag" to etag, "Cache-Control" to cache),
+            headers = mapOf("ETag" to etag, "Cache-Control" to STATIC_CACHE_CONTROL),
         )
     }
 

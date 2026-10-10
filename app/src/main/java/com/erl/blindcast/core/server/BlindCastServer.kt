@@ -50,7 +50,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * ## 路由表
  * - 除 `/api/` 与 `/ws/` 前缀外的一切路径 → [WebStaticRoutes]（公开；`/`、`/index.html` 落
  *   `assets/web/index.html`，其余按 URL 相对路径映射到 `assets/web/`，带路径防穿越 +
- *   MIME + ETag/304 + 分级缓存；未命中 404）；
+ *   MIME + ETag/304 + 统一 `no-cache` 重校验；未命中 404）；
  * - `GET /ws/stream` → [StreamWsRoute]（鉴权后升级，NALU/AAC 二进制下发）；
  * - `GET /ws/control` → [ControlWsRoute]（鉴权后升级，JSON 指令上行）；
  * - `GET /ws/widgets` → [WidgetWsRoute]（鉴权后升级，桌面 widget WebP 静帧下行 + 触摸注入上行）；
