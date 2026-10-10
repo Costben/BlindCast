@@ -148,6 +148,23 @@ PATCHES = [
         'macDownloadUrl:()=>ce.macDownload.getAttribute("href")||""',
         'macDownloadUrl:()=>ce.macDownload?ce.macDownload.getAttribute("href")||"":""',
     ),
+    (
+        # 关闭搜索面板时先给祖先写 aria-hidden、再恢复焦点，Chrome 会判定为把仍持有焦点的
+        # 元素藏进 aria-hidden 子树并报「Blocked aria-hidden ... descendant retained focus」。
+        # 同一行已经设了 inert，inert 子树本就不进辅助技术树、也不可聚焦，aria-hidden 属
+        # 冗余写入；且全库无任何代码读取该属性，删掉这两处写入即可消掉告警。
+        "P15-search-close-aria-hidden",
+        "js/shell.js",
+        'he=null,t.inert=!0,t.setAttribute?.("aria-hidden","true"),n.inert=!0,n.setAttribute?.("aria-hidden","true"),i.setAttribute("aria-expanded","false")',
+        'he=null,t.inert=!0,n.inert=!0,i.setAttribute("aria-expanded","false")',
+    ),
+    (
+        # 同上：关闭动画结束回调里也对 #searchSurface 重复写了一次 aria-hidden。
+        "P15b-search-pe-aria-hidden",
+        "js/shell.js",
+        't.classList?.remove?.("is-closing"),e.classList?.remove?.("is-closing"),t.inert=!0,t.setAttribute?.("aria-hidden","true"),t.hidden=!0',
+        't.classList?.remove?.("is-closing"),e.classList?.remove?.("is-closing"),t.inert=!0,t.hidden=!0',
+    ),
 ]
 
 # window-app.js is the Fusion per-app window runtime. It does not build its own
